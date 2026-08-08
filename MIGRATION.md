@@ -2,6 +2,10 @@
 
 迁移基线为 `a1112/Mac-Win@4282ed9e3d743219d5b35b8bda47ac29a7c663d5`。详细证据与文件规模记录在 [源工程审计基线](docs/migration/source-baseline.md)。
 
+## 当前迁移政策
+
+自 Core `0.3.0` 起，开发中心完全转移到 CompatForge。Mac-Win 暂停维护，不再承接 SwiftUI 功能、Bridge 扩展或 legacy 启动切换；它只保留为迁移证据、兼容规则和测试样本来源。macOS 与 Linux 的新桌面能力统一进入 Qt 6/QML 薄前端，所有执行、状态与持久化能力先进入 Rust Core。
+
 ## 核心判断
 
 Mac-Win 已拥有大量产品资产，但这些资产与 macOS 执行细节耦合：
@@ -15,21 +19,20 @@ Mac-Win 已拥有大量产品资产，但这些资产与 macOS 执行细节耦�
 因此迁移对象不是“Swift 文件”，而是三个不同层次：
 
 1. **保留并数据化**：Recipe、软件样本、签名目录、诊断分类、冒烟测试、修复审计、支持包。
-2. **通过适配器过渡**：现有 SwiftUI、Bottle 目录、macOS 原生窗口与输入集成。
+2. **提取后冻结**：从现有 SwiftUI、Bottle 目录和 macOS 原生集成提取可验证行为；不继续扩展旧前端。
 3. **重新实现**：运行编排、Provider 选择、Runtime Pack、CPU/图形能力协商、进程监督、跨平台路径和安全边界。
 
 ## Strangler 迁移法
 
 ```mermaid
 flowchart TD
-    A["现有 SwiftUI"] --> B["RuntimeClient / BottleClient"]
-    B --> C["Legacy Swift Adapter"]
-    B --> D["CompatForge C ABI"]
-    D --> E["Rust Orchestrator"]
-    E --> F["Wine / Translator / Graphics Provider"]
+    A["Qt 6 / QML"] --> B["C++ Client / C ABI"]
+    B --> C["Rust Orchestrator"]
+    C --> D["Process Supervisor"]
+    D --> E["Wine / Translator / Graphics Provider"]
 ```
 
-每迁移一个 use case，先在新旧后端执行同一份契约测试，再把默认路由切到 Rust，最后删除对应 Swift 执行逻辑。迁移期间不得让新核心读取 Swift 私有对象；跨边界只传版本化数据或稳定句柄。
+从 Mac-Win 提取资产时先转换为版本化契约与 fixture，再由 CompatForge 独立测试。新核心不得读取 Swift 私有对象；跨边界只传版本化数据或稳定句柄。
 
 ## 文件映射
 
@@ -44,7 +47,7 @@ flowchart TD
 | `CatalogService.swift` | compat-catalog | 保留签名和哈希思想，升级密钥轮换与回滚保护 |
 | Smoke/Test/Support 服务 | compat-lab + diagnostics | 优先迁移，是可持续兼容性的核心资产 |
 | `MacWinStore.swift` | feature clients/use cases | 拆成 Bottle、Catalog、Runtime、Diagnostics、Settings |
-| `ContentView.swift` | feature-based SwiftUI modules | 保留 UI 过渡，按功能拆分 |
+| `ContentView.swift` | Qt/QML feature specification | 只提取用例与状态，不迁移 SwiftUI 视图代码 |
 | `MacWinPaths.swift` | platform-filesystem | 分别实现 macOS、XDG、Android app storage |
 | Wine patches / fixtures | `patches/` + `tests/windows-probes/` | 保留、补元数据、上游状态与自动回归 |
 
