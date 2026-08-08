@@ -7,7 +7,6 @@ use compatforge_domain::{
     LaunchPlan, LaunchRequest, NativeCommand, ProviderDescriptor, RuntimeKind, RuntimeSelection, SandboxPolicy,
     TranslatorKind, TranslatorSelection, SCHEMA_VERSION_V1,
 };
-use compatforge_storage::AppPaths;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -80,16 +79,12 @@ impl PolicyEngine {
 
         let translator = Self::select_translator(&config.capabilities, request, runtime_kind)?;
         let graphics = Self::select_graphics(&config.capabilities, request, runtime_kind)?;
-        let paths = AppPaths::from_root(&config.storage_root);
-        let bottle_directory = paths.bottle(&request.bottle_id);
+        let bottle_directory = join_host_path(&config.storage_root, &["bottles", &request.bottle_id]);
 
         let mut environment = request.environment.clone();
         environment.extend(binding.environment.clone());
         if runtime_kind == RuntimeKind::Wine {
-            environment.insert(
-                "WINEPREFIX".into(),
-                bottle_directory.join("prefix").to_string_lossy().into_owned(),
-            );
+            environment.insert("WINEPREFIX".into(), join_host_path(&bottle_directory, &["prefix"]));
         }
 
         let mut arguments = Vec::with_capacity(request.arguments.len() + 1);
@@ -99,7 +94,7 @@ impl PolicyEngine {
         let working_directory = binding
             .working_directory
             .clone()
-            .unwrap_or_else(|| bottle_directory.to_string_lossy().into_owned());
+            .unwrap_or_else(|| bottle_directory.clone());
         if !is_absolute_host_path(&working_directory) {
             return Err(PlanError::InvalidHostPath("runtimeBindings.workingDirectory"));
         }
@@ -350,6 +345,20 @@ fn available_provider<'a>(providers: &'a [ProviderDescriptor], kind: &str) -> Op
         .find(|provider| provider.available && provider.kind == kind)
 }
 
+fn join_host_path(root: &str, components: &[&str]) -> String {
+    let separator = if root.contains('\\') { '\\' } else { '/' };
+    let mut path = root.trim_end_matches(['/', '\\']).to_owned();
+    for component in components {
+        if !path.is_empty() {
+            path.push(separator);
+        } else if root.starts_with('/') {
+            path.push('/');
+        }
+        path.push_str(component.trim_matches(['/', '\\']));
+    }
+    path
+}
+
 fn is_absolute_host_path(value: &str) -> bool {
     normalize_host_path(value).is_some()
 }
@@ -499,6 +508,25 @@ mod tests {
         assert_eq!(
             plan.process.environment["WINEPREFIX"],
             "/var/lib/compatforge/bottles/example-bottle/prefix"
+        );
+    }
+
+    #[test]
+    fn compiles_windows_paths_without_using_the_build_host_separator() {
+        let mut config = config(CpuArchitecture::X86_64);
+        config.capabilities.host.os = HostOs::Windows;
+        config.storage_root = "C:\\ProgramData\\CompatForge".into();
+        config.runtime_bindings[0].executable = "C:\\Program Files\\CompatForge\\wine.exe".into();
+
+        let plan = PolicyEngine::compile(&config, &request()).unwrap();
+
+        assert_eq!(
+            plan.process.environment["WINEPREFIX"],
+            "C:\\ProgramData\\CompatForge\\bottles\\example-bottle\\prefix"
+        );
+        assert_eq!(
+            plan.process.working_directory,
+            "C:\\ProgramData\\CompatForge\\bottles\\example-bottle"
         );
     }
 
