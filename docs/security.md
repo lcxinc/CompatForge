@@ -25,6 +25,7 @@ CompatForge 运行来源和质量不一的 Windows 二进制，并组合多个 J
 - 远程 Provider 不接收本地完整文件树；上传按任务和目录逐项授权。
 - PID 和进程树只归 process supervisor 所有；前端释放 handle 时内核仍完成分级终止，Unix process group 与 Windows Job Object 防止后代脱离清理。
 - `wineserver` 必须由固定 Runtime Binding 提供绝对路径；Core 只用标准 argv 执行 `-k/-w`，并以 prefix 排他租约避免清理同前缀的并发会话。
+- 基线 Host Capability probe 不扫描 PATH、不执行发现的二进制；Provider 的 available 结论必须绑定 Runtime Pack 或受信任平台适配器证据。
 
 ## Bottle 不是安全边界
 

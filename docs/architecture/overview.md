@@ -60,6 +60,8 @@ stateDiagram-v2
 
 Provider 的“available”不等于“suitable”。例如系统存在 Vulkan 并不证明 vkd3d-proton 所需扩展完整，存在 Rosetta 也不代表它是长期可依赖路线。
 
+能力探测也不以“某个文件名存在”作为 Provider 可用证据。Core 基线 probe 只报告 OS、架构、版本、设备与 native execution，并为每项 observation 标注来源；Wine、Translator 和 Graphics 的 available 状态必须来自固定 Runtime Pack 或对应平台适配器的专门验证。
+
 ## 持久化边界
 
 - **签名 JSON**：Recipe、Runtime Pack manifest、公开目录、策略包。

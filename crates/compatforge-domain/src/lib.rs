@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const SCHEMA_VERSION_V1: &str = "1";
@@ -161,6 +161,79 @@ pub struct ProviderDescriptor {
     pub capabilities: Vec<String>,
 }
 
+impl ProviderDescriptor {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_id("provider.id", &self.id)?;
+        if self.kind.is_empty() {
+            return Err(ContractError::MissingField("provider.kind"));
+        }
+        if self.version.is_empty() {
+            return Err(ContractError::MissingField("provider.version"));
+        }
+        if !self.available && self.reason.as_deref().map_or(true, str::is_empty) {
+            return Err(ContractError::MissingField("provider.reason"));
+        }
+        let mut capabilities = BTreeSet::new();
+        for capability in &self.capabilities {
+            if capability.is_empty() {
+                return Err(ContractError::MissingField("provider.capabilities"));
+            }
+            if !capabilities.insert(capability) {
+                return Err(ContractError::DuplicateValue("provider.capabilities"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProbeStatus {
+    Detected,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProbeSource {
+    RustStandardLibrary,
+    OperatingSystemFile,
+    OperatingSystemApi,
+    BuiltIn,
+    RuntimePack,
+    Configuration,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityObservation {
+    pub id: String,
+    pub category: String,
+    pub status: ProbeStatus,
+    pub source: ProbeSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl CapabilityObservation {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_id("observations.id", &self.id)?;
+        if self.category.is_empty() {
+            return Err(ContractError::MissingField("observations.category"));
+        }
+        match self.status {
+            ProbeStatus::Detected if self.value.is_none() => Err(ContractError::MissingField("observations.value")),
+            ProbeStatus::Unavailable | ProbeStatus::Unknown if self.reason.as_deref().map_or(true, str::is_empty) => {
+                Err(ContractError::MissingField("observations.reason"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityReport {
@@ -169,8 +242,44 @@ pub struct CapabilityReport {
     pub runtime_providers: Vec<ProviderDescriptor>,
     pub translators: Vec<ProviderDescriptor>,
     pub graphics_backends: Vec<ProviderDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<CapabilityObservation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub features: BTreeMap<String, serde_json::Value>,
+}
+
+impl CapabilityReport {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        if self.host.os_version.is_empty() {
+            return Err(ContractError::MissingField("host.osVersion"));
+        }
+        if self.host.architecture == CpuArchitecture::Unknown {
+            return Err(ContractError::UnsupportedValue("host.architecture"));
+        }
+
+        let mut provider_ids = BTreeSet::new();
+        for provider in self
+            .runtime_providers
+            .iter()
+            .chain(self.translators.iter())
+            .chain(self.graphics_backends.iter())
+        {
+            provider.validate()?;
+            if !provider_ids.insert(&provider.id) {
+                return Err(ContractError::DuplicateValue("provider.id"));
+            }
+        }
+
+        let mut observation_ids = BTreeSet::new();
+        for observation in &self.observations {
+            observation.validate()?;
+            if !observation_ids.insert(&observation.id) {
+                return Err(ContractError::DuplicateValue("observations.id"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -321,7 +430,7 @@ pub struct CoreConfig {
 impl CoreConfig {
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_schema_version(&self.schema_version)?;
-        validate_schema_version(&self.capabilities.schema_version)?;
+        self.capabilities.validate()?;
         if self.storage_root.is_empty() {
             return Err(ContractError::MissingField("storageRoot"));
         }
@@ -662,6 +771,7 @@ pub enum ContractError {
     MissingField(&'static str),
     InvalidIdentifier(&'static str),
     InvalidDigest(&'static str),
+    DuplicateValue(&'static str),
     UnsupportedValue(&'static str),
 }
 
@@ -672,6 +782,7 @@ impl fmt::Display for ContractError {
             Self::MissingField(field) => write!(formatter, "missing required field {field}"),
             Self::InvalidIdentifier(field) => write!(formatter, "invalid identifier in {field}"),
             Self::InvalidDigest(field) => write!(formatter, "invalid digest in {field}"),
+            Self::DuplicateValue(field) => write!(formatter, "duplicate value in {field}"),
             Self::UnsupportedValue(field) => write!(formatter, "unsupported value in {field}"),
         }
     }
@@ -787,5 +898,24 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn validates_capability_observation_evidence() {
+        let mut report: CapabilityReport =
+            serde_json::from_str(include_str!("../../../examples/capability-report.linux-arm64.json")).unwrap();
+        report.validate().unwrap();
+
+        report.observations.push(report.observations[0].clone());
+        assert_eq!(report.validate(), Err(ContractError::DuplicateValue("observations.id")));
+
+        let mut observation = report.observations[0].clone();
+        observation.status = ProbeStatus::Unknown;
+        observation.value = None;
+        observation.reason = None;
+        assert_eq!(
+            observation.validate(),
+            Err(ContractError::MissingField("observations.reason"))
+        );
     }
 }

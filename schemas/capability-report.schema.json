@@ -34,6 +34,11 @@
       "items": { "$ref": "#/$defs/provider" },
       "uniqueItems": true
     },
+    "observations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/observation" },
+      "uniqueItems": true
+    },
     "features": {
       "type": "object",
       "additionalProperties": { "type": ["boolean", "string", "number"] }
@@ -56,6 +61,38 @@
           "uniqueItems": true
         }
       }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "status", "source"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+        "category": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["detected", "unavailable", "unknown"] },
+        "source": {
+          "enum": [
+            "rust-standard-library",
+            "operating-system-file",
+            "operating-system-api",
+            "built-in",
+            "runtime-pack",
+            "configuration"
+          ]
+        },
+        "value": { "type": ["boolean", "string", "number"] },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "detected" } } },
+          "then": { "required": ["value"] }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["unavailable", "unknown"] } } },
+          "then": { "required": ["reason"] }
+        }
+      ]
     }
   }
 }

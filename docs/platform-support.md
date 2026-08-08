@@ -20,6 +20,7 @@
 可以在 Windows 上开发和验证以下内容：
 
 - Rust domain/orchestrator/ABI 与 CLI；
+- Core Host Capability 与 Windows 版本 API；
 - JSON Schema、Recipe 编译、签名和迁移器；
 - 策略单测、golden tests、模拟 Provider；
 - Windows probe EXE 构建；

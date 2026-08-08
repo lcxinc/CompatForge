@@ -81,3 +81,4 @@ recipe digest
 - 新仓库不重新引入已知开发机绝对路径；
 - Rust 在 Linux/macOS/Windows 通过 fmt、check、test、clippy。
 - 进程监督契约覆盖启动/输出/退出顺序、幂等终止、最大运行时限和 Wine prefix 排他租约；三平台 CI 分别编译并运行各自的 process group/Job Object 实现。
+- Host Capability 在三平台 Runner 实际执行；报告必须通过 Domain 校验，并证明基线探测不会声明未固定 Runtime/Graphics Provider。
