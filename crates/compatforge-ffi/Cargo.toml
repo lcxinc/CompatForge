@@ -9,6 +9,7 @@ publish.workspace = true
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+compatforge-capability = { path = "../compatforge-capability" }
 compatforge-domain = { path = "../compatforge-domain" }
 compatforge-orchestrator = { path = "../compatforge-orchestrator" }
 compatforge-process = { path = "../compatforge-process" }

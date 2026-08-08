@@ -26,16 +26,53 @@
         "capabilities": ["i386-on-arm64", "x86_64-on-arm64"]
       }
     ],
-    "graphicsBackends": [
+      "graphicsBackends": [
       {
         "id": "dxvk-packaged",
         "kind": "dxvk",
         "version": "pack-pinned",
         "available": true,
-        "capabilities": ["d3d8", "d3d9", "d3d10", "d3d11"]
-      }
-    ],
-    "features": {
+          "capabilities": ["d3d8", "d3d9", "d3d10", "d3d11"]
+        }
+      ],
+      "observations": [
+        {
+          "id": "host.os",
+          "category": "host",
+          "status": "detected",
+          "source": "configuration",
+          "value": "linux"
+        },
+        {
+          "id": "host.architecture",
+          "category": "host",
+          "status": "detected",
+          "source": "configuration",
+          "value": "arm64"
+        },
+        {
+          "id": "provider.wine-local",
+          "category": "runtime",
+          "status": "detected",
+          "source": "runtime-pack",
+          "value": true
+        },
+        {
+          "id": "translator.fex-system",
+          "category": "translator",
+          "status": "detected",
+          "source": "runtime-pack",
+          "value": true
+        },
+        {
+          "id": "graphics.dxvk-packaged",
+          "category": "graphics",
+          "status": "detected",
+          "source": "runtime-pack",
+          "value": true
+        }
+      ],
+      "features": {
       "vulkan": true,
       "ntsync": true
     }

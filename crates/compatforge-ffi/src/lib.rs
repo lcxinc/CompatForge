@@ -1,7 +1,8 @@
-//! Stable C ABI used by Swift first and by other frontends later.
+//! Stable C ABI used by Qt/C++ and other thin frontends.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use compatforge_capability::HostProbe;
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
 use compatforge_orchestrator::PolicyEngine;
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
@@ -11,7 +12,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::time::Duration;
 
-const API_VERSION: &[u8] = b"0.4.0\0";
+const API_VERSION: &[u8] = b"0.5.0\0";
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -30,6 +31,7 @@ pub enum CfStatus {
     ProcessFailed = 7,
     Timeout = 8,
     EndOfStream = 9,
+    ProbeFailed = 10,
     Panic = 255,
 }
 
@@ -69,6 +71,31 @@ pub extern "C" fn cf_api_version() -> *const c_char {
 #[no_mangle]
 pub const extern "C" fn cf_abi_version() -> u32 {
     1
+}
+
+/// Return a read-only host capability snapshot as an owned JSON string.
+///
+/// # Safety
+///
+/// `out_capabilities_json` must be valid for one pointer write. A non-null
+/// result must be released with [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_probe_capabilities(out_capabilities_json: *mut *mut c_char) -> CfStatus {
+    ffi_boundary(|| {
+        if out_capabilities_json.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_capabilities_json is null"));
+        }
+        unsafe { ptr::write(out_capabilities_json, ptr::null_mut()) };
+        let report = HostProbe::probe()
+            .map_err(|error| FfiFailure::new(CfStatus::ProbeFailed, format!("host probe failed: {error}")))?;
+        let json = serde_json::to_string_pretty(&report).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::ProbeFailed,
+                format!("capability serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_capabilities_json) }
+    })
 }
 
 /// Create a planning context from a UTF-8 JSON configuration.
@@ -342,12 +369,24 @@ fn set_last_error(status: CfStatus, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compatforge_domain::{GraphicsBackendKind, RuntimeEventKind, RuntimeKind, TranslatorKind};
+    use compatforge_domain::{CapabilityReport, GraphicsBackendKind, RuntimeEventKind, RuntimeKind, TranslatorKind};
 
     #[test]
     fn reports_stable_versions() {
         assert_eq!(cf_abi_version(), 1);
         assert!(!cf_api_version().is_null());
+    }
+
+    #[test]
+    fn probes_capabilities_across_the_c_abi() {
+        let mut output = ptr::null_mut();
+        unsafe {
+            assert_eq!(cf_probe_capabilities(&mut output), CfStatus::Ok);
+            let report: CapabilityReport = serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+            report.validate().unwrap();
+            assert!(!report.observations.is_empty());
+            cf_string_free(output);
+        }
     }
 
     #[test]

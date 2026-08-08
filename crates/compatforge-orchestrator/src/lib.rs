@@ -487,6 +487,7 @@ mod tests {
                 runtime_providers: vec![provider("wine-local", "wine"), provider("vm-local", "virtual-machine")],
                 translators: vec![provider("fex-local", "fex")],
                 graphics_backends: vec![provider("dxvk-local", "dxvk")],
+                observations: Vec::new(),
                 features: BTreeMap::new(),
             },
             runtime_bindings: vec![

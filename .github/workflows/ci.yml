@@ -44,5 +44,7 @@ jobs:
         run: cargo test --workspace --locked
       - name: Compile example launch plan
         run: cargo run -p compatforge-cli --locked -- plan examples/context-config.linux-arm64.json examples/launch-request.json
+      - name: Probe host capabilities
+        run: cargo run -p compatforge-cli --locked -- probe
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
