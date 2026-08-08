@@ -114,12 +114,10 @@ pub fn inspect_path(path: &Path) -> Result<PeInspectionReport, InspectionError> 
         path: path.to_owned(),
         source,
     })?;
-    let metadata = file
-        .metadata()
-        .map_err(|source| InspectionError::Filesystem {
-            path: path.to_owned(),
-            source,
-        })?;
+    let metadata = file.metadata().map_err(|source| InspectionError::Filesystem {
+        path: path.to_owned(),
+        source,
+    })?;
     if !metadata.is_file() {
         return Err(InspectionError::NotRegularFile(path.to_owned()));
     }
@@ -154,9 +152,7 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<PeInspectionReport, InspectionError
     }
 
     let pe_offset = usize::try_from(read_u32(bytes, 0x3c)?).map_err(|_| InspectionError::IntegerOverflow)?;
-    let coff_offset = pe_offset
-        .checked_add(4)
-        .ok_or(InspectionError::IntegerOverflow)?;
+    let coff_offset = pe_offset.checked_add(4).ok_or(InspectionError::IntegerOverflow)?;
     if pe_offset < DOS_HEADER_BYTES || checked_slice(bytes, pe_offset, 4)? != &b"PE\0\0"[..] {
         return Err(InspectionError::InvalidPeSignature);
     }
@@ -192,8 +188,8 @@ pub fn inspect_bytes(bytes: &[u8]) -> Result<PeInspectionReport, InspectionError
 
     let architecture = architecture(machine_code, format)?;
     let entry_point_rva = read_u32(bytes, optional_offset + 16)?;
-    let size_of_headers = usize::try_from(read_u32(bytes, optional_offset + 60)?)
-        .map_err(|_| InspectionError::IntegerOverflow)?;
+    let size_of_headers =
+        usize::try_from(read_u32(bytes, optional_offset + 60)?).map_err(|_| InspectionError::IntegerOverflow)?;
     let subsystem_code = read_u16(bytes, optional_offset + 68)?;
     let image_kind = if characteristics & IMAGE_FILE_DLL == 0 {
         PeImageKind::Executable
@@ -279,10 +275,8 @@ fn parse_sections(
         let raw_data_offset = read_u32(bytes, offset + 20)?;
         let characteristics = read_u32(bytes, offset + 36)?;
         if raw_data_size > 0 {
-            let raw_offset = usize::try_from(raw_data_offset)
-                .map_err(|_| InspectionError::IntegerOverflow)?;
-            let raw_size = usize::try_from(raw_data_size)
-                .map_err(|_| InspectionError::IntegerOverflow)?;
+            let raw_offset = usize::try_from(raw_data_offset).map_err(|_| InspectionError::IntegerOverflow)?;
+            let raw_size = usize::try_from(raw_data_size).map_err(|_| InspectionError::IntegerOverflow)?;
             if raw_offset < size_of_headers {
                 return Err(InspectionError::SectionOverlapsHeaders);
             }
@@ -305,15 +299,9 @@ fn parse_sections(
         for previous in &sections[..index] {
             if ranges_overlap(
                 section.summary.virtual_address,
-                section
-                    .summary
-                    .virtual_size
-                    .max(section.summary.raw_data_size),
+                section.summary.virtual_size.max(section.summary.raw_data_size),
                 previous.summary.virtual_address,
-                previous
-                    .summary
-                    .virtual_size
-                    .max(previous.summary.raw_data_size),
+                previous.summary.virtual_size.max(previous.summary.raw_data_size),
             )? || ranges_overlap(
                 section.raw_data_offset,
                 section.summary.raw_data_size,
@@ -387,11 +375,11 @@ fn parse_imports(
         if terminator == 0 || terminator > MAX_IMPORT_NAME_BYTES {
             return Err(InspectionError::InvalidImportName);
         }
-        let name = std::str::from_utf8(&name_bytes[..terminator])
-            .map_err(|_| InspectionError::InvalidImportName)?;
-        if !name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-        }) {
+        let name = std::str::from_utf8(&name_bytes[..terminator]).map_err(|_| InspectionError::InvalidImportName)?;
+        if !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
             return Err(InspectionError::InvalidImportName);
         }
         imports.insert(name.to_ascii_lowercase());
@@ -407,10 +395,7 @@ fn rva_window(
 ) -> Result<(usize, usize), InspectionError> {
     for section in sections {
         let start = section.summary.virtual_address;
-        let span = section
-            .summary
-            .virtual_size
-            .max(section.summary.raw_data_size);
+        let span = section.summary.virtual_size.max(section.summary.raw_data_size);
         let end = start.checked_add(span).ok_or(InspectionError::IntegerOverflow)?;
         if rva < start || rva >= end {
             continue;
@@ -419,8 +404,8 @@ fn rva_window(
         if delta >= section.summary.raw_data_size {
             return Err(InspectionError::UnmappedRva(rva));
         }
-        let available = usize::try_from(section.summary.raw_data_size - delta)
-            .map_err(|_| InspectionError::IntegerOverflow)?;
+        let available =
+            usize::try_from(section.summary.raw_data_size - delta).map_err(|_| InspectionError::IntegerOverflow)?;
         if available < required {
             return Err(InspectionError::UnmappedRva(rva));
         }
@@ -466,20 +451,18 @@ fn parse_section_name(bytes: &[u8]) -> Result<String, InspectionError> {
     if bytes[end..].iter().any(|byte| *byte != 0) || end == 0 {
         return Err(InspectionError::InvalidSectionName);
     }
-    let value = std::str::from_utf8(&bytes[..end])
-        .map_err(|_| InspectionError::InvalidSectionName)?;
-    if !value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'$' | b'_' | b'-')
-    }) {
+    let value = std::str::from_utf8(&bytes[..end]).map_err(|_| InspectionError::InvalidSectionName)?;
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'$' | b'_' | b'-'))
+    {
         return Err(InspectionError::InvalidSectionName);
     }
     Ok(value.to_owned())
 }
 
 fn checked_slice(bytes: &[u8], offset: usize, length: usize) -> Result<&[u8], InspectionError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or(InspectionError::IntegerOverflow)?;
+    let end = offset.checked_add(length).ok_or(InspectionError::IntegerOverflow)?;
     bytes.get(offset..end).ok_or(InspectionError::TruncatedImage)
 }
 
@@ -542,8 +525,14 @@ impl fmt::Display for InspectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::RelativePath(path) => write!(formatter, "inspection path must be absolute: {}", path.display()),
-            Self::SymbolicLink(path) => write!(formatter, "inspection path must not be a symbolic link: {}", path.display()),
-            Self::NotRegularFile(path) => write!(formatter, "inspection path is not a regular file: {}", path.display()),
+            Self::SymbolicLink(path) => write!(
+                formatter,
+                "inspection path must not be a symbolic link: {}",
+                path.display()
+            ),
+            Self::NotRegularFile(path) => {
+                write!(formatter, "inspection path is not a regular file: {}", path.display())
+            }
             Self::Filesystem { path, source } => write!(formatter, "could not read {}: {source}", path.display()),
             Self::FileTooLarge(size) => write!(formatter, "PE image exceeds {MAX_PE_FILE_BYTES} bytes: {size}"),
             Self::ChangedDuringRead => formatter.write_str("PE image changed while it was being read"),
@@ -553,9 +542,13 @@ impl fmt::Display for InspectionError {
             Self::IntegerOverflow => formatter.write_str("PE offset arithmetic overflow"),
             Self::InvalidSectionCount(count) => write!(formatter, "invalid PE section count: {count}"),
             Self::OptionalHeaderTooLarge(size) => write!(formatter, "PE optional header is too large: {size}"),
-            Self::UnsupportedOptionalHeader(magic) => write!(formatter, "unsupported PE optional header: 0x{magic:04x}"),
+            Self::UnsupportedOptionalHeader(magic) => {
+                write!(formatter, "unsupported PE optional header: 0x{magic:04x}")
+            }
             Self::TruncatedOptionalHeader => formatter.write_str("truncated PE optional header"),
-            Self::UnsupportedMachine { machine, format } => write!(formatter, "unsupported PE machine 0x{machine:04x} for {format:?}"),
+            Self::UnsupportedMachine { machine, format } => {
+                write!(formatter, "unsupported PE machine 0x{machine:04x} for {format:?}")
+            }
             Self::NotExecutableImage => formatter.write_str("COFF image is not marked executable"),
             Self::InvalidHeadersSize => formatter.write_str("invalid PE SizeOfHeaders"),
             Self::SectionOverlapsHeaders => formatter.write_str("PE section raw data overlaps image headers"),
@@ -598,7 +591,7 @@ mod tests {
         let optional = coff + 20;
         bytes[optional..optional + 2].copy_from_slice(&PE32_PLUS_MAGIC.to_le_bytes());
         bytes[optional + 20..optional + 24].copy_from_slice(&0x1000u32.to_le_bytes());
-        bytes[optional + 24..optional + 32].copy_from_slice(&0x1400_0000_0u64.to_le_bytes());
+        bytes[optional + 24..optional + 32].copy_from_slice(&0x0001_4000_0000_u64.to_le_bytes());
         bytes[optional + 32..optional + 36].copy_from_slice(&0x1000u32.to_le_bytes());
         bytes[optional + 36..optional + 40].copy_from_slice(&0x200u32.to_le_bytes());
         bytes[optional + 56..optional + 60].copy_from_slice(&0x2000u32.to_le_bytes());
@@ -646,41 +639,50 @@ mod tests {
 
         let mut bytes = fixture();
         bytes[0x80] = 0;
-        assert!(matches!(inspect_bytes(&bytes), Err(InspectionError::InvalidPeSignature)));
+        assert!(matches!(
+            inspect_bytes(&bytes),
+            Err(InspectionError::InvalidPeSignature)
+        ));
 
         let mut bytes = fixture();
         bytes[0x84..0x86].copy_from_slice(&0x014cu16.to_le_bytes());
-        assert!(matches!(inspect_bytes(&bytes), Err(InspectionError::UnsupportedMachine { .. })));
+        assert!(matches!(
+            inspect_bytes(&bytes),
+            Err(InspectionError::UnsupportedMachine { .. })
+        ));
     }
 
     #[test]
     fn rejects_unmapped_or_unterminated_imports() {
         let mut bytes = fixture();
         bytes[0x20c..0x210].copy_from_slice(&0x9000u32.to_le_bytes());
-        assert!(matches!(inspect_bytes(&bytes), Err(InspectionError::UnmappedRva(0x9000))));
+        assert!(matches!(
+            inspect_bytes(&bytes),
+            Err(InspectionError::UnmappedRva(0x9000))
+        ));
 
         let mut bytes = fixture();
         bytes.copy_within(0x200..0x214, 0x214);
-        assert!(matches!(inspect_bytes(&bytes), Err(InspectionError::UnterminatedImportDirectory)));
+        assert!(matches!(
+            inspect_bytes(&bytes),
+            Err(InspectionError::UnterminatedImportDirectory)
+        ));
     }
 
     #[test]
     fn rejects_relative_paths_without_reading_them() {
-        assert!(matches!(inspect_path(Path::new("hello.exe")), Err(InspectionError::RelativePath(_))));
+        assert!(matches!(
+            inspect_path(Path::new("hello.exe")),
+            Err(InspectionError::RelativePath(_))
+        ));
     }
 
     #[test]
     fn rejects_file_size_before_reading_content() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "compatforge-inspect-{}-{nonce}.exe",
-            std::process::id()
-        ));
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("compatforge-inspect-{}-{nonce}.exe", std::process::id()));
         let file = fs::File::create(&path).unwrap();
         file.set_len(MAX_PE_FILE_BYTES + 1).unwrap();
         drop(file);
@@ -698,8 +700,7 @@ mod tests {
         let first_section = 0x188;
         let second_section = first_section + SECTION_HEADER_BYTES;
         let duplicate = bytes[first_section..first_section + SECTION_HEADER_BYTES].to_vec();
-        bytes[second_section..second_section + SECTION_HEADER_BYTES]
-            .copy_from_slice(&duplicate);
+        bytes[second_section..second_section + SECTION_HEADER_BYTES].copy_from_slice(&duplicate);
         bytes[second_section..second_section + 8].copy_from_slice(b".data\0\0\0");
         assert!(matches!(
             inspect_bytes(&bytes),

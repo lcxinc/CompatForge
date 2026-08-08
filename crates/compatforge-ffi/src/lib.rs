@@ -116,10 +116,7 @@ pub unsafe extern "C" fn cf_inspect_executable(
 ) -> CfStatus {
     ffi_boundary(|| {
         if out_report_json.is_null() {
-            return Err(FfiFailure::new(
-                CfStatus::NullPointer,
-                "out_report_json is null",
-            ));
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_report_json is null"));
         }
         unsafe { ptr::write(out_report_json, ptr::null_mut()) };
         let absolute_path = unsafe { read_utf8(absolute_path, "absolute_path") }?;
@@ -450,11 +447,11 @@ fn set_last_error(status: CfStatus, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compatforge_inspect::{PeArchitecture, PeInspectionReport, PeSubsystem};
     use compatforge_domain::{
         CapabilityObservation, CapabilityReport, CapabilityValue, GraphicsBackendKind, ProbeSource, ProbeStatus,
         ProviderDescriptor, RuntimeEventKind, RuntimeKind, TranslatorKind,
     };
+    use compatforge_inspect::{PeArchitecture, PeInspectionReport, PeSubsystem};
 
     fn create_context(config: &CoreConfig) -> *mut CfContext {
         let config = CString::new(serde_json::to_string(config).unwrap()).unwrap();
@@ -522,17 +519,12 @@ mod tests {
 
     #[test]
     fn inspects_a_pe_fixture_across_the_c_abi() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/hello-x86_64.exe");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/hello-x86_64.exe");
         let fixture = CString::new(fixture.to_string_lossy().as_bytes()).unwrap();
         let mut output = ptr::null_mut();
         unsafe {
-            assert_eq!(
-                cf_inspect_executable(fixture.as_ptr(), &mut output),
-                CfStatus::Ok
-            );
-            let report: PeInspectionReport =
-                serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+            assert_eq!(cf_inspect_executable(fixture.as_ptr(), &mut output), CfStatus::Ok);
+            let report: PeInspectionReport = serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
             assert_eq!(report.architecture, PeArchitecture::X86_64);
             assert_eq!(report.subsystem, PeSubsystem::WindowsConsole);
             assert_eq!(report.import_libraries, ["kernel32.dll"]);

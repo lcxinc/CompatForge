@@ -20,5 +20,7 @@
       "executable": false
     }
   ],
-  "importLibraries": ["kernel32.dll"]
+  "importLibraries": [
+    "kernel32.dll"
+  ]
 }
