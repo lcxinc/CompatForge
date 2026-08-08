@@ -92,6 +92,11 @@ cf_status_t cf_launch_next_event(
     uint32_t timeout_ms,
     char **out_event_json
 );
+
+cf_status_t cf_inspect_executable(
+    const char *absolute_path,
+    char **out_report_json
+);
 cf_status_t cf_launch_terminate(const cf_launch_t *launch);
 void cf_launch_release(cf_launch_t *launch);
 ```
@@ -104,6 +109,7 @@ C ABI 约束：
 - `cf_compile_launch` 只编译计划，没有下载、文件修改或进程副作用。
 - `cf_probe_capabilities` 只读取 OS API/只读系统文件与 Rust 编译目标事实；不扫描 PATH、不执行发现的 Provider、不把未固定组件标记为 available。
 - `cf_capabilities_get` 自 API `0.6.0` 起可用，ABI major 仍为 1。它从 Context 中已验证的 CapabilityReport 构造公开白名单投影：Schema value 使用 boolean/string/number 闭集，Host/Provider 自由文本被稳定公开值替代，observation 只重建宿主 OS/架构事实，feature/capability 仅保留已声明的公开标识；它不使用字符串正则猜测式脱敏。查询仅在内存中确定性排序，不读取文件、不访问网络、不执行 Provider、不修改 Bottle/Runtime Pack，也不进入 PE 解析路径。失败时输出保持 `NULL`，成功字符串由 `cf_string_free` 释放。
+- `cf_inspect_executable` 自 API `0.9.0` 起可用，ABI major 仍为 1。它只接受绝对普通文件路径，在分配前限制 64 MiB，以 checked arithmetic 验证 PE32/PE32+ header、section 和 import RVA，并返回 `executable-inspection.schema.json`。失败时输出保持 `NULL`；检查成功不代表授权或可执行。
 - `cf_launch_start` 会把输入计划与 Context 的 Runtime digest、入口、受保护环境、沙箱和存储根再次比对；前端不能借序列化计划执行任意宿主命令。
 - `cf_launch_next_event` 返回 `runtime-event.schema.json`；timeout 与 event-stream end 使用独立稳定状态码。
 - 回调默认不在 UI 主线程执行；客户端自行调度。

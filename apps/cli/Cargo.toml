@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 compatforge-capability = { path = "../../crates/compatforge-capability" }
 compatforge-domain = { path = "../../crates/compatforge-domain" }
+compatforge-inspect = { path = "../../crates/compatforge-inspect" }
 compatforge-orchestrator = { path = "../../crates/compatforge-orchestrator" }
 compatforge-process = { path = "../../crates/compatforge-process" }
 compatforge-provider-macos = { path = "../../crates/compatforge-provider-macos" }

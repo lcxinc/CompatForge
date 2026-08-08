@@ -50,6 +50,16 @@ jobs:
           target/forgeos-capabilities-consumer \
             target/debug/libcompatforge_ffi.so \
             examples/context-config.linux-arm64.json
+      - name: Run ForgeOS PE inspection C ABI fixture
+        if: runner.os == 'Linux'
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror \
+            -I crates/compatforge-ffi/include \
+            tests/fixtures/forgeos_inspection_consumer.c \
+            -ldl -o target/forgeos-inspection-consumer
+          target/forgeos-inspection-consumer \
+            target/debug/libcompatforge_ffi.so \
+            "$PWD/tests/fixtures/hello-x86_64.exe"
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Install Runtime Pack fixture v1
@@ -64,6 +74,10 @@ jobs:
         run: cargo run -p compatforge-cli --locked -- plan examples/context-config.linux-arm64.json examples/launch-request.json
       - name: Probe host capabilities
         run: cargo run -p compatforge-cli --locked -- probe
+      - name: Verify and inspect PE fixture
+        run: |
+          python scripts/create_pe_fixture.py --check tests/fixtures/hello-x86_64.exe
+          cargo run -p compatforge-cli --locked -- inspect tests/fixtures/hello-x86_64.exe
       - name: Build macOS x86_64 Provider fixture
         if: runner.os == 'macOS'
         run: |

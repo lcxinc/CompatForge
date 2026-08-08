@@ -4,11 +4,13 @@
 
 use compatforge_capability::{ContextCapabilityQuery, HostProbe};
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
+use compatforge_inspect::inspect_path;
 use compatforge_orchestrator::PolicyEngine;
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
@@ -32,6 +34,7 @@ pub enum CfStatus {
     Timeout = 8,
     EndOfStream = 9,
     ProbeFailed = 10,
+    InspectionFailed = 11,
     Panic = 255,
 }
 
@@ -95,6 +98,44 @@ pub unsafe extern "C" fn cf_probe_capabilities(out_capabilities_json: *mut *mut 
             )
         })?;
         unsafe { write_owned_string(json, out_capabilities_json) }
+    })
+}
+
+/// Inspect a Windows executable without mapping or executing it.
+///
+/// # Safety
+///
+/// `absolute_path` must point to a valid NUL-terminated UTF-8 string.
+/// `out_report_json` must be valid for one pointer write. The output is set to
+/// null before path validation and a non-null result must be released with
+/// [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_inspect_executable(
+    absolute_path: *const c_char,
+    out_report_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_report_json.is_null() {
+            return Err(FfiFailure::new(
+                CfStatus::NullPointer,
+                "out_report_json is null",
+            ));
+        }
+        unsafe { ptr::write(out_report_json, ptr::null_mut()) };
+        let absolute_path = unsafe { read_utf8(absolute_path, "absolute_path") }?;
+        let report = inspect_path(Path::new(&absolute_path)).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::InspectionFailed,
+                format!("executable inspection failed: {error}"),
+            )
+        })?;
+        let json = serde_json::to_string(&report).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::InspectionFailed,
+                format!("inspection serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_report_json) }
     })
 }
 
@@ -409,6 +450,7 @@ fn set_last_error(status: CfStatus, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compatforge_inspect::{PeArchitecture, PeInspectionReport, PeSubsystem};
     use compatforge_domain::{
         CapabilityObservation, CapabilityReport, CapabilityValue, GraphicsBackendKind, ProbeSource, ProbeStatus,
         ProviderDescriptor, RuntimeEventKind, RuntimeKind, TranslatorKind,
@@ -475,6 +517,46 @@ mod tests {
             report.validate().unwrap();
             assert!(!report.observations.is_empty());
             cf_string_free(output);
+        }
+    }
+
+    #[test]
+    fn inspects_a_pe_fixture_across_the_c_abi() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hello-x86_64.exe");
+        let fixture = CString::new(fixture.to_string_lossy().as_bytes()).unwrap();
+        let mut output = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                cf_inspect_executable(fixture.as_ptr(), &mut output),
+                CfStatus::Ok
+            );
+            let report: PeInspectionReport =
+                serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+            assert_eq!(report.architecture, PeArchitecture::X86_64);
+            assert_eq!(report.subsystem, PeSubsystem::WindowsConsole);
+            assert_eq!(report.import_libraries, ["kernel32.dll"]);
+            cf_string_free(output);
+        }
+    }
+
+    #[test]
+    fn inspection_fails_closed_and_clears_output() {
+        let relative = CString::new("hello.exe").unwrap();
+        let mut output = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+        let mut error_output = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                cf_inspect_executable(relative.as_ptr(), &mut output),
+                CfStatus::InspectionFailed
+            );
+            assert!(output.is_null());
+            assert_eq!(cf_last_error_json(&mut error_output), CfStatus::Ok);
+            assert!(CStr::from_ptr(error_output)
+                .to_str()
+                .unwrap()
+                .contains("path must be absolute"));
+            cf_string_free(error_output);
         }
     }
 

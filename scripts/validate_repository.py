@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -94,12 +95,40 @@ def validate_no_developer_paths() -> list[str]:
     return errors
 
 
+def validate_pe_inspection_fixture() -> list[str]:
+    fixture = ROOT / "tests/fixtures/hello-x86_64.exe"
+    example = ROOT / "examples/executable-inspection.hello-x86_64.json"
+    try:
+        fixture_bytes = fixture.read_bytes()
+        report = json.loads(example.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"PE inspection fixture: {error}"]
+
+    digest = "sha256:" + hashlib.sha256(fixture_bytes).hexdigest()
+    errors: list[str] = []
+    if report.get("fileDigest") != digest:
+        errors.append("PE inspection example digest does not match the fixture")
+    if report.get("fileSizeBytes") != len(fixture_bytes):
+        errors.append("PE inspection example size does not match the fixture")
+    if report.get("schemaVersion") != "1":
+        errors.append("PE inspection example must use Schema v1")
+    imports = report.get("importLibraries")
+    if not isinstance(imports, list) or not all(
+        isinstance(item, str) for item in imports
+    ):
+        errors.append("PE inspection imports must be a string array")
+    elif imports != sorted(set(imports)):
+        errors.append("PE inspection imports must be canonical, sorted and unique")
+    return errors
+
+
 def main() -> int:
     errors = (
         validate_json()
         + validate_workspace_members()
         + validate_markdown_links()
         + validate_no_developer_paths()
+        + validate_pe_inspection_fixture()
     )
     if errors:
         print("repository validation failed:", file=sys.stderr)

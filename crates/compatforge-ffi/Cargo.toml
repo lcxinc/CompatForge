@@ -11,6 +11,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 compatforge-capability = { path = "../compatforge-capability" }
 compatforge-domain = { path = "../compatforge-domain" }
+compatforge-inspect = { path = "../compatforge-inspect" }
 compatforge-orchestrator = { path = "../compatforge-orchestrator" }
 compatforge-process = { path = "../compatforge-process" }
 serde_json.workspace = true

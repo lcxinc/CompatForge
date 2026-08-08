@@ -1,1 +1,2 @@
 tests/fixtures/runtime-packs/**/components/*.blob binary
+tests/fixtures/*.exe binary

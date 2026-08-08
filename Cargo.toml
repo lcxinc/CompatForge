@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/cli",
   "crates/compatforge-domain",
+  "crates/compatforge-inspect",
   "crates/compatforge-capability",
   "crates/compatforge-storage",
   "crates/compatforge-runtime",
@@ -13,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 rust-version = "1.78"
 publish = false
