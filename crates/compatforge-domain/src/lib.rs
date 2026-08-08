@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -251,6 +251,13 @@ impl From<u64> for CapabilityValue {
     }
 }
 
+fn deserialize_optional_capability_value<'de, D>(deserializer: D) -> Result<Option<CapabilityValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    CapabilityValue::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityObservation {
@@ -258,7 +265,11 @@ pub struct CapabilityObservation {
     pub category: String,
     pub status: ProbeStatus,
     pub source: ProbeSource,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_capability_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub value: Option<CapabilityValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -986,10 +997,6 @@ mod tests {
 
         let mut null_observation = serde_json::to_value(&report).unwrap();
         null_observation["observations"][0]["value"] = serde_json::Value::Null;
-        let null_observation: CapabilityReport = serde_json::from_value(null_observation).unwrap();
-        assert_eq!(
-            null_observation.validate(),
-            Err(ContractError::MissingField("observations.value"))
-        );
+        assert!(serde_json::from_value::<CapabilityReport>(null_observation).is_err());
     }
 }
