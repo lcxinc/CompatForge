@@ -6,7 +6,7 @@
 
 目标周期：2–4 周。当前仓库已交付设计骨架，仍需完成与 Mac-Win 的首轮集成验证。
 
-### 当前实现检查点（0.5.0）
+### 当前实现检查点（0.6.0）
 
 - 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
 - 已完成：LaunchPlan 对 Context 再授权、Unix process group、Windows Job Object、有序事件、最大运行时限、软终止/强制升级、Wine prefix 排他租约与 `wineserver` 清理；

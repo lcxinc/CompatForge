@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define REQUIRED_API_VERSION "0.6.0"
+
 typedef const char *(*api_version_fn)(void);
 typedef uint32_t (*abi_version_fn)(void);
 typedef cf_status_t (*context_create_fn)(const char *, cf_context_t **);
@@ -78,26 +80,31 @@ int main(int argc, char **argv) {
         return 3;
     }
     if (!load_function(library, "cf_api_version", &api_version, sizeof(api_version)) ||
-        !load_function(library, "cf_abi_version", &abi_version, sizeof(abi_version)) ||
-        !load_function(library, "cf_context_create", &context_create, sizeof(context_create)) ||
+        !load_function(library, "cf_abi_version", &abi_version, sizeof(abi_version))) {
+        dlclose(library);
+        return 4;
+    }
+    if (api_version() == NULL || strcmp(api_version(), REQUIRED_API_VERSION) != 0 || abi_version() != 1U) {
+        fprintf(stderr, "unsupported CompatForge API/ABI (need API %s, ABI 1)\n", REQUIRED_API_VERSION);
+        dlclose(library);
+        return 5;
+    }
+
+    /* API 0.6.0 is the first version required to export cf_capabilities_get. */
+    if (!load_function(library, "cf_context_create", &context_create, sizeof(context_create)) ||
         !load_function(library, "cf_capabilities_get", &capabilities_get, sizeof(capabilities_get)) ||
         !load_function(library, "cf_last_error_json", &last_error_json, sizeof(last_error_json)) ||
         !load_function(library, "cf_string_free", &string_free, sizeof(string_free)) ||
         !load_function(library, "cf_context_release", &context_release, sizeof(context_release))) {
         dlclose(library);
-        return 4;
-    }
-    if (api_version() == NULL || abi_version() != 1U) {
-        fprintf(stderr, "unsupported CompatForge API/ABI\n");
-        dlclose(library);
-        return 5;
+        return 6;
     }
 
     config_json = read_file(argv[2]);
     if (config_json == NULL) {
         fprintf(stderr, "failed to read context fixture\n");
         dlclose(library);
-        return 6;
+        return 7;
     }
     status = context_create(config_json, &context);
     free(config_json);
@@ -106,7 +113,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "context creation failed: %s\n", error_json == NULL ? "unknown" : error_json);
         string_free(error_json);
         dlclose(library);
-        return 7;
+        return 8;
     }
 
     status = capabilities_get(context, &report_json);
@@ -119,7 +126,7 @@ int main(int argc, char **argv) {
         string_free(report_json);
         context_release(context);
         dlclose(library);
-        return 8;
+        return 9;
     }
 
     puts("FORGEOS_COMPAT_CAPABILITIES_OK");

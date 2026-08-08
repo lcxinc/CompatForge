@@ -205,6 +205,52 @@ pub enum ProbeSource {
     Configuration,
 }
 
+/// A Schema v1 capability value.
+///
+/// Keeping this as a closed scalar type prevents domain objects from carrying
+/// arrays, objects, or JSON null into public capability reports.
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum CapabilityValue {
+    Boolean(bool),
+    String(String),
+    Number(serde_json::Number),
+}
+
+impl CapabilityValue {
+    #[must_use]
+    pub const fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Boolean(value) => Some(*value),
+            Self::String(_) | Self::Number(_) => None,
+        }
+    }
+}
+
+impl From<bool> for CapabilityValue {
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
+}
+
+impl From<String> for CapabilityValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for CapabilityValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}
+
+impl From<u64> for CapabilityValue {
+    fn from(value: u64) -> Self {
+        Self::Number(value.into())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityObservation {
@@ -213,7 +259,7 @@ pub struct CapabilityObservation {
     pub status: ProbeStatus,
     pub source: ProbeSource,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<serde_json::Value>,
+    pub value: Option<CapabilityValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -245,7 +291,7 @@ pub struct CapabilityReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observations: Vec<CapabilityObservation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub features: BTreeMap<String, serde_json::Value>,
+    pub features: BTreeMap<String, CapabilityValue>,
 }
 
 impl CapabilityReport {
@@ -916,6 +962,34 @@ mod tests {
         assert_eq!(
             observation.validate(),
             Err(ContractError::MissingField("observations.reason"))
+        );
+    }
+
+    #[test]
+    fn rejects_non_scalar_capability_values() {
+        let report: CapabilityReport =
+            serde_json::from_str(include_str!("../../../examples/capability-report.linux-arm64.json")).unwrap();
+
+        for invalid in [serde_json::json!({"nested": true}), serde_json::json!([true])] {
+            let mut value = serde_json::to_value(&report).unwrap();
+            value["features"]["vulkan"] = invalid.clone();
+            assert!(serde_json::from_value::<CapabilityReport>(value).is_err());
+
+            let mut value = serde_json::to_value(&report).unwrap();
+            value["observations"][0]["value"] = invalid;
+            assert!(serde_json::from_value::<CapabilityReport>(value).is_err());
+        }
+
+        let mut null_feature = serde_json::to_value(&report).unwrap();
+        null_feature["features"]["vulkan"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<CapabilityReport>(null_feature).is_err());
+
+        let mut null_observation = serde_json::to_value(&report).unwrap();
+        null_observation["observations"][0]["value"] = serde_json::Value::Null;
+        let null_observation: CapabilityReport = serde_json::from_value(null_observation).unwrap();
+        assert_eq!(
+            null_observation.validate(),
+            Err(ContractError::MissingField("observations.value"))
         );
     }
 }
