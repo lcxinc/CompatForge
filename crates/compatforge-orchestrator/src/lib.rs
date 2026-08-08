@@ -385,10 +385,9 @@ fn normalize_host_path(value: &str) -> Option<(String, Vec<String>)> {
     {
         let drive = path[..1].to_ascii_lowercase();
         (format!("drive:{drive}"), path[3..].to_owned(), true)
-    } else if let Some(remainder) = path.strip_prefix('/') {
-        ("posix".to_owned(), remainder.to_owned(), false)
     } else {
-        return None;
+        let remainder = path.strip_prefix('/')?;
+        ("posix".to_owned(), remainder.to_owned(), false)
     };
 
     let mut normalized = Vec::new();
