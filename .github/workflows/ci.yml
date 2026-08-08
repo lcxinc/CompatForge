@@ -52,6 +52,12 @@ jobs:
             examples/context-config.linux-arm64.json
       - name: Run tests
         run: cargo test --workspace --locked
+      - name: Exercise Runtime Pack install and rollback
+        run: |
+          cargo run -p compatforge-cli --locked -- runtime install target/runtime-store tests/fixtures/runtime-packs/basic-v1 manifest.json
+          cargo run -p compatforge-cli --locked -- runtime install target/runtime-store tests/fixtures/runtime-packs/basic-v2 manifest.json
+          cargo run -p compatforge-cli --locked -- runtime verify target/runtime-store sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af
+          cargo run -p compatforge-cli --locked -- runtime rollback target/runtime-store fixture-runtime
       - name: Compile example launch plan
         run: cargo run -p compatforge-cli --locked -- plan examples/context-config.linux-arm64.json examples/launch-request.json
       - name: Probe host capabilities

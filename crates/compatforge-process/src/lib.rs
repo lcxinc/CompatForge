@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const WINE_SERVER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const EXECUTABLE_BUSY_RETRY_LIMIT: usize = 20;
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub enum ProcessError {
@@ -526,7 +528,8 @@ impl WineSession {
     }
 
     fn run_command(&self, argument: &str) -> io::Result<()> {
-        let mut child = Command::new(&self.lifecycle.executable)
+        let mut command = Command::new(&self.lifecycle.executable);
+        command
             .arg(argument)
             .current_dir(&self.working_directory)
             .env_clear()
@@ -534,8 +537,18 @@ impl WineSession {
             .env("WINEPREFIX", &self.lifecycle.prefix)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+        let mut attempts = 0;
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error) if is_executable_file_busy(&error) && attempts < EXECUTABLE_BUSY_RETRY_LIMIT => {
+                    attempts += 1;
+                    thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let deadline = Instant::now() + WINE_SERVER_COMMAND_TIMEOUT;
         loop {
             if let Some(status) = child.try_wait()? {
@@ -562,6 +575,19 @@ impl WineSession {
             let _ = lock_recover(wine_prefix_leases()).remove(&self.lifecycle.prefix);
         }
     }
+}
+
+#[cfg(unix)]
+fn is_executable_file_busy(error: &io::Error) -> bool {
+    // ETXTBSY is 26 on the Unix targets supported by this workspace. Using
+    // raw_os_error keeps the Rust 1.78 MSRV; ErrorKind::ExecutableFileBusy was
+    // not stabilized until Rust 1.83.
+    error.raw_os_error() == Some(26)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file_busy(_error: &io::Error) -> bool {
+    false
 }
 
 impl Drop for WineSession {

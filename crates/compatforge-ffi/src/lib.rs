@@ -463,7 +463,7 @@ mod tests {
     fn reports_stable_versions() {
         assert_eq!(cf_abi_version(), 1);
         let api_version = unsafe { CStr::from_ptr(cf_api_version()) }.to_str().unwrap();
-        assert_eq!(api_version, "0.6.0");
+        assert_eq!(api_version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "id": "fixture-runtime",
+  "version": "2.0.0",
+  "channel": "preview",
+  "host": {
+    "os": "linux",
+    "architecture": "x86_64"
+  },
+  "components": [
+    {
+      "name": "runtime",
+      "version": "2.0.0",
+      "license": "MIT",
+      "artifact": "components/runtime.blob",
+      "digest": "sha256:868412b0473399255bf054c76ad394be95024083cdc5b7bccdb86757d5f86486",
+      "entrypoints": {
+        "runtime": "bin/runtime"
+      }
+    }
+  ],
+  "capabilities": [
+    "guest-x86_64"
+  ],
+  "digest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af"
+}

@@ -14,6 +14,7 @@
       "version": "11.x",
       "license": "LGPL-2.1-or-later",
       "source": "https://gitlab.winehq.org/wine/wine",
+      "artifact": "components/wine.tar.zst",
       "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "entrypoints": {
         "wine": "bin/wine",
@@ -25,6 +26,7 @@
       "version": "pack-pinned",
       "license": "MIT",
       "source": "https://github.com/FEX-Emu/FEX",
+      "artifact": "components/fex.tar.zst",
       "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "entrypoints": {
         "interpreter": "bin/FEXInterpreter"
@@ -35,6 +37,7 @@
       "version": "pack-pinned",
       "license": "Zlib",
       "source": "https://github.com/doitsujin/dxvk",
+      "artifact": "components/dxvk.tar.zst",
       "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
       "entrypoints": {}
     }
@@ -45,6 +48,6 @@
     "new-wow64",
     "d3d8-11-vulkan"
   ],
-  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "digest": "sha256:e57e364988c59de47556465e48a90e3729d99c4ab27f531715c2b23ab45a5bd8",
   "sbom": "sbom/wine-linux-arm64-fex.cdx.json"
 }

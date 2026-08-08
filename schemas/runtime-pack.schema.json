@@ -15,7 +15,7 @@
       "additionalProperties": false,
       "required": ["os", "architecture"],
       "properties": {
-        "os": { "enum": ["macos", "linux", "android"] },
+        "os": { "enum": ["macos", "linux", "android", "windows"] },
         "architecture": { "enum": ["x86_64", "arm64"] },
         "minimumVersion": { "type": "string" }
       }
@@ -32,10 +32,14 @@
           "version": { "type": "string", "minLength": 1 },
           "license": { "type": "string", "minLength": 1 },
           "source": { "type": "string", "format": "uri" },
+          "artifact": {
+            "$ref": "#/$defs/relativePath",
+            "description": "Opaque bundle artifact; defaults to components/<name>.blob when omitted"
+          },
           "digest": { "$ref": "#/$defs/digest" },
           "entrypoints": {
             "type": "object",
-            "additionalProperties": { "type": "string" }
+            "additionalProperties": { "$ref": "#/$defs/relativePath" }
           }
         }
       }
@@ -60,6 +64,11 @@
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
-    "digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[\\\\:])[^/]+(?:/[^/]+)*$"
+    }
   }
 }
