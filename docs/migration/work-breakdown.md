@@ -6,15 +6,16 @@
 
 目标周期：2–4 周。当前仓库已交付设计骨架，仍需完成与 Mac-Win 的首轮集成验证。
 
-### 当前实现检查点（0.7.0）
+### 当前实现检查点（0.8.0）
 
 - 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
 - 已完成：LaunchPlan 对 Context 再授权、Unix process group、Windows Job Object、有序事件、最大运行时限、软终止/强制升级、Wine prefix 排他租约与 `wineserver` 清理；
 - 已完成：macOS/Linux/Windows OS、版本、架构、kernel/device 基线与 native translator 的只读 probe；CLI/C ABI 输出来源化 observations；
 - 已完成：Runtime Pack Schema/DTO 校验、规范化 manifest digest、组件 artifact SHA-256、不可变内容存储、原子 active ref、校验与有界回滚；
+- 已完成：macOS 固定 Runtime Pack 的 Wine/Native/Rosetta/WineD3D Provider 纵向切片、可选同 Pack D3DMetal 探测，以及 `probe → context → plan → launch/event/terminate` CI；
 - 已冻结：Mac-Win Bridge 检查点 `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`，不再继续 SwiftUI 接入；
 - 已确定：桌面 UI 为 Qt 6/QML，UI 只消费 Core API；
-- 仍未实现：可信公钥/撤销 provider、Runtime artifact 解包与 Provider 物化、GPU/driver 与 Runtime Pack 专项 probe、OS sandbox/资源配额、完整 Wine Provider、Bottle 迁移写入。
+- 仍未实现：可信公钥/撤销 provider、Runtime artifact 通用解包/GC、真实 GPU/driver 能力认证、D3DMetal 分发授权、OS sandbox/资源配额、Bottle 迁移写入。
 
 ### 工作包
 

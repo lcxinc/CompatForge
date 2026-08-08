@@ -64,5 +64,43 @@ jobs:
         run: cargo run -p compatforge-cli --locked -- plan examples/context-config.linux-arm64.json examples/launch-request.json
       - name: Probe host capabilities
         run: cargo run -p compatforge-cli --locked -- probe
+      - name: Build macOS x86_64 Provider fixture
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p target/macos-provider-fixture/materialized/bin
+          clang -arch x86_64 -std=c11 -Wall -Wextra -Werror \
+            tests/fixtures/macos_provider_stub.c \
+            -o target/macos-provider-fixture/materialized/bin/wine
+          cp target/macos-provider-fixture/materialized/bin/wine \
+            target/macos-provider-fixture/materialized/bin/wineserver
+          python3 scripts/create_macos_provider_fixture.py target/macos-provider-fixture
+      - name: Install macOS Provider Runtime Pack fixture
+        if: runner.os == 'macOS'
+        run: cargo run -p compatforge-cli --locked -- runtime install target/macos-provider-fixture/store target/macos-provider-fixture/bundle manifest.json
+      - name: Probe and compile macOS Provider context
+        if: runner.os == 'macOS'
+        run: |
+          cargo run -p compatforge-cli --locked -- provider macos probe \
+            target/macos-provider-fixture/provider.json \
+            > target/macos-provider-fixture/probe.json
+          cargo run -p compatforge-cli --locked -- provider macos context \
+            target/macos-provider-fixture/provider.json \
+            "$PWD/target/macos-provider-fixture/bottles" \
+            > target/macos-provider-fixture/context.json
+          cargo run -p compatforge-cli --locked -- plan \
+            target/macos-provider-fixture/context.json \
+            tests/fixtures/macos_launch_request.json \
+            > target/macos-provider-fixture/plan.json
+      - name: Launch and terminate through macOS Provider
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p target/macos-provider-fixture/bottles/bottles/macos-provider-smoke
+          cargo run -p compatforge-cli --locked -- launch-terminate \
+            target/macos-provider-fixture/context.json \
+            tests/fixtures/macos_launch_request.json 1000 \
+            | tee target/macos-provider-fixture/events.jsonl
+          grep -q 'COMPATFORGE_MACOS_PROVIDER_LAUNCH_OK' target/macos-provider-fixture/events.jsonl
+          grep -q 'terminate-requested' target/macos-provider-fixture/events.jsonl
+          grep -q '"kind":"exited"' target/macos-provider-fixture/events.jsonl
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

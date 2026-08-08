@@ -22,6 +22,7 @@ Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未�
 |---|---|---|
 | `compatforge-api` | 公共 DTO、版本协商、错误码 | `Models.swift` |
 | `compatforge-capability` | CPU/GPU/OS/Provider 探测 | `HostEnvironmentService`、Diagnostics |
+| `compatforge-provider-macos` | 固定 Runtime Pack 的 Wine/Native/Rosetta/WineD3D/D3DMetal 专项 probe 与 Context 绑定 | Mac-Win `WineRunner`、`RosettaService`、图形预设 |
 | `compatforge-orchestrator` | 硬约束、评分、回退、LaunchPlan | `WineRunner` 的选择逻辑 |
 | `compatforge-runtime-wine` | Wine probe/prepare/compile/launch | `WineRunner.swift` |
 | `compatforge-runtime-vm` | Windows VM Provider | 新建 |

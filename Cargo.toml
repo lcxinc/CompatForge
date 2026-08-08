@@ -8,11 +8,12 @@ members = [
   "crates/compatforge-runtime",
   "crates/compatforge-orchestrator",
   "crates/compatforge-process",
+  "crates/compatforge-provider-macos",
   "crates/compatforge-ffi",
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.78"
 publish = false

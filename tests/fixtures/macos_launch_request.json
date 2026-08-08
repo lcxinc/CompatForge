@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1",
+  "requestId": "macos-provider-smoke",
+  "bottleId": "macos-provider-smoke",
+  "executable": {
+    "path": "C:\\compatforge-smoke.exe",
+    "architecture": "x86_64"
+  },
+  "arguments": ["--compatforge-smoke"],
+  "environment": {},
+  "constraints": {
+    "allowVirtualMachine": false,
+    "allowRemote": false,
+    "requiresKernelDriver": false,
+    "requiresDirectX12": false,
+    "networkPolicy": "deny",
+    "requiredCapabilities": []
+  }
+}
