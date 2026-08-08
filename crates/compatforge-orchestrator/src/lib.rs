@@ -10,7 +10,6 @@ use compatforge_domain::{
 use compatforge_storage::AppPaths;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
@@ -352,26 +351,61 @@ fn available_provider<'a>(providers: &'a [ProviderDescriptor], kind: &str) -> Op
 }
 
 fn is_absolute_host_path(value: &str) -> bool {
-    Path::new(value).is_absolute()
-        || (value
-            .as_bytes()
-            .first()
-            .is_some_and(|character| character.is_ascii_alphabetic())
-            && value.as_bytes().get(1) == Some(&b':')
-            && value
-                .as_bytes()
-                .get(2)
-                .is_some_and(|separator| matches!(*separator, b'\\' | b'/')))
-        || value.starts_with("\\\\")
+    normalize_host_path(value).is_some()
 }
 
 fn host_path_is_within(root: &str, candidate: &str) -> bool {
-    if root.as_bytes().get(1) == Some(&b':') || candidate.as_bytes().get(1) == Some(&b':') {
-        let root = root.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
-        let candidate = candidate.replace('\\', "/").to_ascii_lowercase();
-        return candidate == root || candidate.starts_with(&(root + "/"));
+    let Some((root_namespace, root_components)) = normalize_host_path(root) else {
+        return false;
+    };
+    let Some((candidate_namespace, candidate_components)) = normalize_host_path(candidate) else {
+        return false;
+    };
+    root_namespace == candidate_namespace && candidate_components.starts_with(&root_components)
+}
+
+/// Normalize a serialized host path without depending on the OS compiling the
+/// planner. Windows namespaces are case-insensitive; POSIX components retain
+/// case. Parent traversal is rejected instead of being lexically contained.
+fn normalize_host_path(value: &str) -> Option<(String, Vec<String>)> {
+    let path = value.replace('\\', "/");
+    let (namespace, remainder, case_insensitive) = if let Some(unc) = path.strip_prefix("//") {
+        let mut components = unc.split('/').filter(|component| !component.is_empty());
+        let server = components.next()?;
+        let share = components.next()?;
+        let namespace = format!("unc:{server}/{share}").to_ascii_lowercase();
+        let remainder = components.collect::<Vec<_>>().join("/");
+        (namespace, remainder, true)
+    } else if path
+        .as_bytes()
+        .first()
+        .is_some_and(|character| character.is_ascii_alphabetic())
+        && path.as_bytes().get(1) == Some(&b':')
+        && path.as_bytes().get(2) == Some(&b'/')
+    {
+        let drive = path[..1].to_ascii_lowercase();
+        (format!("drive:{drive}"), path[3..].to_owned(), true)
+    } else if let Some(remainder) = path.strip_prefix('/') {
+        ("posix".to_owned(), remainder.to_owned(), false)
+    } else {
+        return None;
+    };
+
+    let mut normalized = Vec::new();
+    for component in remainder.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => {
+                normalized.push(if case_insensitive {
+                    component.to_ascii_lowercase()
+                } else {
+                    component.to_owned()
+                });
+            }
+        }
     }
-    Path::new(candidate).starts_with(Path::new(root))
+    Some((namespace, normalized))
 }
 
 #[cfg(test)]
@@ -525,5 +559,34 @@ mod tests {
         let plan = PolicyEngine::compile(&config, &request).unwrap();
         assert_eq!(plan.process.environment["COMPATFORGE_RUNTIME_PACK"], "trusted");
         PolicyEngine::authorize(&config, &plan).unwrap();
+    }
+
+    #[test]
+    fn recognizes_serialized_absolute_paths_independent_of_build_host() {
+        assert!(is_absolute_host_path("/var/lib/compatforge"));
+        assert!(is_absolute_host_path("C:\\Program Files\\CompatForge"));
+        assert!(is_absolute_host_path("\\\\server\\share\\CompatForge"));
+        assert!(!is_absolute_host_path("relative/path"));
+        assert!(!is_absolute_host_path("C:relative"));
+    }
+
+    #[test]
+    fn host_path_containment_is_cross_platform_and_rejects_traversal() {
+        assert!(host_path_is_within(
+            "/var/lib/compatforge",
+            "/var/lib/compatforge/bottles/example"
+        ));
+        assert!(host_path_is_within(
+            "C:\\Program Files\\CompatForge",
+            "c:/program files/compatforge/bottles/example"
+        ));
+        assert!(!host_path_is_within(
+            "/var/lib/compatforge",
+            "/var/lib/compatforge/../outside"
+        ));
+        assert!(!host_path_is_within(
+            "C:\\Program Files\\CompatForge",
+            "D:\\Program Files\\CompatForge"
+        ));
     }
 }
