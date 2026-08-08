@@ -202,30 +202,11 @@ fn temporary_path(target: &Path) -> Result<PathBuf, StoreError> {
     Ok(target.with_file_name(format!(".{file_name}.tmp-{}-{counter}", std::process::id())))
 }
 
-#[cfg(not(windows))]
 fn replace_file(temporary: &Path, target: &Path) -> Result<(), StoreError> {
+    // Rust 1.78 implements this with rename(2) on Unix and
+    // MoveFileExW(MOVEFILE_REPLACE_EXISTING) on Windows. Both replace the
+    // destination without first removing the visible target path.
     fs::rename(temporary, target).map_err(StoreError::Io)
-}
-
-#[cfg(windows)]
-fn replace_file(temporary: &Path, target: &Path) -> Result<(), StoreError> {
-    if !target.exists() {
-        return fs::rename(temporary, target).map_err(StoreError::Io);
-    }
-
-    let backup = target.with_extension("compatforge-backup");
-    let _ = fs::remove_file(&backup);
-    fs::rename(target, &backup).map_err(StoreError::Io)?;
-    match fs::rename(temporary, target) {
-        Ok(()) => {
-            let _ = fs::remove_file(backup);
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::rename(backup, target);
-            Err(StoreError::Io(error))
-        }
-    }
 }
 
 #[cfg(unix)]

@@ -775,6 +775,97 @@ pub struct RuntimePackManifest {
     pub sbom: Option<String>,
 }
 
+impl RuntimePackManifest {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        validate_id("runtimePack.id", &self.id)?;
+        if self.version.is_empty() {
+            return Err(ContractError::MissingField("runtimePack.version"));
+        }
+        if !matches!(self.host.architecture, CpuArchitecture::X86_64 | CpuArchitecture::Arm64) {
+            return Err(ContractError::UnsupportedValue("runtimePack.host.architecture"));
+        }
+        if self.host.minimum_version.as_deref().is_some_and(str::is_empty) {
+            return Err(ContractError::MissingField("runtimePack.host.minimumVersion"));
+        }
+        if self.components.is_empty() {
+            return Err(ContractError::MissingField("runtimePack.components"));
+        }
+
+        let mut component_names = BTreeSet::new();
+        for component in &self.components {
+            component.validate()?;
+            if !component_names.insert(component.name.as_str()) {
+                return Err(ContractError::DuplicateValue("runtimePack.components.name"));
+            }
+        }
+
+        let mut capabilities = BTreeSet::new();
+        for capability in &self.capabilities {
+            if capability.is_empty() {
+                return Err(ContractError::MissingField("runtimePack.capabilities"));
+            }
+            if !capabilities.insert(capability.as_str()) {
+                return Err(ContractError::DuplicateValue("runtimePack.capabilities"));
+            }
+        }
+
+        validate_digest("runtimePack.digest", &self.digest)?;
+        if let Some(signature) = &self.signature {
+            validate_id("runtimePack.signature.keyId", &signature.key_id)?;
+            if signature.value.is_empty() {
+                return Err(ContractError::MissingField("runtimePack.signature.value"));
+            }
+        }
+        if self.sbom.as_deref().is_some_and(str::is_empty) {
+            return Err(ContractError::MissingField("runtimePack.sbom"));
+        }
+        Ok(())
+    }
+
+    /// Canonical compact JSON signed and hashed for the pack digest.
+    ///
+    /// The self-referential `digest` and the replaceable `signature` envelope
+    /// are deliberately excluded. Components and capabilities are sorted so
+    /// semantically identical manifests have identical bytes.
+    pub fn canonical_unsigned_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let mut components = self.components.clone();
+        for component in &mut components {
+            if component.artifact.is_none() {
+                component.artifact = Some(component.default_artifact_path());
+            }
+        }
+        components.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut capabilities = self.capabilities.clone();
+        capabilities.sort();
+        serde_json::to_vec(&UnsignedRuntimePackManifest {
+            schema_version: &self.schema_version,
+            id: &self.id,
+            version: &self.version,
+            channel: self.channel,
+            host: &self.host,
+            components: &components,
+            capabilities: &capabilities,
+            sbom: self.sbom.as_deref(),
+        })
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnsignedRuntimePackManifest<'a> {
+    schema_version: &'a str,
+    id: &'a str,
+    version: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel: Option<RuntimeChannel>,
+    host: &'a RuntimeHost,
+    components: &'a [RuntimeComponent],
+    capabilities: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sbom: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeChannel {
@@ -801,9 +892,41 @@ pub struct RuntimeComponent {
     pub license: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Portable path to the opaque component artifact inside a bundle.
+    /// Missing values use `components/<name>.blob` for Schema v1 compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
     pub digest: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub entrypoints: BTreeMap<String, String>,
+}
+
+impl RuntimeComponent {
+    #[must_use]
+    pub fn artifact_path(&self) -> String {
+        self.artifact.clone().unwrap_or_else(|| self.default_artifact_path())
+    }
+
+    fn default_artifact_path(&self) -> String {
+        format!("components/{}.blob", self.name)
+    }
+
+    fn validate(&self) -> Result<(), ContractError> {
+        validate_id("runtimePack.components.name", &self.name)?;
+        if self.version.is_empty() {
+            return Err(ContractError::MissingField("runtimePack.components.version"));
+        }
+        if self.license.is_empty() {
+            return Err(ContractError::MissingField("runtimePack.components.license"));
+        }
+        validate_portable_relative_path("runtimePack.components.artifact", &self.artifact_path())?;
+        validate_digest("runtimePack.components.digest", &self.digest)?;
+        for (name, path) in &self.entrypoints {
+            validate_id("runtimePack.components.entrypoints.name", name)?;
+            validate_portable_relative_path("runtimePack.components.entrypoints.path", path)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -885,6 +1008,22 @@ pub fn validate_digest(field: &'static str, value: &str) -> Result<(), ContractE
         .and_then(|digest| validate_sha256(field, digest))
 }
 
+pub fn validate_portable_relative_path(field: &'static str, value: &str) -> Result<(), ContractError> {
+    let valid = !value.is_empty()
+        && !value.starts_with('/')
+        && !value.starts_with('\\')
+        && !value.contains('\\')
+        && !value.contains(':')
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..");
+    if valid {
+        Ok(())
+    } else {
+        Err(ContractError::UnsupportedValue(field))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,6 +1054,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(runtime.host.os, HostOs::Linux);
+        runtime.validate().unwrap();
 
         let bottle: BottleManifest =
             serde_json::from_str(include_str!("../../../examples/bottles/7zip-default.json")).unwrap();
@@ -939,6 +1079,9 @@ mod tests {
         assert!(validate_id("id", "../escape").is_err());
         assert!(validate_digest("digest", &format!("sha256:{}", "a".repeat(64))).is_ok());
         assert!(validate_digest("digest", "latest").is_err());
+        assert!(validate_portable_relative_path("path", "components/wine.tar.zst").is_ok());
+        assert!(validate_portable_relative_path("path", "../wine.tar.zst").is_err());
+        assert!(validate_portable_relative_path("path", "C:\\wine.tar.zst").is_err());
     }
 
     #[test]

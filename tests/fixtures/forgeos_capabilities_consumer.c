@@ -16,6 +16,25 @@ typedef cf_status_t (*last_error_json_fn)(char **);
 typedef void (*string_free_fn)(char *);
 typedef void (*context_release_fn)(cf_context_t *);
 
+static int api_version_at_least(const char *version, unsigned required_major, unsigned required_minor,
+                                unsigned required_patch) {
+    unsigned major;
+    unsigned minor;
+    unsigned patch;
+    char trailing;
+
+    if (version == NULL || sscanf(version, "%u.%u.%u%c", &major, &minor, &patch, &trailing) != 3) {
+        return 0;
+    }
+    if (major != required_major) {
+        return major > required_major;
+    }
+    if (minor != required_minor) {
+        return minor > required_minor;
+    }
+    return patch >= required_patch;
+}
+
 static int load_function(void *library, const char *name, void *target, size_t target_size) {
     const char *error;
     void *resolved;
@@ -84,7 +103,7 @@ int main(int argc, char **argv) {
         dlclose(library);
         return 4;
     }
-    if (api_version() == NULL || strcmp(api_version(), REQUIRED_API_VERSION) != 0 || abi_version() != 1U) {
+    if (!api_version_at_least(api_version(), 0U, 6U, 0U) || abi_version() != 1U) {
         fprintf(stderr, "unsupported CompatForge API/ABI (need API %s, ABI 1)\n", REQUIRED_API_VERSION);
         dlclose(library);
         return 5;

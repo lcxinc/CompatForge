@@ -17,6 +17,10 @@ CompatForge 运行来源和质量不一的 Windows 二进制，并组合多个 J
 ## 默认策略
 
 - 未签名 Runtime Pack 不进入 stable/candidate channel。
+- Runtime Pack 的 pack digest 只覆盖规范化 unsigned manifest；`digest` 自身与可轮换 signature envelope 不进入哈希。组件 artifact 必须在 active ref 切换前逐个通过 SHA-256。
+- stable/candidate 没有签名时拒绝安装；存在签名但没有配置可信验证器时同样拒绝。preview/development 可使用未签名本地 bundle，但不会因此获得 stable 信任等级。
+- Runtime Pack 安装只读取 bundle 内受限相对路径，拒绝绝对路径、反斜杠、盘符、`.`/`..` 与逃逸 symlink；当前不下载、不解包也不执行 artifact。
+- 内容对象与 manifest 在 active ref 之前发布；失败不会暴露半安装 Pack。回滚重新校验目标 manifest 与所有对象，且不删除现有内容。
 - 下载资产必须固定 digest；浮动 `latest` 只能用于开发 channel。
 - Bottle 默认只能访问自身 prefix、临时目录和用户显式选择目录。
 - 网络权限由 Recipe 与用户/管理员策略取交集，而不是 Recipe 单方面扩大。

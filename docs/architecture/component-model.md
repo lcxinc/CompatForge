@@ -7,10 +7,11 @@
 | Domain | `crates/compatforge-domain` | 与 Schema 对齐的能力、请求、计划、Bottle、Runtime Pack DTO 与校验 | 生成 Swift/Kotlin 绑定，拆分公共 API 与内部模型 |
 | Capability | `crates/compatforge-capability` | 三平台 OS/架构/版本/设备基线、native translator 与来源化 observations | Runtime Pack、GPU/driver 与 translator 专项 probe |
 | Storage | `crates/compatforge-storage` | macOS/XDG/Windows/Android 路径解析、受限相对路径、可恢复 JSON 写入 | manifest locking、snapshot 与迁移事务 |
+| Runtime Pack | `crates/compatforge-runtime` | 规范化 manifest digest、artifact SHA-256、内容寻址发布、原子 active ref、校验与回滚 | 可信密钥 provider、归档物化、垃圾回收与跨进程 writer |
 | Orchestrator | `crates/compatforge-orchestrator` | 无副作用的硬约束、Provider 回退、固定 Runtime Pack 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |
 | Process | `crates/compatforge-process` | Unix process group、Windows Job Object、有序事件、超时/分级终止、prefix 排他租约与 wineserver 清理 | OS sandbox、资源限制、daemon 级持久租约 |
 | C ABI | `crates/compatforge-ffi` | capabilities/plan/start/events/terminate、opaque handle、稳定 status 与所有权释放 | IPC daemon 与 Qt C++ wrapper |
-| CLI | `apps/cli` | probe、plan 与受控 launch | validate、doctor、lab 子命令 |
+| CLI | `apps/cli` | probe、plan、受控 launch 与 Runtime Pack install/verify/rollback | doctor、lab 子命令 |
 | Contracts | `schemas/` | 版本化交换格式 | 生成绑定、兼容性测试、签名 canonicalization |
 
 Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未知字段，避免安全相关配置被静默忽略。异步运行时、数据库和遥测仍留到相应 Provider/进程监督需求出现后单独决策。

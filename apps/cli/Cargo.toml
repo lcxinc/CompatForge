@@ -10,6 +10,7 @@ compatforge-capability = { path = "../../crates/compatforge-capability" }
 compatforge-domain = { path = "../../crates/compatforge-domain" }
 compatforge-orchestrator = { path = "../../crates/compatforge-orchestrator" }
 compatforge-process = { path = "../../crates/compatforge-process" }
+compatforge-runtime = { path = "../../crates/compatforge-runtime" }
 serde.workspace = true
 serde_json.workspace = true
 
