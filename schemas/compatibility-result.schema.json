@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/compatibility-result.schema.json",
+  "title": "CompatForge Compatibility Test Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "recipeId", "host", "runtimePackDigest", "outcome", "startedAt", "finishedAt", "checks"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "runId": { "type": "string", "format": "uuid" },
+    "recipeId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "host": {
+      "type": "object",
+      "required": ["os", "architecture"],
+      "properties": {
+        "os": { "enum": ["macos", "linux", "android"] },
+        "architecture": { "enum": ["x86_64", "arm64"] },
+        "gpu": { "type": "string" },
+        "driver": { "type": "string" }
+      }
+    },
+    "runtimePackDigest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+    "outcome": { "enum": ["passed", "failed", "blocked", "skipped"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "outcome"],
+        "properties": {
+          "id": { "type": "string" },
+          "outcome": { "enum": ["passed", "failed", "blocked", "skipped"] },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "artifacts": { "type": "array", "items": { "type": "string" } },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "redactionReport": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    }
+  }
+}

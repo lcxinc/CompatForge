@@ -1,0 +1,12 @@
+[package]
+name = "compatforge-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+compatforge-domain = { path = "../compatforge-domain" }
+
+[lints]
+workspace = true

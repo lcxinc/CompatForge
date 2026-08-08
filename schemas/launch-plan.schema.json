@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/launch-plan.schema.json",
+  "title": "CompatForge Compiled Launch Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requestId", "runtime", "translator", "graphics", "process", "sandbox"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "requestId": { "type": "string", "format": "uuid" },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "packId", "packDigest"],
+      "properties": {
+        "provider": { "enum": ["wine", "virtual-machine", "remote"] },
+        "packId": { "$ref": "#/$defs/id" },
+        "packDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "translator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider"],
+      "properties": {
+        "provider": { "enum": ["native", "rosetta", "fex", "box64", "qemu", "remote"] },
+        "version": { "type": "string" }
+      }
+    },
+    "graphics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend"],
+      "properties": {
+        "backend": { "enum": ["wined3d", "dxvk", "vkd3d-proton", "d3dmetal", "moltenvk", "virtualized", "remote"] },
+        "version": { "type": "string" },
+        "options": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "boolean", "number"] }
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "arguments", "environment", "workingDirectory"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "environment": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "workingDirectory": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "destination", "access"],
+        "properties": {
+          "source": { "type": "string", "minLength": 1 },
+          "destination": { "type": "string", "minLength": 1 },
+          "access": { "enum": ["read-only", "read-write"] }
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "network"],
+      "properties": {
+        "profile": { "enum": ["strict", "desktop", "game", "developer", "unconfined"] },
+        "network": { "enum": ["deny", "installer-only", "allow"] },
+        "allowDevices": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "decisionTrace": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" }
+  }
+}

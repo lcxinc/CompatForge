@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/cli",
+  "crates/compatforge-domain",
+  "crates/compatforge-orchestrator",
+  "crates/compatforge-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "deny"

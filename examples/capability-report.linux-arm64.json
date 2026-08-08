@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1",
+  "host": {
+    "os": "linux",
+    "osVersion": "rolling",
+    "architecture": "arm64",
+    "kernel": "6.x"
+  },
+  "runtimeProviders": [
+    {
+      "id": "wine-local",
+      "kind": "wine",
+      "version": "11.x",
+      "available": true,
+      "capabilities": ["win32", "win64", "new-wow64"]
+    },
+    {
+      "id": "remote-default",
+      "kind": "remote",
+      "version": "1",
+      "available": true,
+      "capabilities": ["remoteapp"]
+    }
+  ],
+  "translators": [
+    {
+      "id": "fex-system",
+      "kind": "fex",
+      "version": "preview",
+      "available": true,
+      "capabilities": ["i386-on-arm64", "x86_64-on-arm64"]
+    }
+  ],
+  "graphicsBackends": [
+    {
+      "id": "dxvk-packaged",
+      "kind": "dxvk",
+      "version": "pack-pinned",
+      "available": true,
+      "capabilities": ["d3d8", "d3d9", "d3d10", "d3d11"]
+    }
+  ],
+  "features": {
+    "vulkan": true,
+    "ntsync": true
+  }
+}

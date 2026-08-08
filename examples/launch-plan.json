@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1",
+  "requestId": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+  "runtime": {
+    "provider": "wine",
+    "packId": "wine-linux-arm64-fex",
+    "packDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "translator": {
+    "provider": "fex",
+    "version": "pack-pinned"
+  },
+  "graphics": {
+    "backend": "dxvk",
+    "version": "pack-pinned",
+    "options": {}
+  },
+  "process": {
+    "executable": "/opt/compatforge/runtime/bin/wine",
+    "arguments": ["C:\\Program Files\\7-Zip\\7zFM.exe"],
+    "environment": {
+      "WINEPREFIX": "/var/lib/compatforge/bottles/7zip-default/prefix"
+    },
+    "workingDirectory": "/var/lib/compatforge/bottles/7zip-default"
+  },
+  "mounts": [
+    {
+      "source": "/home/example/Documents",
+      "destination": "/mnt/documents",
+      "access": "read-write"
+    }
+  ],
+  "sandbox": {
+    "profile": "desktop",
+    "network": "allow",
+    "allowDevices": []
+  },
+  "decisionTrace": [
+    "local Wine is available",
+    "x86_64 guest on ARM64 requires translation",
+    "FEX selected before Box64 and QEMU",
+    "DXVK selected for D3D8-11 capability"
+  ]
+}

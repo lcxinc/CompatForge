@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "2",
+  "id": "7zip",
+  "metadata": {
+    "name": "7-Zip",
+    "publisher": "Igor Pavlov",
+    "category": "utilities",
+    "license": "LGPL-2.1-or-later-with-unRAR-restriction",
+    "homepage": "https://www.7-zip.org/"
+  },
+  "installer": {
+    "mode": "download",
+    "url": "https://www.7-zip.org/a/7z2601-x64.exe",
+    "fileName": "7z2601-x64.exe",
+    "sha256": "d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d",
+    "arguments": ["/S"]
+  },
+  "bottle": {
+    "windowsVersion": "win11",
+    "guestArchitecture": "x86_64",
+    "environment": {}
+  },
+  "launchers": [
+    {
+      "id": "7zip-file-manager",
+      "name": "7-Zip File Manager",
+      "executable": "C:\\Program Files\\7-Zip\\7zFM.exe",
+      "arguments": [],
+      "environment": {}
+    }
+  ],
+  "compatibility": {
+    "rating": "excellent",
+    "platforms": [
+      {
+        "os": "linux",
+        "hostArchitecture": "x86_64",
+        "runtime": "wine",
+        "translator": "native",
+        "graphics": "wined3d"
+      },
+      {
+        "os": "linux",
+        "hostArchitecture": "arm64",
+        "runtime": "wine",
+        "translator": "fex",
+        "graphics": "wined3d"
+      },
+      {
+        "os": "macos",
+        "hostArchitecture": "arm64",
+        "runtime": "wine",
+        "translator": "rosetta",
+        "graphics": "wined3d"
+      }
+    ],
+    "warnings": [
+      "Only download the installer from the official 7-zip.org domain."
+    ]
+  },
+  "fixes": [],
+  "tests": [
+    {
+      "id": "main-window-visible",
+      "kind": "window-visible",
+      "timeoutSeconds": 30,
+      "expected": {
+        "titleContains": "7-Zip"
+      }
+    }
+  ],
+  "provenance": {
+    "source": "https://github.com/a1112/Mac-Win",
+    "maintainer": "CompatForge migration"
+  }
+}

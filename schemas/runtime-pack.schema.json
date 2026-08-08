@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/runtime-pack.schema.json",
+  "title": "CompatForge Runtime Pack Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "version", "host", "components", "capabilities", "digest"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "id": { "$ref": "#/$defs/id" },
+    "version": { "type": "string", "minLength": 1 },
+    "channel": { "enum": ["stable", "candidate", "preview", "development"] },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "architecture"],
+      "properties": {
+        "os": { "enum": ["macos", "linux", "android"] },
+        "architecture": { "enum": ["x86_64", "arm64"] },
+        "minimumVersion": { "type": "string" }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "license", "digest"],
+        "properties": {
+          "name": { "$ref": "#/$defs/id" },
+          "version": { "type": "string", "minLength": 1 },
+          "license": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "format": "uri" },
+          "digest": { "$ref": "#/$defs/digest" },
+          "entrypoints": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "digest": { "$ref": "#/$defs/digest" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keyId", "algorithm", "value"],
+      "properties": {
+        "keyId": { "$ref": "#/$defs/id" },
+        "algorithm": { "enum": ["ed25519", "p256-sha256"] },
+        "value": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sbom": { "type": "string", "format": "uri-reference" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" }
+  }
+}

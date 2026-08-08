@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "requestId": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+  "bottleId": "7zip-default",
+  "recipeId": "7zip",
+  "executable": {
+    "path": "C:\\Program Files\\7-Zip\\7zFM.exe",
+    "architecture": "x86_64"
+  },
+  "arguments": [],
+  "environment": {},
+  "constraints": {
+    "allowVirtualMachine": true,
+    "allowRemote": true,
+    "requiresKernelDriver": false,
+    "requiresDirectX12": false,
+    "networkPolicy": "allow",
+    "requiredCapabilities": []
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/launch-request.schema.json",
+  "title": "CompatForge Launch Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "bottleId", "executable", "constraints"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "requestId": { "type": "string", "format": "uuid" },
+    "bottleId": { "$ref": "#/$defs/id" },
+    "recipeId": { "$ref": "#/$defs/id" },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "architecture"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "architecture": { "enum": ["i386", "x86_64", "arm64", "unknown"] },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "arguments": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "environment": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "type": "string" }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowVirtualMachine", "allowRemote"],
+      "properties": {
+        "allowVirtualMachine": { "type": "boolean" },
+        "allowRemote": { "type": "boolean" },
+        "requiresKernelDriver": { "type": "boolean", "default": false },
+        "requiresDirectX12": { "type": "boolean", "default": false },
+        "networkPolicy": { "enum": ["deny", "installer-only", "allow"] },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
+  }
+}

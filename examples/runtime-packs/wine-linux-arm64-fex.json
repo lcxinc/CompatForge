@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1",
+  "id": "wine-linux-arm64-fex",
+  "version": "0.1.0-preview.1",
+  "channel": "preview",
+  "host": {
+    "os": "linux",
+    "architecture": "arm64",
+    "minimumVersion": "kernel-6.x"
+  },
+  "components": [
+    {
+      "name": "wine",
+      "version": "11.x",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://gitlab.winehq.org/wine/wine",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "entrypoints": {
+        "wine": "bin/wine",
+        "wineserver": "bin/wineserver"
+      }
+    },
+    {
+      "name": "fex",
+      "version": "pack-pinned",
+      "license": "MIT",
+      "source": "https://github.com/FEX-Emu/FEX",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "entrypoints": {
+        "interpreter": "bin/FEXInterpreter"
+      }
+    },
+    {
+      "name": "dxvk",
+      "version": "pack-pinned",
+      "license": "Zlib",
+      "source": "https://github.com/doitsujin/dxvk",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "entrypoints": {}
+    }
+  ],
+  "capabilities": [
+    "guest-i386",
+    "guest-x86_64",
+    "new-wow64",
+    "d3d8-11-vulkan"
+  ],
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "sbom": "sbom/wine-linux-arm64-fex.cdx.json"
+}

@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/recipe.schema.json",
+  "title": "CompatForge Compatibility Recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "metadata", "installer", "bottle", "launchers", "compatibility", "tests"],
+  "properties": {
+    "schemaVersion": { "const": "2" },
+    "id": { "$ref": "#/$defs/id" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "publisher", "category", "license"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "publisher": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "homepage": { "type": "string", "format": "uri" }
+      }
+    },
+    "installer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "arguments"],
+      "properties": {
+        "mode": { "enum": ["download", "local-file", "already-installed", "none"] },
+        "url": { "type": "string", "format": "uri" },
+        "fileName": { "type": "string" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "arguments": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "bottle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowsVersion", "guestArchitecture"],
+      "properties": {
+        "windowsVersion": { "enum": ["win7", "win10", "win11"] },
+        "guestArchitecture": { "enum": ["i386", "x86_64", "arm64"] },
+        "environment": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "launchers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "executable", "arguments"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string", "minLength": 1 },
+          "executable": { "type": "string", "minLength": 1 },
+          "arguments": { "type": "array", "items": { "type": "string" } },
+          "environment": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rating", "platforms"],
+      "properties": {
+        "rating": { "enum": ["excellent", "good", "limited", "experimental", "unknown"] },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["os", "hostArchitecture", "runtime"],
+            "properties": {
+              "os": { "enum": ["macos", "linux", "android"] },
+              "hostArchitecture": { "enum": ["x86_64", "arm64"] },
+              "runtime": { "enum": ["wine", "virtual-machine", "remote"] },
+              "translator": { "enum": ["native", "rosetta", "fex", "box64", "qemu", "remote"] },
+              "graphics": { "enum": ["wined3d", "dxvk", "vkd3d-proton", "d3dmetal", "moltenvk", "virtualized", "remote"] }
+            }
+          }
+        },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "fixes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "risk", "actions", "rollback"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "risk": { "enum": ["low", "medium", "high"] },
+          "when": { "type": "object" },
+          "actions": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/action" }
+          },
+          "rollback": { "enum": ["restore-snapshot", "inverse-actions", "recreate-bottle"] }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "timeoutSeconds"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "kind": { "enum": ["process-exit", "window-visible", "screenshot", "script", "manual"] },
+          "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+          "expected": { "type": "object" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "format": "uri" },
+        "maintainer": { "type": "string" },
+        "reviewedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["set-environment", "set-registry", "install-component", "copy-file", "set-argument"] },
+        "key": { "type": "string" },
+        "value": { "type": ["string", "number", "boolean"] },
+        "source": { "type": "string" },
+        "destination": { "type": "string" }
+      }
+    }
+  }
+}
