@@ -18,6 +18,10 @@ jobs:
           python-version: "3.12"
       - name: Validate repository contracts
         run: python scripts/validate_repository.py
+      - name: Compile public C header
+        run: cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only -include crates/compatforge-ffi/include/compatforge.h /dev/null
+      - name: Compile public C++ header
+        run: c++ -std=c++17 -Wall -Wextra -Werror -x c++ -fsyntax-only -include crates/compatforge-ffi/include/compatforge.h /dev/null
 
   rust:
     strategy:

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "requestId": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+  "sequence": 1,
+  "elapsedMilliseconds": 42,
+  "kind": "output",
+  "output": {
+    "stream": "stdout",
+    "text": "wine: configuration initialized\n"
+  }
+}

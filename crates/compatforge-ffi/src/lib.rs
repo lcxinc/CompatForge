@@ -2,14 +2,16 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use compatforge_domain::{CoreConfig, LaunchRequest};
+use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
 use compatforge_orchestrator::PolicyEngine;
+use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::time::Duration;
 
-const API_VERSION: &[u8] = b"0.2.0\0";
+const API_VERSION: &[u8] = b"0.3.0\0";
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -24,12 +26,21 @@ pub enum CfStatus {
     InvalidJson = 3,
     InvalidArgument = 4,
     PlanningFailed = 5,
+    AuthorizationFailed = 6,
+    ProcessFailed = 7,
+    Timeout = 8,
+    EndOfStream = 9,
     Panic = 255,
 }
 
 #[repr(C)]
 pub struct CfContext {
     config: CoreConfig,
+}
+
+#[repr(C)]
+pub struct CfLaunch {
+    handle: LaunchHandle,
 }
 
 struct FfiFailure {
@@ -122,6 +133,95 @@ pub unsafe extern "C" fn cf_compile_launch(
     })
 }
 
+/// Start an authorized launch plan and return an opaque process handle.
+///
+/// # Safety
+///
+/// `context` must be a live pointer created by [`cf_context_create`].
+/// `plan_json` must point to a valid NUL-terminated string. `out_launch` must
+/// be valid for one pointer write and later released with [`cf_launch_release`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_launch_start(
+    context: *const CfContext,
+    plan_json: *const c_char,
+    out_launch: *mut *mut CfLaunch,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if context.is_null() || out_launch.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "context or out_launch is null"));
+        }
+        unsafe { ptr::write(out_launch, ptr::null_mut()) };
+        let plan_text = unsafe { read_utf8(plan_json, "plan_json") }?;
+        let plan: LaunchPlan = serde_json::from_str(&plan_text)
+            .map_err(|error| FfiFailure::new(CfStatus::InvalidJson, format!("invalid launch plan JSON: {error}")))?;
+        let context = unsafe { &*context };
+        PolicyEngine::authorize(&context.config, &plan).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::AuthorizationFailed,
+                format!("launch authorization failed: {error}"),
+            )
+        })?;
+        let handle = ProcessSupervisor::start(&plan)
+            .map_err(|error| FfiFailure::new(CfStatus::ProcessFailed, error.to_string()))?;
+        unsafe { ptr::write(out_launch, Box::into_raw(Box::new(CfLaunch { handle }))) };
+        Ok(())
+    })
+}
+
+/// Poll the next versioned runtime event as an owned JSON string.
+///
+/// # Safety
+///
+/// `launch` must be a live pointer returned by [`cf_launch_start`].
+/// `out_event_json` must be valid for one pointer write. A non-null string must
+/// be released with [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_launch_next_event(
+    launch: *const CfLaunch,
+    timeout_ms: u32,
+    out_event_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if launch.is_null() || out_event_json.is_null() {
+            return Err(FfiFailure::new(
+                CfStatus::NullPointer,
+                "launch or out_event_json is null",
+            ));
+        }
+        unsafe { ptr::write(out_event_json, ptr::null_mut()) };
+        let launch = unsafe { &*launch };
+        match launch.handle.next_event(Duration::from_millis(u64::from(timeout_ms))) {
+            EventPoll::Event(event) => {
+                let json = serde_json::to_string(&event).map_err(|error| {
+                    FfiFailure::new(CfStatus::ProcessFailed, format!("event serialization failed: {error}"))
+                })?;
+                unsafe { write_owned_string(json, out_event_json) }
+            }
+            EventPoll::Timeout => Err(FfiFailure::new(CfStatus::Timeout, "runtime event poll timed out")),
+            EventPoll::Closed => Err(FfiFailure::new(CfStatus::EndOfStream, "runtime event stream closed")),
+        }
+    })
+}
+
+/// Request idempotent termination of a supervised process.
+///
+/// # Safety
+///
+/// `launch` must be a live pointer returned by [`cf_launch_start`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_launch_terminate(launch: *const CfLaunch) -> CfStatus {
+    ffi_boundary(|| {
+        if launch.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "launch is null"));
+        }
+        let launch = unsafe { &*launch };
+        launch
+            .handle
+            .terminate()
+            .map_err(|error| FfiFailure::new(CfStatus::ProcessFailed, error.to_string()))
+    })
+}
+
 /// Copy the current thread's last structured FFI error into an owned string.
 ///
 /// # Safety
@@ -172,6 +272,21 @@ pub unsafe extern "C" fn cf_context_release(context: *mut CfContext) {
     if !context.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
             drop(Box::from_raw(context));
+        }));
+    }
+}
+
+/// Release a launch handle, terminating a still-running child first.
+///
+/// # Safety
+///
+/// `launch` must be null or a pointer returned by [`cf_launch_start`] that has
+/// not already been released.
+#[no_mangle]
+pub unsafe extern "C" fn cf_launch_release(launch: *mut CfLaunch) {
+    if !launch.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            drop(Box::from_raw(launch));
         }));
     }
 }
@@ -227,7 +342,7 @@ fn set_last_error(status: CfStatus, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compatforge_domain::LaunchPlan;
+    use compatforge_domain::{GraphicsBackendKind, RuntimeEventKind, RuntimeKind, TranslatorKind};
 
     #[test]
     fn reports_stable_versions() {
@@ -272,6 +387,78 @@ mod tests {
             let error_text = CStr::from_ptr(error_output).to_str().unwrap();
             assert!(error_text.contains("invalid launch request JSON"));
             cf_string_free(error_output);
+            cf_context_release(context);
+        }
+    }
+
+    #[test]
+    fn starts_and_observes_a_process_across_the_c_abi() {
+        let mut config: CoreConfig =
+            serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap();
+        let root = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let executable = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        config.storage_root.clone_from(&root);
+        config.runtime_bindings[0].executable.clone_from(&executable);
+
+        let plan = LaunchPlan {
+            schema_version: "1".into(),
+            request_id: "ffi-process-test".into(),
+            runtime: compatforge_domain::RuntimeSelection {
+                provider: RuntimeKind::Wine,
+                pack_id: config.runtime_bindings[0].pack_id.clone(),
+                pack_digest: config.runtime_bindings[0].pack_digest.clone(),
+            },
+            translator: compatforge_domain::TranslatorSelection {
+                provider: TranslatorKind::Fex,
+                version: Some("test".into()),
+            },
+            graphics: compatforge_domain::GraphicsSelection {
+                backend: GraphicsBackendKind::Dxvk,
+                version: Some("test".into()),
+                options: std::collections::BTreeMap::new(),
+            },
+            process: compatforge_domain::NativeCommand {
+                executable,
+                arguments: vec!["--list".into()],
+                environment: std::collections::BTreeMap::from([
+                    ("COMPATFORGE_RUNTIME_PACK".into(), "wine-linux-arm64-fex".into()),
+                    ("WINEPREFIX".into(), format!("{root}/bottles/ffi-process-test/prefix")),
+                ]),
+                working_directory: root,
+            },
+            mounts: Vec::new(),
+            sandbox: compatforge_domain::SandboxPolicy {
+                profile: config.sandbox_profile,
+                network: compatforge_domain::NetworkPolicy::Deny,
+                allow_devices: Vec::new(),
+            },
+            decision_trace: Vec::new(),
+        };
+        let config = CString::new(serde_json::to_string(&config).unwrap()).unwrap();
+        let plan = CString::new(serde_json::to_string(&plan).unwrap()).unwrap();
+        let mut context = ptr::null_mut();
+        let mut launch = ptr::null_mut();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut exited = false;
+
+        unsafe {
+            assert_eq!(cf_context_create(config.as_ptr(), &mut context), CfStatus::Ok);
+            assert_eq!(cf_launch_start(context, plan.as_ptr(), &mut launch), CfStatus::Ok);
+            while std::time::Instant::now() < deadline && !exited {
+                let mut output = ptr::null_mut();
+                match cf_launch_next_event(launch, 250, &mut output) {
+                    CfStatus::Ok => {
+                        let event: compatforge_domain::RuntimeEvent =
+                            serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+                        exited = event.kind == RuntimeEventKind::Exited;
+                        cf_string_free(output);
+                    }
+                    CfStatus::Timeout => {}
+                    status => panic!("unexpected event status: {status:?}"),
+                }
+            }
+            assert!(exited);
+            cf_launch_release(launch);
             cf_context_release(context);
         }
     }

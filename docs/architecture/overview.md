@@ -8,7 +8,7 @@ CompatForge 是兼容运行“控制平面”，不是新的 Windows API 实现�
 
 ```mermaid
 flowchart TD
-    A["SwiftUI / Qt / Compose / CLI"] --> B["C ABI 或 Desktop IPC"]
+    A["Qt/QML / Compose / CLI"] --> B["C ABI 或 Desktop IPC"]
     B --> C["Use Cases 与 Orchestrator"]
     C --> D["Capability + Policy + Compat DB"]
     D --> E["Runtime / Translator / Graphics Providers"]

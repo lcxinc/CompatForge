@@ -7,19 +7,19 @@ use compatforge_domain::{
     LaunchPlan, LaunchRequest, NativeCommand, ProviderDescriptor, RuntimeKind, RuntimeSelection, SandboxPolicy,
     TranslatorKind, TranslatorSelection, SCHEMA_VERSION_V1,
 };
-use compatforge_storage::AppPaths;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
     InvalidConfig(ContractError),
     InvalidRequest(ContractError),
+    InvalidPlan(ContractError),
     MissingRequiredCapability(String),
     NoCompatibleRuntime,
     MissingRuntimeBinding(String),
     InvalidHostPath(&'static str),
+    PlanMismatch(&'static str),
     NoCompatibleTranslator,
     NoCompatibleGraphicsBackend,
 }
@@ -29,6 +29,7 @@ impl fmt::Display for PlanError {
         match self {
             Self::InvalidConfig(error) => write!(formatter, "invalid core config: {error}"),
             Self::InvalidRequest(error) => write!(formatter, "invalid launch request: {error}"),
+            Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
             Self::MissingRequiredCapability(capability) => {
                 write!(formatter, "required capability is unavailable: {capability}")
             }
@@ -37,6 +38,7 @@ impl fmt::Display for PlanError {
                 write!(formatter, "runtime provider {provider} has no pinned binding")
             }
             Self::InvalidHostPath(field) => write!(formatter, "{field} must be an absolute host path"),
+            Self::PlanMismatch(field) => write!(formatter, "launch plan does not match trusted context: {field}"),
             Self::NoCompatibleTranslator => formatter.write_str("no compatible architecture translator"),
             Self::NoCompatibleGraphicsBackend => formatter.write_str("no compatible graphics backend"),
         }
@@ -46,7 +48,7 @@ impl fmt::Display for PlanError {
 impl std::error::Error for PlanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InvalidConfig(error) | Self::InvalidRequest(error) => Some(error),
+            Self::InvalidConfig(error) | Self::InvalidRequest(error) | Self::InvalidPlan(error) => Some(error),
             _ => None,
         }
     }
@@ -77,16 +79,13 @@ impl PolicyEngine {
 
         let translator = Self::select_translator(&config.capabilities, request, runtime_kind)?;
         let graphics = Self::select_graphics(&config.capabilities, request, runtime_kind)?;
-        let paths = AppPaths::from_root(&config.storage_root);
-        let bottle_directory = paths.bottle(&request.bottle_id);
+        let bottle_directory = join_host_path(&config.storage_root, &["bottles", &request.bottle_id]);
 
-        let mut environment = binding.environment.clone();
+        let mut environment = request.environment.clone();
+        environment.extend(binding.environment.clone());
         if runtime_kind == RuntimeKind::Wine {
-            environment
-                .entry("WINEPREFIX".into())
-                .or_insert_with(|| bottle_directory.join("prefix").to_string_lossy().into_owned());
+            environment.insert("WINEPREFIX".into(), join_host_path(&bottle_directory, &["prefix"]));
         }
-        environment.extend(request.environment.clone());
 
         let mut arguments = Vec::with_capacity(request.arguments.len() + 1);
         arguments.push(request.executable.path.clone());
@@ -95,7 +94,7 @@ impl PolicyEngine {
         let working_directory = binding
             .working_directory
             .clone()
-            .unwrap_or_else(|| bottle_directory.to_string_lossy().into_owned());
+            .unwrap_or_else(|| bottle_directory.clone());
         if !is_absolute_host_path(&working_directory) {
             return Err(PlanError::InvalidHostPath("runtimeBindings.workingDirectory"));
         }
@@ -135,6 +134,65 @@ impl PolicyEngine {
             },
             decision_trace,
         })
+    }
+
+    /// Re-authorize a serialized plan before it crosses the process boundary.
+    ///
+    /// A frontend may cache or transport a plan, but it cannot replace the
+    /// pinned runtime executable, digest, protected environment, sandbox, or
+    /// storage location selected by the trusted context.
+    pub fn authorize(config: &CoreConfig, plan: &LaunchPlan) -> Result<(), PlanError> {
+        config.validate().map_err(PlanError::InvalidConfig)?;
+        plan.validate().map_err(PlanError::InvalidPlan)?;
+
+        if !is_absolute_host_path(&config.storage_root) {
+            return Err(PlanError::InvalidHostPath("storageRoot"));
+        }
+        if !is_absolute_host_path(&plan.process.executable) {
+            return Err(PlanError::InvalidHostPath("process.executable"));
+        }
+        if !is_absolute_host_path(&plan.process.working_directory) {
+            return Err(PlanError::InvalidHostPath("process.workingDirectory"));
+        }
+
+        let binding = config
+            .runtime_bindings
+            .iter()
+            .find(|candidate| {
+                candidate.pack_id == plan.runtime.pack_id && candidate.pack_digest == plan.runtime.pack_digest
+            })
+            .ok_or(PlanError::PlanMismatch("runtime pack or digest"))?;
+        if binding.executable != plan.process.executable {
+            return Err(PlanError::PlanMismatch("runtime executable"));
+        }
+        let provider_matches = config.capabilities.runtime_providers.iter().any(|provider| {
+            provider.available && provider.id == binding.provider_id && provider.kind == plan.runtime.provider.as_str()
+        });
+        if !provider_matches {
+            return Err(PlanError::PlanMismatch("runtime provider"));
+        }
+        if plan.sandbox.profile != config.sandbox_profile {
+            return Err(PlanError::PlanMismatch("sandbox profile"));
+        }
+        if !host_path_is_within(&config.storage_root, &plan.process.working_directory) {
+            return Err(PlanError::PlanMismatch("working directory"));
+        }
+        for (key, value) in &binding.environment {
+            if plan.process.environment.get(key) != Some(value) {
+                return Err(PlanError::PlanMismatch("protected runtime environment"));
+            }
+        }
+        if plan.runtime.provider == RuntimeKind::Wine {
+            let wine_prefix = plan
+                .process
+                .environment
+                .get("WINEPREFIX")
+                .ok_or(PlanError::PlanMismatch("WINEPREFIX"))?;
+            if !host_path_is_within(&config.storage_root, wine_prefix) {
+                return Err(PlanError::PlanMismatch("WINEPREFIX"));
+            }
+        }
+        Ok(())
     }
 
     fn check_required_capabilities(capabilities: &CapabilityReport, request: &LaunchRequest) -> Result<(), PlanError> {
@@ -287,18 +345,75 @@ fn available_provider<'a>(providers: &'a [ProviderDescriptor], kind: &str) -> Op
         .find(|provider| provider.available && provider.kind == kind)
 }
 
+fn join_host_path(root: &str, components: &[&str]) -> String {
+    let separator = if root.contains('\\') { '\\' } else { '/' };
+    let mut path = root.trim_end_matches(['/', '\\']).to_owned();
+    for component in components {
+        if !path.is_empty() {
+            path.push(separator);
+        } else if root.starts_with('/') {
+            path.push('/');
+        }
+        path.push_str(component.trim_matches(['/', '\\']));
+    }
+    path
+}
+
 fn is_absolute_host_path(value: &str) -> bool {
-    Path::new(value).is_absolute()
-        || (value
-            .as_bytes()
-            .first()
-            .is_some_and(|character| character.is_ascii_alphabetic())
-            && value.as_bytes().get(1) == Some(&b':')
-            && value
-                .as_bytes()
-                .get(2)
-                .is_some_and(|separator| matches!(*separator, b'\\' | b'/')))
-        || value.starts_with("\\\\")
+    normalize_host_path(value).is_some()
+}
+
+fn host_path_is_within(root: &str, candidate: &str) -> bool {
+    let Some((root_namespace, root_components)) = normalize_host_path(root) else {
+        return false;
+    };
+    let Some((candidate_namespace, candidate_components)) = normalize_host_path(candidate) else {
+        return false;
+    };
+    root_namespace == candidate_namespace && candidate_components.starts_with(&root_components)
+}
+
+/// Normalize a serialized host path without depending on the OS compiling the
+/// planner. Windows namespaces are case-insensitive; POSIX components retain
+/// case. Parent traversal is rejected instead of being lexically contained.
+fn normalize_host_path(value: &str) -> Option<(String, Vec<String>)> {
+    let path = value.replace('\\', "/");
+    let (namespace, remainder, case_insensitive) = if let Some(unc) = path.strip_prefix("//") {
+        let mut components = unc.split('/').filter(|component| !component.is_empty());
+        let server = components.next()?;
+        let share = components.next()?;
+        let namespace = format!("unc:{server}/{share}").to_ascii_lowercase();
+        let remainder = components.collect::<Vec<_>>().join("/");
+        (namespace, remainder, true)
+    } else if path
+        .as_bytes()
+        .first()
+        .is_some_and(|character| character.is_ascii_alphabetic())
+        && path.as_bytes().get(1) == Some(&b':')
+        && path.as_bytes().get(2) == Some(&b'/')
+    {
+        let drive = path[..1].to_ascii_lowercase();
+        (format!("drive:{drive}"), path[3..].to_owned(), true)
+    } else {
+        let remainder = path.strip_prefix('/')?;
+        ("posix".to_owned(), remainder.to_owned(), false)
+    };
+
+    let mut normalized = Vec::new();
+    for component in remainder.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => {
+                normalized.push(if case_insensitive {
+                    component.to_ascii_lowercase()
+                } else {
+                    component.to_owned()
+                });
+            }
+        }
+    }
+    Some((namespace, normalized))
 }
 
 #[cfg(test)]
@@ -397,6 +512,25 @@ mod tests {
     }
 
     #[test]
+    fn compiles_windows_paths_without_using_the_build_host_separator() {
+        let mut config = config(CpuArchitecture::X86_64);
+        config.capabilities.host.os = HostOs::Windows;
+        config.storage_root = "C:\\ProgramData\\CompatForge".into();
+        config.runtime_bindings[0].executable = "C:\\Program Files\\CompatForge\\wine.exe".into();
+
+        let plan = PolicyEngine::compile(&config, &request()).unwrap();
+
+        assert_eq!(
+            plan.process.environment["WINEPREFIX"],
+            "C:\\ProgramData\\CompatForge\\bottles\\example-bottle\\prefix"
+        );
+        assert_eq!(
+            plan.process.working_directory,
+            "C:\\ProgramData\\CompatForge\\bottles\\example-bottle"
+        );
+    }
+
+    #[test]
     fn selects_fex_for_x86_64_guest_on_linux_arm64() {
         let plan = PolicyEngine::compile(&config(CpuArchitecture::Arm64), &request()).unwrap();
         assert_eq!(plan.translator.provider, TranslatorKind::Fex);
@@ -418,6 +552,68 @@ mod tests {
         assert!(matches!(
             PolicyEngine::compile(&config, &request()),
             Err(PlanError::MissingRuntimeBinding(_))
+        ));
+    }
+
+    #[test]
+    fn authorizes_a_freshly_compiled_plan() {
+        let config = config(CpuArchitecture::X86_64);
+        let plan = PolicyEngine::compile(&config, &request()).unwrap();
+        PolicyEngine::authorize(&config, &plan).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_plan_with_a_replaced_runtime_executable() {
+        let config = config(CpuArchitecture::X86_64);
+        let mut plan = PolicyEngine::compile(&config, &request()).unwrap();
+        plan.process.executable = "/tmp/untrusted-runtime".into();
+        assert!(matches!(
+            PolicyEngine::authorize(&config, &plan),
+            Err(PlanError::PlanMismatch("runtime executable"))
+        ));
+    }
+
+    #[test]
+    fn runtime_binding_environment_cannot_be_overridden_by_a_request() {
+        let mut config = config(CpuArchitecture::X86_64);
+        config.runtime_bindings[0]
+            .environment
+            .insert("COMPATFORGE_RUNTIME_PACK".into(), "trusted".into());
+        let mut request = request();
+        request
+            .environment
+            .insert("COMPATFORGE_RUNTIME_PACK".into(), "untrusted".into());
+        let plan = PolicyEngine::compile(&config, &request).unwrap();
+        assert_eq!(plan.process.environment["COMPATFORGE_RUNTIME_PACK"], "trusted");
+        PolicyEngine::authorize(&config, &plan).unwrap();
+    }
+
+    #[test]
+    fn recognizes_serialized_absolute_paths_independent_of_build_host() {
+        assert!(is_absolute_host_path("/var/lib/compatforge"));
+        assert!(is_absolute_host_path("C:\\Program Files\\CompatForge"));
+        assert!(is_absolute_host_path("\\\\server\\share\\CompatForge"));
+        assert!(!is_absolute_host_path("relative/path"));
+        assert!(!is_absolute_host_path("C:relative"));
+    }
+
+    #[test]
+    fn host_path_containment_is_cross_platform_and_rejects_traversal() {
+        assert!(host_path_is_within(
+            "/var/lib/compatforge",
+            "/var/lib/compatforge/bottles/example"
+        ));
+        assert!(host_path_is_within(
+            "C:\\Program Files\\CompatForge",
+            "c:/program files/compatforge/bottles/example"
+        ));
+        assert!(!host_path_is_within(
+            "/var/lib/compatforge",
+            "/var/lib/compatforge/../outside"
+        ));
+        assert!(!host_path_is_within(
+            "C:\\Program Files\\CompatForge",
+            "D:\\Program Files\\CompatForge"
         ));
     }
 }

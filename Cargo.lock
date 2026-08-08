@@ -4,17 +4,18 @@ version = 3
 
 [[package]]
 name = "compatforge-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-orchestrator",
+ "compatforge-process",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "compatforge-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -22,16 +23,17 @@ dependencies = [
 
 [[package]]
 name = "compatforge-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-orchestrator",
+ "compatforge-process",
  "serde_json",
 ]
 
 [[package]]
 name = "compatforge-orchestrator"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-storage",
@@ -39,8 +41,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "compatforge-process"
+version = "0.3.0"
+dependencies = [
+ "compatforge-domain",
+ "serde_json",
+]
+
+[[package]]
 name = "compatforge-storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

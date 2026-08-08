@@ -2,7 +2,9 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Phase 0 首个纵向切片。Core 已能读取版本化 Context/LaunchRequest JSON，经约束校验生成完整 LaunchPlan JSON，并通过稳定 C ABI 或 CLI 返回；尚不启动进程，也不包含可分发的 Wine Runtime。
+> 当前状态：Core `0.3.0`。已打通 `Context/LaunchRequest → LaunchPlan → 再授权 → 受控进程 → RuntimeEvent/退出结果`，并通过 CLI 与稳定 C ABI 暴露；尚不包含可分发的 Wine Runtime，也尚未完成生产级进程组与 OS 沙箱。
+
+> 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
 ## 目标
 
@@ -10,7 +12,7 @@ CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的�
 - 把运行决策从 Swift/macOS 代码中分离，形成 Rust 控制面与稳定 C ABI。
 - 支持本地 Wine、Wine + CPU 翻译、Windows VM、远程 Windows 四级回退。
 - 让每一次启动都能追溯到精确 Runtime Pack、Recipe、能力探测结果和决策过程。
-- 先稳定 macOS，再交付 Linux x86_64、Linux ARM64，最后进入 Android ARM64。
+- 共享内核同步支持 macOS 与 Linux，再扩展 Linux ARM64 与 Android ARM64。
 
 ## 明确不做
 
@@ -49,8 +51,8 @@ flowchart TD
 ## 仓库结构
 
 ```text
-apps/                         CLI 与未来平台前端
-crates/                       版本化领域模型、存储、编排与 C ABI
+apps/                         CLI 与待建立的 Qt/QML 桌面薄前端
+crates/                       领域模型、存储、编排、进程监督与 C ABI
 schemas/                      稳定的跨进程/跨语言数据契约
 examples/                     契约示例，不是可发布 Runtime
 docs/architecture/            架构和 Provider 接口
@@ -81,7 +83,7 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-Swift/C 客户端当前可使用 `cf_context_create`、`cf_compile_launch`、`cf_last_error_json`、`cf_string_free` 与 `cf_context_release`。调用方不需要了解 Rust 对象布局。
+C/Qt 客户端可使用 `cf_context_create`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
 
 ## 设计入口
 
@@ -89,6 +91,7 @@ Swift/C 客户端当前可使用 `cf_context_create`、`cf_compile_launch`、`cf
 - [组件与所有权](docs/architecture/component-model.md)
 - [Provider、IPC 与 C ABI 契约](docs/architecture/contracts.md)
 - [Phase 0 纵向切片](docs/implementation/phase-0-vertical-slice.md)
+- [受控进程纵向切片](docs/implementation/phase-0-process-supervisor.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
 - [安全模型](docs/security.md)

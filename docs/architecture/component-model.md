@@ -7,8 +7,9 @@
 | Domain | `crates/compatforge-domain` | 与 Schema 对齐的能力、请求、计划、Bottle、Runtime Pack DTO 与校验 | 生成 Swift/Kotlin 绑定，拆分公共 API 与内部模型 |
 | Storage | `crates/compatforge-storage` | macOS/XDG/Windows/Android 路径解析、受限相对路径、可恢复 JSON 写入 | manifest locking、snapshot 与迁移事务 |
 | Orchestrator | `crates/compatforge-orchestrator` | 无副作用的硬约束、Provider 回退、固定 Runtime Pack 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |
-| C ABI | `crates/compatforge-ffi` | opaque context、JSON plan、稳定 status、结构化错误与所有权释放 | 启动 handle、事件与取消 |
-| CLI | `apps/cli` | 从 JSON 文件生成 LaunchPlan | host probe、validate、launch、doctor、lab 子命令 |
+| Process | `crates/compatforge-process` | 直接进程启动、stdout/stderr 事件、退出结果、终止与释放清理 | process group/Job Object、优雅终止、超时升级、wineserver 范围清理 |
+| C ABI | `crates/compatforge-ffi` | opaque context/launch、plan/start/events/terminate、稳定 status 与所有权释放 | IPC daemon 与 Qt C++ wrapper |
+| CLI | `apps/cli` | plan 与受控 launch | host probe、validate、doctor、lab 子命令 |
 | Contracts | `schemas/` | 版本化交换格式 | 生成绑定、兼容性测试、签名 canonicalization |
 
 Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未知字段，避免安全相关配置被静默忽略。异步运行时、数据库和遥测仍留到相应 Provider/进程监督需求出现后单独决策。
@@ -37,20 +38,16 @@ Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未�
 
 ## 前端边界
 
-### macOS
+### macOS 与 Linux Desktop
 
-保留现有 SwiftUI 作为 Phase 1 过渡前端，但先定义：
+两端统一采用 Qt 6/QML，并保持为 Core 的薄客户端：
 
 - `RuntimeClient`：capabilities、compile、launch、events、terminate；
 - `BottleClient`：list、create、snapshot、migrate、restore；
 - `CatalogClient`：refresh、list、verify、install；
 - `DiagnosticsClient`：query events、run checks、export redacted bundle。
 
-`MacWinStore` 拆成 feature model，`ContentView` 按 Desktop、Bottle、Catalog、Diagnostics、Lab、Settings 分文件。新 feature 不得直接实例化 `WineRunner`。
-
-### Linux
-
-Phase 2 采用 CLI-first，稳定 API 后再选择 Qt 6/QML 或 GTK4。UI 选择不能改变 Core/Provider 边界。
+QML 不读取 Bottle/Runtime 文件、不持有 PID、不拼接命令。C++ client 只管理 opaque handle、JSON DTO 与线程调度；平台差异限制在窗口、输入、portal/权限与发行适配器。Mac-Win/SwiftUI 暂停维护，不再作为过渡交付路径。
 
 ### Android
 
