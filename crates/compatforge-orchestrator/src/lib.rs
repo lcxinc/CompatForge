@@ -237,7 +237,7 @@ impl PolicyEngine {
             let feature_available = capabilities
                 .features
                 .get(required)
-                .and_then(serde_json::Value::as_bool)
+                .and_then(compatforge_domain::CapabilityValue::as_bool)
                 .unwrap_or(false);
             let provider_available = capabilities
                 .runtime_providers

@@ -2,7 +2,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use compatforge_capability::HostProbe;
+use compatforge_capability::{ContextCapabilityQuery, HostProbe};
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
 use compatforge_orchestrator::PolicyEngine;
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
@@ -12,7 +12,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::time::Duration;
 
-const API_VERSION: &[u8] = b"0.5.0\0";
+const API_VERSION: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -95,6 +95,46 @@ pub unsafe extern "C" fn cf_probe_capabilities(out_capabilities_json: *mut *mut 
             )
         })?;
         unsafe { write_owned_string(json, out_capabilities_json) }
+    })
+}
+
+/// Return the context's public capability projection as an owned JSON string.
+///
+/// This query is pure: it builds a typed, allowlisted projection from the
+/// capability report already held by `context`. It never probes providers,
+/// copies private context fields, or touches host state.
+///
+/// # Safety
+///
+/// `context` must be a live pointer created by [`cf_context_create`].
+/// `out_report_json` must be valid for one pointer write. The output is set to
+/// null before context validation and a non-null result must be released with
+/// [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_capabilities_get(context: *const CfContext, out_report_json: *mut *mut c_char) -> CfStatus {
+    ffi_boundary(|| {
+        if out_report_json.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_report_json is null"));
+        }
+        unsafe { ptr::write(out_report_json, ptr::null_mut()) };
+        if context.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "context is null"));
+        }
+
+        let context = unsafe { &*context };
+        let report = ContextCapabilityQuery::report(&context.config).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::ProbeFailed,
+                format!("context capability query failed: {error}"),
+            )
+        })?;
+        let json = serde_json::to_string(&report).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::ProbeFailed,
+                format!("capability serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_report_json) }
     })
 }
 
@@ -369,12 +409,61 @@ fn set_last_error(status: CfStatus, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compatforge_domain::{CapabilityReport, GraphicsBackendKind, RuntimeEventKind, RuntimeKind, TranslatorKind};
+    use compatforge_domain::{
+        CapabilityObservation, CapabilityReport, CapabilityValue, GraphicsBackendKind, ProbeSource, ProbeStatus,
+        ProviderDescriptor, RuntimeEventKind, RuntimeKind, TranslatorKind,
+    };
+
+    fn create_context(config: &CoreConfig) -> *mut CfContext {
+        let config = CString::new(serde_json::to_string(config).unwrap()).unwrap();
+        let mut context = ptr::null_mut();
+        unsafe {
+            assert_eq!(cf_context_create(config.as_ptr(), &mut context), CfStatus::Ok);
+        }
+        context
+    }
+
+    fn example_config() -> CoreConfig {
+        serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap()
+    }
+
+    fn assert_report_satisfies_schema_v1(json: &str) {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/capability-report.schema.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        for required in schema["required"].as_array().unwrap() {
+            assert!(value.get(required.as_str().unwrap()).is_some());
+        }
+        assert_eq!(value["schemaVersion"], schema["properties"]["schemaVersion"]["const"]);
+        for collection in ["runtimeProviders", "translators", "graphicsBackends"] {
+            assert!(value[collection].is_array());
+        }
+        assert!(value
+            .get("features")
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flatten()
+            .all(|(_, value)| value.is_boolean() || value.is_string() || value.is_number()));
+        assert!(value
+            .get("observations")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|observation| observation.get("value"))
+            .all(|value| value.is_boolean() || value.is_string() || value.is_number()));
+
+        // CapabilityReport uses deny_unknown_fields recursively and typed
+        // scalar values, while validate() enforces the conditional and
+        // uniqueness constraints in the checked-in Schema v1 contract.
+        let report: CapabilityReport = serde_json::from_value(value).unwrap();
+        report.validate().unwrap();
+    }
 
     #[test]
     fn reports_stable_versions() {
         assert_eq!(cf_abi_version(), 1);
-        assert!(!cf_api_version().is_null());
+        let api_version = unsafe { CStr::from_ptr(cf_api_version()) }.to_str().unwrap();
+        assert_eq!(api_version, "0.6.0");
     }
 
     #[test]
@@ -386,6 +475,142 @@ mod tests {
             report.validate().unwrap();
             assert!(!report.observations.is_empty());
             cf_string_free(output);
+        }
+    }
+
+    #[test]
+    fn queries_context_capabilities_with_independent_owned_buffers() {
+        let context = create_context(&example_config());
+        let mut first = ptr::null_mut();
+        let mut second = ptr::null_mut();
+
+        unsafe {
+            assert_eq!(cf_capabilities_get(context, &mut first), CfStatus::Ok);
+            assert_eq!(cf_capabilities_get(context, &mut second), CfStatus::Ok);
+            assert!(!first.is_null());
+            assert!(!second.is_null());
+            assert_ne!(first, second);
+
+            let first_json = CStr::from_ptr(first).to_str().unwrap().to_owned();
+            let second_json = CStr::from_ptr(second).to_str().unwrap().to_owned();
+            assert_eq!(first_json, second_json);
+            assert_report_satisfies_schema_v1(&first_json);
+
+            cf_string_free(first);
+            cf_string_free(second);
+            cf_context_release(context);
+        }
+    }
+
+    #[test]
+    fn capability_query_clears_output_on_null_context() {
+        let mut output = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+        unsafe {
+            assert_eq!(cf_capabilities_get(ptr::null(), &mut output), CfStatus::NullPointer);
+        }
+        assert!(output.is_null());
+
+        let context = create_context(&example_config());
+        unsafe {
+            assert_eq!(cf_capabilities_get(context, ptr::null_mut()), CfStatus::NullPointer);
+            cf_context_release(context);
+        }
+    }
+
+    #[test]
+    fn unavailable_provider_is_a_successful_capability_result() {
+        let mut config = example_config();
+        config.capabilities.runtime_providers = vec![ProviderDescriptor {
+            id: "wine-not-installed".into(),
+            kind: "wine".into(),
+            version: "pack-pinned".into(),
+            available: false,
+            reason: Some("verified runtime pack is not installed".into()),
+            capabilities: vec!["win64".into(), "win32".into()],
+        }];
+        config.capabilities.translators.clear();
+        config.capabilities.graphics_backends.clear();
+        let context = create_context(&config);
+        let mut output = ptr::null_mut();
+
+        unsafe {
+            assert_eq!(cf_capabilities_get(context, &mut output), CfStatus::Ok);
+            let report: CapabilityReport = serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+            assert!(!report.runtime_providers[0].available);
+            assert_eq!(
+                report.runtime_providers[0].reason.as_deref(),
+                Some("configured provider is unavailable")
+            );
+            assert_eq!(report.runtime_providers[0].capabilities, ["win32", "win64"]);
+            assert!(report.translators.is_empty());
+            assert!(report.graphics_backends.is_empty());
+            cf_string_free(output);
+            cf_context_release(context);
+        }
+    }
+
+    #[test]
+    fn capability_query_does_not_materialize_or_expose_context_paths() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("compatforge-capability-query-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let storage = root.join("must-not-be-created");
+        let executable = root.join("must-not-be-executed");
+        let mut config = example_config();
+        config.storage_root = storage.to_string_lossy().into_owned();
+        config.runtime_bindings[0].executable = executable.to_string_lossy().into_owned();
+        config.runtime_bindings[0].wineserver_executable = Some(executable.to_string_lossy().into_owned());
+        let context = create_context(&config);
+        let mut output = ptr::null_mut();
+
+        unsafe {
+            assert_eq!(cf_capabilities_get(context, &mut output), CfStatus::Ok);
+            let json = CStr::from_ptr(output).to_str().unwrap();
+            let root_text = root.to_string_lossy();
+            assert!(!json.contains(root_text.as_ref()));
+            assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+            cf_string_free(output);
+            cf_context_release(context);
+        }
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn capability_query_does_not_copy_secrets_paths_or_process_observations() {
+        let mut config = example_config();
+        config
+            .capabilities
+            .features
+            .insert("authToken".into(), CapabilityValue::String("secret".into()));
+        config
+            .capabilities
+            .features
+            .insert("userPath".into(), CapabilityValue::String("/home/alice/private".into()));
+        config.capabilities.observations.push(CapabilityObservation {
+            id: "process.command-line".into(),
+            category: "process".into(),
+            status: ProbeStatus::Detected,
+            source: ProbeSource::Configuration,
+            value: Some(CapabilityValue::String("--token secret /home/alice/private".into())),
+            reason: None,
+        });
+        let context = create_context(&config);
+        let mut output = ptr::null_mut();
+
+        unsafe {
+            assert_eq!(cf_capabilities_get(context, &mut output), CfStatus::Ok);
+            let json = CStr::from_ptr(output).to_str().unwrap();
+            assert_report_satisfies_schema_v1(json);
+            assert!(!json.contains("authToken"));
+            assert!(!json.contains("userPath"));
+            assert!(!json.contains("secret"));
+            assert!(!json.contains("/home/alice/private"));
+            assert!(!json.contains("process.command-line"));
+            cf_string_free(output);
+            cf_context_release(context);
         }
     }
 

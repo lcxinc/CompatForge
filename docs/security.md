@@ -26,6 +26,7 @@ CompatForge 运行来源和质量不一的 Windows 二进制，并组合多个 J
 - PID 和进程树只归 process supervisor 所有；前端释放 handle 时内核仍完成分级终止，Unix process group 与 Windows Job Object 防止后代脱离清理。
 - `wineserver` 必须由固定 Runtime Binding 提供绝对路径；Core 只用标准 argv 执行 `-k/-w`，并以 prefix 排他租约避免清理同前缀的并发会话。
 - 基线 Host Capability probe 不扫描 PATH、不执行发现的二进制；Provider 的 available 结论必须绑定 Runtime Pack 或受信任平台适配器证据。
+- Context capability 查询只公开类型化、白名单化的 CapabilityReport 投影，不序列化 Runtime Binding、存储根、环境变量或任意 Context observations。未知 feature/capability 被排除，Host/Provider 自由文本不原样复制，公开 observation 只由类型化 OS/架构重建；查询只做内存投影、校验和排序，不下载、不写入、不联网、不执行 Provider，也不解析来宾 PE。
 
 ## Bottle 不是安全边界
 

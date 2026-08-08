@@ -82,3 +82,6 @@ recipe digest
 - Rust 在 Linux/macOS/Windows 通过 fmt、check、test、clippy。
 - 进程监督契约覆盖启动/输出/退出顺序、幂等终止、最大运行时限和 Wine prefix 排他租约；三平台 CI 分别编译并运行各自的 process group/Job Object 实现。
 - Host Capability 在三平台 Runner 实际执行；报告必须通过 Domain 校验，并证明基线探测不会声明未固定 Runtime/Graphics Provider。
+- ForgeOS C fixture 在 Linux CI 中使用 `dlopen`/`dlsym`，先校验 API `0.6.0`/ABI 1，再解析新增 ABI v1 符号；随后创建已验证 Context、调用 `cf_capabilities_get` 并以 `cf_string_free` 释放独立输出 buffer。
+- CapabilityReport Domain 使用 boolean/string/number 标量闭集；负向测试拒绝 feature 与 observation value 中的 object、array 和 null，FFI 输出再经过严格 DTO 反序列化、Domain 条件/唯一性校验及 Schema v1 标量断言。
+- Context capability 查询覆盖 Linux x86_64/ARM64 映射、空 Provider、不可用 Provider、NULL 输出语义、确定性排序、无文件/进程物化边界，以及 token、用户路径、任意进程 observation 不进入公开报告；该路径不依赖或调用 PE 解析模块。

@@ -3,15 +3,14 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use compatforge_domain::{
-    CapabilityObservation, CapabilityReport, CpuArchitecture, HostDescriptor, HostOs, ProbeSource, ProbeStatus,
-    ProviderDescriptor, SCHEMA_VERSION_V1,
+    CapabilityObservation, CapabilityReport, CapabilityValue, CoreConfig, CpuArchitecture, HostDescriptor, HostOs,
+    ProbeSource, ProbeStatus, ProviderDescriptor, SCHEMA_VERSION_V1,
 };
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 
-pub const PROBE_VERSION: &str = "0.5.0";
+pub const PROBE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeError {
@@ -36,6 +35,40 @@ impl std::error::Error for ProbeError {}
 
 pub struct HostProbe;
 
+/// Pure, context-backed capability report construction for stable API clients.
+///
+/// This query intentionally accepts only an already validated in-memory
+/// [`CoreConfig`]. It cannot discover providers, touch the filesystem, access
+/// the network, execute a process, or inspect a guest executable.
+pub struct ContextCapabilityQuery;
+
+impl ContextCapabilityQuery {
+    /// Build the public, privacy-bounded capability projection held by a context.
+    pub fn report(config: &CoreConfig) -> Result<CapabilityReport, ProbeError> {
+        let source = &config.capabilities;
+        let mut report = CapabilityReport {
+            schema_version: SCHEMA_VERSION_V1.into(),
+            host: HostDescriptor {
+                os: source.host.os,
+                os_version: "configured".into(),
+                architecture: source.host.architecture,
+                kernel: None,
+                device_model: None,
+            },
+            runtime_providers: public_providers(&source.runtime_providers, ProviderClass::Runtime)?,
+            translators: public_providers(&source.translators, ProviderClass::Translator)?,
+            graphics_backends: public_providers(&source.graphics_backends, ProviderClass::Graphics)?,
+            observations: public_observations(source),
+            features: public_features(&source.features),
+        };
+        canonicalize_report(&mut report);
+        report
+            .validate()
+            .map_err(|error| ProbeError::InvalidReport(error.to_string()))?;
+        Ok(report)
+    }
+}
+
 impl HostProbe {
     /// Build a read-only snapshot from operating-system data and Rust target facts.
     ///
@@ -55,25 +88,25 @@ impl HostProbe {
                 "host.os",
                 "host",
                 ProbeSource::RustStandardLibrary,
-                Value::String(host_os_name(os).into()),
+                CapabilityValue::String(host_os_name(os).into()),
             ),
             detected(
                 "host.architecture",
                 "host",
                 ProbeSource::RustStandardLibrary,
-                Value::String(architecture_name(architecture).into()),
+                CapabilityValue::String(architecture_name(architecture).into()),
             ),
             detected(
                 "host.logical-cpu-count",
                 "host",
                 ProbeSource::OperatingSystemApi,
-                Value::from(u64::try_from(logical_cpu_count).unwrap_or(u64::MAX)),
+                CapabilityValue::from(u64::try_from(logical_cpu_count).unwrap_or(u64::MAX)),
             ),
             detected(
                 "translator.native",
                 "translator",
                 ProbeSource::BuiltIn,
-                Value::Bool(true),
+                CapabilityValue::Boolean(true),
             ),
         ];
         observations.push(fact_observation("host.os-version", "host", &os_version));
@@ -81,18 +114,18 @@ impl HostProbe {
         observations.push(optional_fact_observation("host.device-model", "host", &device_model));
 
         let mut features = BTreeMap::new();
-        features.insert("probeVersion".into(), Value::String(PROBE_VERSION.into()));
+        features.insert("probeVersion".into(), CapabilityValue::String(PROBE_VERSION.into()));
         features.insert(
             "logicalCpuCount".into(),
-            Value::from(u64::try_from(logical_cpu_count).unwrap_or(u64::MAX)),
+            CapabilityValue::from(u64::try_from(logical_cpu_count).unwrap_or(u64::MAX)),
         );
         features.insert(
             "pointerWidth".into(),
-            Value::from((std::mem::size_of::<usize>() * 8) as u64),
+            CapabilityValue::from((std::mem::size_of::<usize>() * 8) as u64),
         );
         features.insert(
             "endianness".into(),
-            Value::String(
+            CapabilityValue::String(
                 if cfg!(target_endian = "little") {
                     "little"
                 } else {
@@ -131,6 +164,141 @@ impl HostProbe {
     }
 }
 
+fn canonicalize_report(report: &mut CapabilityReport) {
+    canonicalize_providers(&mut report.runtime_providers);
+    canonicalize_providers(&mut report.translators);
+    canonicalize_providers(&mut report.graphics_backends);
+    report.observations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn canonicalize_providers(providers: &mut [ProviderDescriptor]) {
+    for provider in providers.iter_mut() {
+        provider.capabilities.sort();
+    }
+    providers.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProviderClass {
+    Runtime,
+    Translator,
+    Graphics,
+}
+
+impl ProviderClass {
+    fn accepts(self, kind: &str) -> bool {
+        match self {
+            Self::Runtime => matches!(kind, "wine" | "virtual-machine" | "remote"),
+            Self::Translator => matches!(kind, "native" | "rosetta" | "fex" | "box64" | "qemu" | "remote"),
+            Self::Graphics => matches!(
+                kind,
+                "wined3d" | "dxvk" | "vkd3d-proton" | "d3dmetal" | "moltenvk" | "virtualized" | "remote"
+            ),
+        }
+    }
+}
+
+fn public_providers(
+    providers: &[ProviderDescriptor],
+    class: ProviderClass,
+) -> Result<Vec<ProviderDescriptor>, ProbeError> {
+    providers
+        .iter()
+        .map(|provider| {
+            if !class.accepts(&provider.kind) {
+                return Err(ProbeError::InvalidReport(format!(
+                    "provider {} has a non-public kind",
+                    provider.id
+                )));
+            }
+            Ok(ProviderDescriptor {
+                id: provider.id.clone(),
+                kind: provider.kind.clone(),
+                // Configuration text is not a trusted public evidence source.
+                // Runtime-pack probes can publish a verified version separately.
+                version: "configured".into(),
+                available: provider.available,
+                reason: (!provider.available).then(|| "configured provider is unavailable".into()),
+                capabilities: provider
+                    .capabilities
+                    .iter()
+                    .filter(|capability| is_public_capability(capability))
+                    .cloned()
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+fn is_public_capability(capability: &str) -> bool {
+    matches!(
+        capability,
+        "win32"
+            | "win64"
+            | "new-wow64"
+            | "remoteapp"
+            | "guest-i386"
+            | "guest-x86_64"
+            | "guest-arm64"
+            | "i386-on-i386"
+            | "i386-on-x86_64"
+            | "x86_64-on-x86_64"
+            | "arm64-on-arm64"
+            | "i386-on-arm64"
+            | "x86_64-on-arm64"
+            | "d3d8"
+            | "d3d9"
+            | "d3d10"
+            | "d3d11"
+            | "d3d12"
+            | "opengl"
+            | "vulkan"
+            | "metal"
+    )
+}
+
+fn public_features(features: &BTreeMap<String, CapabilityValue>) -> BTreeMap<String, CapabilityValue> {
+    features
+        .iter()
+        .filter_map(|(name, value)| {
+            let public_value = match (name.as_str(), value) {
+                ("vulkan" | "ntsync", CapabilityValue::Boolean(value)) => CapabilityValue::Boolean(*value),
+                ("logicalCpuCount", CapabilityValue::Number(value))
+                    if value.as_u64().is_some_and(|value| (1..=1_048_576).contains(&value)) =>
+                {
+                    CapabilityValue::Number(value.clone())
+                }
+                ("pointerWidth", CapabilityValue::Number(value)) if matches!(value.as_u64(), Some(32 | 64)) => {
+                    CapabilityValue::Number(value.clone())
+                }
+                ("endianness", CapabilityValue::String(value)) if matches!(value.as_str(), "little" | "big") => {
+                    CapabilityValue::String(value.clone())
+                }
+                ("probeVersion", _) => CapabilityValue::String(PROBE_VERSION.into()),
+                _ => return None,
+            };
+            Some((name.clone(), public_value))
+        })
+        .collect()
+}
+
+fn public_observations(source: &CapabilityReport) -> Vec<CapabilityObservation> {
+    vec![
+        detected(
+            "host.os",
+            "host",
+            ProbeSource::Configuration,
+            CapabilityValue::String(host_os_name(source.host.os).into()),
+        ),
+        detected(
+            "host.architecture",
+            "host",
+            ProbeSource::Configuration,
+            CapabilityValue::String(architecture_name(source.host.architecture).into()),
+        ),
+    ]
+}
+
 #[derive(Debug, Clone)]
 struct ProbeFact {
     value: Option<String>,
@@ -156,7 +324,7 @@ impl ProbeFact {
     }
 }
 
-fn detected(id: &str, category: &str, source: ProbeSource, value: Value) -> CapabilityObservation {
+fn detected(id: &str, category: &str, source: ProbeSource, value: CapabilityValue) -> CapabilityObservation {
     CapabilityObservation {
         id: id.into(),
         category: category.into(),
@@ -169,7 +337,7 @@ fn detected(id: &str, category: &str, source: ProbeSource, value: Value) -> Capa
 
 fn fact_observation(id: &str, category: &str, fact: &ProbeFact) -> CapabilityObservation {
     match &fact.value {
-        Some(value) => detected(id, category, fact.source, Value::String(value.clone())),
+        Some(value) => detected(id, category, fact.source, CapabilityValue::String(value.clone())),
         None => CapabilityObservation {
             id: id.into(),
             category: category.into(),
@@ -425,6 +593,13 @@ const fn windows_version() -> Option<String> {
 mod tests {
     use super::*;
 
+    fn context_config(architecture: CpuArchitecture) -> CoreConfig {
+        let mut config: CoreConfig =
+            serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap();
+        config.capabilities.host.architecture = architecture;
+        config
+    }
+
     #[test]
     fn probe_matches_the_compilation_target() {
         let report = HostProbe::probe().unwrap();
@@ -467,5 +642,138 @@ mod tests {
             vec!["i386-on-x86_64", "x86_64-on-x86_64"]
         );
         assert_eq!(native_capabilities(CpuArchitecture::Arm64), vec!["arm64-on-arm64"]);
+    }
+
+    #[test]
+    fn context_query_maps_linux_x86_64_and_arm64_hosts() {
+        for architecture in [CpuArchitecture::X86_64, CpuArchitecture::Arm64] {
+            let report = ContextCapabilityQuery::report(&context_config(architecture)).unwrap();
+            assert_eq!(report.host.os, HostOs::Linux);
+            assert_eq!(report.host.architecture, architecture);
+            assert_eq!(report.schema_version, SCHEMA_VERSION_V1);
+        }
+    }
+
+    #[test]
+    fn context_query_preserves_empty_and_unavailable_providers() {
+        let mut config = context_config(CpuArchitecture::Arm64);
+        config.capabilities.runtime_providers.clear();
+        config.capabilities.translators.clear();
+        config.capabilities.graphics_backends.clear();
+
+        let empty = ContextCapabilityQuery::report(&config).unwrap();
+        assert!(empty.runtime_providers.is_empty());
+        assert!(empty.translators.is_empty());
+        assert!(empty.graphics_backends.is_empty());
+
+        config.capabilities.runtime_providers.push(ProviderDescriptor {
+            id: "wine-unavailable".into(),
+            kind: "wine".into(),
+            version: "pack-pinned".into(),
+            available: false,
+            reason: Some("runtime pack is not installed".into()),
+            capabilities: vec!["win64".into(), "win32".into()],
+        });
+        let unavailable = ContextCapabilityQuery::report(&config).unwrap();
+        assert!(!unavailable.runtime_providers[0].available);
+        assert_eq!(
+            unavailable.runtime_providers[0].reason.as_deref(),
+            Some("configured provider is unavailable")
+        );
+    }
+
+    #[test]
+    fn context_query_canonicalizes_all_ordered_collections() {
+        let mut config = context_config(CpuArchitecture::Arm64);
+        config.capabilities.runtime_providers.push(ProviderDescriptor {
+            id: "zzz-runtime".into(),
+            kind: "virtual-machine".into(),
+            version: "test".into(),
+            available: true,
+            reason: None,
+            capabilities: vec!["guest-x86_64".into(), "guest-i386".into()],
+        });
+        config.capabilities.runtime_providers.reverse();
+        config.capabilities.translators.reverse();
+        config.capabilities.graphics_backends.reverse();
+        config.capabilities.observations.reverse();
+        for provider in config
+            .capabilities
+            .runtime_providers
+            .iter_mut()
+            .chain(config.capabilities.translators.iter_mut())
+            .chain(config.capabilities.graphics_backends.iter_mut())
+        {
+            provider.capabilities.reverse();
+        }
+
+        let report = ContextCapabilityQuery::report(&config).unwrap();
+        let second = ContextCapabilityQuery::report(&config).unwrap();
+        assert_eq!(
+            serde_json::to_string(&report).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+        assert!(report
+            .runtime_providers
+            .windows(2)
+            .all(|providers| providers[0].id < providers[1].id));
+        assert!(report
+            .observations
+            .windows(2)
+            .all(|observations| observations[0].id < observations[1].id));
+        assert!(report.runtime_providers.iter().all(|provider| provider
+            .capabilities
+            .windows(2)
+            .all(|capabilities| capabilities[0] < capabilities[1])));
+    }
+
+    #[test]
+    fn context_query_uses_an_explicit_public_field_allowlist() {
+        let mut config = context_config(CpuArchitecture::Arm64);
+        config.capabilities.host.os_version = "/home/alice/private".into();
+        config.capabilities.host.kernel = Some("token=host-secret".into());
+        config.capabilities.host.device_model = Some("alice-workstation".into());
+        config
+            .capabilities
+            .features
+            .insert("authToken".into(), CapabilityValue::String("secret".into()));
+        config
+            .capabilities
+            .features
+            .insert("userPath".into(), CapabilityValue::String("/home/alice/private".into()));
+        config.capabilities.observations.push(CapabilityObservation {
+            id: "process.command-line".into(),
+            category: "process".into(),
+            status: ProbeStatus::Detected,
+            source: ProbeSource::Configuration,
+            value: Some(CapabilityValue::String("--token secret /home/alice/private".into())),
+            reason: None,
+        });
+        config.capabilities.runtime_providers[0].version = "secret".into();
+        config.capabilities.runtime_providers[0]
+            .capabilities
+            .push("private-token".into());
+
+        config.validate().unwrap();
+        let report = ContextCapabilityQuery::report(&config).unwrap();
+        let json = serde_json::to_string(&report).unwrap();
+
+        assert_eq!(report.host.os_version, "configured");
+        assert!(report.host.kernel.is_none());
+        assert!(report.host.device_model.is_none());
+        assert!(!report.features.contains_key("authToken"));
+        assert!(!report.features.contains_key("userPath"));
+        assert!(report
+            .observations
+            .iter()
+            .all(|observation| matches!(observation.id.as_str(), "host.os" | "host.architecture")));
+        assert_eq!(report.runtime_providers[0].version, "configured");
+        assert!(!report.runtime_providers[0]
+            .capabilities
+            .iter()
+            .any(|capability| capability == "private-token"));
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("/home/alice/private"));
+        assert!(!json.contains("process.command-line"));
     }
 }

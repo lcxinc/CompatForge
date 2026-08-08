@@ -29,6 +29,10 @@ uint32_t cf_abi_version(void);
 cf_status_t cf_probe_capabilities(char **out_capabilities_json);
 
 cf_status_t cf_context_create(const char *config_json, cf_context_t **out_context);
+cf_status_t cf_capabilities_get(
+    const cf_context_t *context,
+    char **out_report_json
+);
 cf_status_t cf_compile_launch(
     const cf_context_t *context,
     const char *request_json,

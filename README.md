@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.5.0`。除 `Context/LaunchRequest → LaunchPlan → 进程树监督` 闭环外，已加入 macOS/Linux/Windows 的只读 Host Capability 基线探测、来源化 observations、CLI 与 C ABI 输出。探测器不扫描 PATH，也不会把未固定的 Wine、Translator 或 Graphics 二进制声明为可用 Provider；尚不包含可分发 Runtime 或真正的 OS 沙箱。
+> 当前状态：Core `0.6.0`。除 `Context/LaunchRequest → LaunchPlan → 进程树监督` 闭环外，已加入 macOS/Linux/Windows 的只读 Host Capability 基线探测、来源化 observations、CLI 与 C ABI 输出。探测器不扫描 PATH，也不会把未固定的 Wine、Translator 或 Graphics 二进制声明为可用 Provider；尚不包含可分发 Runtime 或真正的 OS 沙箱。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -84,7 +84,7 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
+C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_capabilities_get`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。`cf_capabilities_get` 自 API `0.6.0` 起作为 ABI v1 的只读 additive extension：它返回 Context 中已验证、确定性排序且经过公开字段白名单投影的 Schema v1 能力报告，不会复制 secret/用户路径/进程信息，也不会启动 Provider 或修改宿主状态。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
 
 ## 设计入口
 

@@ -107,11 +107,12 @@ impl ProcessSupervisor {
         });
 
         emitter.emit(RuntimeEventKind::Started, Some(process_id), None, None, None);
+        let mut output_readers = Vec::new();
         if let Some(pipe) = stdout {
-            spawn_output_reader(pipe, OutputStream::Stdout, Arc::clone(&emitter));
+            output_readers.push(spawn_output_reader(pipe, OutputStream::Stdout, Arc::clone(&emitter)));
         }
         if let Some(pipe) = stderr {
-            spawn_output_reader(pipe, OutputStream::Stderr, Arc::clone(&emitter));
+            output_readers.push(spawn_output_reader(pipe, OutputStream::Stderr, Arc::clone(&emitter)));
         }
         spawn_exit_watcher(
             child,
@@ -120,6 +121,7 @@ impl ProcessSupervisor {
             Arc::clone(&completed),
             Arc::clone(&emitter),
             wine_session,
+            output_readers,
         );
         if let Some(maximum_runtime) = plan.lifecycle.maximum_runtime_milliseconds {
             spawn_timeout_watcher(
@@ -332,7 +334,11 @@ impl EventEmitter {
     }
 }
 
-fn spawn_output_reader(pipe: impl Read + Send + 'static, stream: OutputStream, emitter: Arc<EventEmitter>) {
+fn spawn_output_reader(
+    pipe: impl Read + Send + 'static,
+    stream: OutputStream,
+    emitter: Arc<EventEmitter>,
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut reader = BufReader::new(pipe);
         let mut buffer = Vec::new();
@@ -362,7 +368,7 @@ fn spawn_output_reader(pipe: impl Read + Send + 'static, stream: OutputStream, e
                 }
             }
         }
-    });
+    })
 }
 
 fn spawn_exit_watcher(
@@ -372,6 +378,7 @@ fn spawn_exit_watcher(
     completed: Arc<AtomicBool>,
     emitter: Arc<EventEmitter>,
     wine_session: Option<Arc<WineSession>>,
+    output_readers: Vec<thread::JoinHandle<()>>,
 ) {
     thread::spawn(move || {
         let result = loop {
@@ -403,6 +410,19 @@ fn spawn_exit_watcher(
                 None,
                 Some(format!("descendant process cleanup failed: {error}")),
             );
+        }
+        // Descendants may inherit the output pipes, so terminate the tree before
+        // draining readers and publishing the terminal event.
+        for output_reader in output_readers {
+            if output_reader.join().is_err() {
+                emitter.emit(
+                    RuntimeEventKind::Failed,
+                    None,
+                    None,
+                    None,
+                    Some("output reader panicked".into()),
+                );
+            }
         }
 
         match result {

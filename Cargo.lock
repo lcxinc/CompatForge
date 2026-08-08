@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "compatforge-capability"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "compatforge-domain",
  "serde_json",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "compatforge-capability",
  "compatforge-domain",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-domain"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-ffi"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "compatforge-capability",
  "compatforge-domain",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-orchestrator"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-storage",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-process"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "compatforge-domain",
  "serde_json",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-storage"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
