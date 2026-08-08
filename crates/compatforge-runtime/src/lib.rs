@@ -154,7 +154,7 @@ impl RuntimePackStore {
     pub fn verify_installed(&self, digest: &str) -> Result<VerificationReceipt, RuntimePackError> {
         validate_digest("runtimePack.digest", digest)?;
         let manifest = self.load_manifest(digest)?;
-        self.verify_installed_manifest(&manifest)
+        self.verify_installed_manifest(digest, &manifest)
     }
 
     pub fn active_digest(&self, pack_id: &str) -> Result<Option<String>, RuntimePackError> {
@@ -189,7 +189,7 @@ impl RuntimePackStore {
                 "rollback manifest pack id does not match ref",
             ));
         }
-        self.verify_installed_manifest(&manifest)?;
+        self.verify_installed_manifest(&target_digest, &manifest)?;
         state.active_digest = target_digest.clone();
         store.write(relative, &state).map_err(RuntimePackError::Store)?;
         Ok(InstallReceipt {
@@ -287,9 +287,16 @@ impl RuntimePackStore {
 
     fn verify_installed_manifest(
         &self,
+        expected_digest: &str,
         manifest: &RuntimePackManifest,
     ) -> Result<VerificationReceipt, RuntimePackError> {
         manifest.validate()?;
+        if !manifest.digest.eq_ignore_ascii_case(expected_digest) {
+            return Err(RuntimePackError::ManifestDigestMismatch {
+                expected: normalized_digest(expected_digest),
+                actual: normalized_digest(&manifest.digest),
+            });
+        }
         let canonical = manifest.canonical_unsigned_bytes().map_err(RuntimePackError::Json)?;
         let actual = sha256_digest_bytes(&canonical);
         if !actual.eq_ignore_ascii_case(&manifest.digest) {
@@ -753,6 +760,40 @@ mod tests {
         assert!(matches!(
             store.rollback("test-runtime"),
             Err(RuntimePackError::ComponentDigestMismatch { .. })
+        ));
+        assert_eq!(store.active_digest("test-runtime").unwrap(), Some(second.digest));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binds_installed_manifest_to_the_requested_digest() {
+        let root = temporary_directory("manifest-swap");
+        let bundle = root.join("bundle");
+        let store = RuntimePackStore::new(root.join("store"));
+        let first = write_bundle(&bundle, b"runtime-v1", "1.0.0", RuntimeChannel::Preview);
+        store.install(&bundle, &first, &RejectAllSignatures).unwrap();
+        let second = write_bundle(&bundle, b"runtime-v2", "2.0.0", RuntimeChannel::Preview);
+        store.install(&bundle, &second, &RejectAllSignatures).unwrap();
+
+        let first_path = store.root.join(manifest_relative_path(&first.digest).unwrap());
+        let second_path = store.root.join(manifest_relative_path(&second.digest).unwrap());
+        fs::copy(second_path, first_path).unwrap();
+
+        let expected = normalized_digest(&first.digest);
+        let actual = normalized_digest(&second.digest);
+        assert!(matches!(
+            store.verify_installed(&first.digest),
+            Err(RuntimePackError::ManifestDigestMismatch {
+                expected: error_expected,
+                actual: error_actual,
+            }) if error_expected == expected && error_actual == actual
+        ));
+        assert!(matches!(
+            store.rollback("test-runtime"),
+            Err(RuntimePackError::ManifestDigestMismatch {
+                expected: error_expected,
+                actual: error_actual,
+            }) if error_expected == expected && error_actual == actual
         ));
         assert_eq!(store.active_digest("test-runtime").unwrap(), Some(second.digest));
         fs::remove_dir_all(root).unwrap();
