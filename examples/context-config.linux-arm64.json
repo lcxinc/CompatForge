@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1",
+  "capabilities": {
+    "schemaVersion": "1",
+    "host": {
+      "os": "linux",
+      "osVersion": "rolling",
+      "architecture": "arm64",
+      "kernel": "6.x"
+    },
+    "runtimeProviders": [
+      {
+        "id": "wine-local",
+        "kind": "wine",
+        "version": "11.x",
+        "available": true,
+        "capabilities": ["win32", "win64", "new-wow64"]
+      }
+    ],
+    "translators": [
+      {
+        "id": "fex-system",
+        "kind": "fex",
+        "version": "pack-pinned",
+        "available": true,
+        "capabilities": ["i386-on-arm64", "x86_64-on-arm64"]
+      }
+    ],
+    "graphicsBackends": [
+      {
+        "id": "dxvk-packaged",
+        "kind": "dxvk",
+        "version": "pack-pinned",
+        "available": true,
+        "capabilities": ["d3d8", "d3d9", "d3d10", "d3d11"]
+      }
+    ],
+    "features": {
+      "vulkan": true,
+      "ntsync": true
+    }
+  },
+  "runtimeBindings": [
+    {
+      "providerId": "wine-local",
+      "packId": "wine-linux-arm64-fex",
+      "packDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "executable": "/opt/compatforge/runtime/bin/wine",
+      "environment": {
+        "COMPATFORGE_RUNTIME_PACK": "wine-linux-arm64-fex"
+      }
+    }
+  ],
+  "storageRoot": "/var/lib/compatforge",
+  "sandboxProfile": "desktop"
+}

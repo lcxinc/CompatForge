@@ -1,8 +1,15 @@
-//! Platform-neutral types shared by every CompatForge frontend and provider.
+//! Versioned, platform-neutral contracts shared by every CompatForge client.
 
 #![forbid(unsafe_code)]
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+
+pub const SCHEMA_VERSION_V1: &str = "1";
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HostOs {
     MacOs,
     Linux,
@@ -10,64 +17,580 @@ pub enum HostOs {
     Windows,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 pub enum CpuArchitecture {
+    #[serde(rename = "i386")]
     I386,
+    #[serde(rename = "x86_64")]
     X86_64,
+    #[serde(rename = "arm64")]
     Arm64,
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 pub enum RuntimeKind {
+    #[serde(rename = "wine")]
     Wine,
+    #[serde(rename = "virtual-machine")]
     VirtualMachine,
+    #[serde(rename = "remote")]
     Remote,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl RuntimeKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wine => "wine",
+            Self::VirtualMachine => "virtual-machine",
+            Self::Remote => "remote",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 pub enum TranslatorKind {
+    #[serde(rename = "native")]
     Native,
+    #[serde(rename = "rosetta")]
     Rosetta,
+    #[serde(rename = "fex")]
     Fex,
+    #[serde(rename = "box64")]
     Box64,
+    #[serde(rename = "qemu")]
     Qemu,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphicsBackendKind {
-    WineD3d,
-    Dxvk,
-    Vkd3dProton,
-    D3dMetal,
-    MoltenVk,
-    Virtualized,
+    #[serde(rename = "remote")]
     Remote,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostCapabilities {
-    pub os: HostOs,
-    pub architecture: CpuArchitecture,
-    pub runtimes: Vec<RuntimeKind>,
-    pub translators: Vec<TranslatorKind>,
-    pub graphics_backends: Vec<GraphicsBackendKind>,
+impl TranslatorKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Rosetta => "rosetta",
+            Self::Fex => "fex",
+            Self::Box64 => "box64",
+            Self::Qemu => "qemu",
+            Self::Remote => "remote",
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchRequest {
-    pub bottle_id: String,
-    pub executable: String,
-    pub guest_architecture: CpuArchitecture,
-    pub requires_kernel_driver: bool,
-    pub requires_directx_12: bool,
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+pub enum GraphicsBackendKind {
+    #[serde(rename = "wined3d")]
+    WineD3d,
+    #[serde(rename = "dxvk")]
+    Dxvk,
+    #[serde(rename = "vkd3d-proton")]
+    Vkd3dProton,
+    #[serde(rename = "d3dmetal")]
+    D3dMetal,
+    #[serde(rename = "moltenvk")]
+    MoltenVk,
+    #[serde(rename = "virtualized")]
+    Virtualized,
+    #[serde(rename = "remote")]
+    Remote,
+}
+
+impl GraphicsBackendKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WineD3d => "wined3d",
+            Self::Dxvk => "dxvk",
+            Self::Vkd3dProton => "vkd3d-proton",
+            Self::D3dMetal => "d3dmetal",
+            Self::MoltenVk => "moltenvk",
+            Self::Virtualized => "virtualized",
+            Self::Remote => "remote",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkPolicy {
+    #[default]
+    Deny,
+    InstallerOnly,
+    Allow,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxProfile {
+    Strict,
+    #[default]
+    Desktop,
+    Game,
+    Developer,
+    Unconfined,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostDescriptor {
+    pub os: HostOs,
+    pub os_version: String,
+    pub architecture: CpuArchitecture,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub kind: String,
+    pub version: String,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityReport {
+    pub schema_version: String,
+    pub host: HostDescriptor,
+    pub runtime_providers: Vec<ProviderDescriptor>,
+    pub translators: Vec<ProviderDescriptor>,
+    pub graphics_backends: Vec<ProviderDescriptor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub features: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutableRequest {
+    pub path: String,
+    pub architecture: CpuArchitecture,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LaunchConstraints {
     pub allow_virtual_machine: bool,
     pub allow_remote: bool,
+    #[serde(default)]
+    pub requires_kernel_driver: bool,
+    #[serde(default)]
+    pub requires_direct_x12: bool,
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LaunchRequest {
+    pub schema_version: String,
+    pub request_id: String,
+    pub bottle_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe_id: Option<String>,
+    pub executable: ExecutableRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    pub constraints: LaunchConstraints,
+}
+
+impl LaunchRequest {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        validate_id("bottleId", &self.bottle_id)?;
+        if let Some(recipe_id) = &self.recipe_id {
+            validate_id("recipeId", recipe_id)?;
+        }
+        if self.request_id.is_empty() {
+            return Err(ContractError::MissingField("requestId"));
+        }
+        if self.executable.path.is_empty() {
+            return Err(ContractError::MissingField("executable.path"));
+        }
+        if self.executable.architecture == CpuArchitecture::Unknown {
+            return Err(ContractError::UnsupportedValue("executable.architecture"));
+        }
+        if let Some(digest) = &self.executable.sha256 {
+            validate_sha256("executable.sha256", digest)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeBinding {
+    pub provider_id: String,
+    pub pack_id: String,
+    pub pack_digest: String,
+    pub executable: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+}
+
+impl RuntimeBinding {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_id("runtimeBindings.providerId", &self.provider_id)?;
+        validate_id("runtimeBindings.packId", &self.pack_id)?;
+        validate_digest("runtimeBindings.packDigest", &self.pack_digest)?;
+        if self.executable.is_empty() {
+            return Err(ContractError::MissingField("runtimeBindings.executable"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CoreConfig {
+    pub schema_version: String,
+    pub capabilities: CapabilityReport,
+    pub runtime_bindings: Vec<RuntimeBinding>,
+    pub storage_root: String,
+    #[serde(default)]
+    pub sandbox_profile: SandboxProfile,
+}
+
+impl CoreConfig {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        validate_schema_version(&self.capabilities.schema_version)?;
+        if self.storage_root.is_empty() {
+            return Err(ContractError::MissingField("storageRoot"));
+        }
+        for binding in &self.runtime_bindings {
+            binding.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeSelection {
+    pub provider: RuntimeKind,
+    pub pack_id: String,
+    pub pack_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TranslatorSelection {
+    pub provider: TranslatorKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphicsSelection {
+    pub backend: GraphicsBackendKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeCommand {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    pub working_directory: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Mount {
+    pub source: String,
+    pub destination: String,
+    pub access: MountAccess,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MountAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SandboxPolicy {
+    pub profile: SandboxProfile,
+    pub network: NetworkPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_devices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaunchPlan {
-    pub runtime: RuntimeKind,
-    pub translator: TranslatorKind,
-    pub graphics: GraphicsBackendKind,
-    pub reason: &'static str,
+    pub schema_version: String,
+    pub request_id: String,
+    pub runtime: RuntimeSelection,
+    pub translator: TranslatorSelection,
+    pub graphics: GraphicsSelection,
+    pub process: NativeCommand,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<Mount>,
+    pub sandbox: SandboxPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_trace: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BottleManifest {
+    pub schema_version: String,
+    pub id: String,
+    pub name: String,
+    pub guest: BottleGuest,
+    pub runtime_pack: RuntimePackReference,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipes: Vec<RecipeReference>,
+    pub storage: BottleStorage,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BottleGuest {
+    pub windows_version: WindowsVersion,
+    pub architecture: CpuArchitecture,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowsVersion {
+    Win7,
+    Win10,
+    Win11,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimePackReference {
+    pub id: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecipeReference {
+    pub id: String,
+    pub version: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BottleStorage {
+    pub layout_version: u32,
+    pub state: BottleState,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BottleState {
+    Ready,
+    Preparing,
+    Migrating,
+    Repairing,
+    Failed,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimePackManifest {
+    pub schema_version: String,
+    pub id: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<RuntimeChannel>,
+    pub host: RuntimeHost,
+    pub components: Vec<RuntimeComponent>,
+    pub capabilities: Vec<String>,
+    pub digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<ManifestSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sbom: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeChannel {
+    Stable,
+    Candidate,
+    Preview,
+    Development,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeHost {
+    pub os: HostOs,
+    pub architecture: CpuArchitecture,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeComponent {
+    pub name: String,
+    pub version: String,
+    pub license: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub entrypoints: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSignature {
+    pub key_id: String,
+    pub algorithm: SignatureAlgorithm,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+pub enum SignatureAlgorithm {
+    #[serde(rename = "ed25519")]
+    Ed25519,
+    #[serde(rename = "p256-sha256")]
+    P256Sha256,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractError {
+    UnsupportedSchemaVersion,
+    MissingField(&'static str),
+    InvalidIdentifier(&'static str),
+    InvalidDigest(&'static str),
+    UnsupportedValue(&'static str),
+}
+
+impl fmt::Display for ContractError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedSchemaVersion => formatter.write_str("unsupported schemaVersion"),
+            Self::MissingField(field) => write!(formatter, "missing required field {field}"),
+            Self::InvalidIdentifier(field) => write!(formatter, "invalid identifier in {field}"),
+            Self::InvalidDigest(field) => write!(formatter, "invalid digest in {field}"),
+            Self::UnsupportedValue(field) => write!(formatter, "unsupported value in {field}"),
+        }
+    }
+}
+
+impl std::error::Error for ContractError {}
+
+pub fn validate_schema_version(version: &str) -> Result<(), ContractError> {
+    if version == SCHEMA_VERSION_V1 {
+        Ok(())
+    } else {
+        Err(ContractError::UnsupportedSchemaVersion)
+    }
+}
+
+pub fn validate_id(field: &'static str, value: &str) -> Result<(), ContractError> {
+    let mut characters = value.chars();
+    let first_is_valid = characters
+        .next()
+        .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit());
+    let rest_is_valid = characters.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || matches!(character, '.' | '_' | '-')
+    });
+    if first_is_valid && rest_is_valid && value.len() >= 2 {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidIdentifier(field))
+    }
+}
+
+pub fn validate_sha256(field: &'static str, value: &str) -> Result<(), ContractError> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidDigest(field))
+    }
+}
+
+pub fn validate_digest(field: &'static str, value: &str) -> Result<(), ContractError> {
+    value
+        .strip_prefix("sha256:")
+        .ok_or(ContractError::InvalidDigest(field))
+        .and_then(|digest| validate_sha256(field, digest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_checked_in_contract_examples() {
+        let capability: CapabilityReport =
+            serde_json::from_str(include_str!("../../../examples/capability-report.linux-arm64.json")).unwrap();
+        assert_eq!(capability.host.architecture, CpuArchitecture::Arm64);
+
+        let request: LaunchRequest =
+            serde_json::from_str(include_str!("../../../examples/launch-request.json")).unwrap();
+        request.validate().unwrap();
+
+        let plan: LaunchPlan = serde_json::from_str(include_str!("../../../examples/launch-plan.json")).unwrap();
+        assert_eq!(plan.runtime.provider, RuntimeKind::Wine);
+
+        let runtime: RuntimePackManifest = serde_json::from_str(include_str!(
+            "../../../examples/runtime-packs/wine-linux-arm64-fex.json"
+        ))
+        .unwrap();
+        assert_eq!(runtime.host.os, HostOs::Linux);
+
+        let bottle: BottleManifest =
+            serde_json::from_str(include_str!("../../../examples/bottles/7zip-default.json")).unwrap();
+        assert_eq!(bottle.storage.state, BottleState::Ready);
+    }
+
+    #[test]
+    fn rejects_unknown_security_relevant_fields() {
+        let json = r#"{
+            "schemaVersion":"1",
+            "requestId":"018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+            "bottleId":"example-bottle",
+            "executable":{"path":"C:\\\\example.exe","architecture":"x86_64"},
+            "constraints":{"allowVirtualMachine":false,"allowRemote":false,"unexpected":true}
+        }"#;
+        assert!(serde_json::from_str::<LaunchRequest>(json).is_err());
+    }
+
+    #[test]
+    fn validates_identifiers_and_digests() {
+        assert!(validate_id("id", "wine-linux-arm64").is_ok());
+        assert!(validate_id("id", "../escape").is_err());
+        assert!(validate_digest("digest", &format!("sha256:{}", "a".repeat(64))).is_ok());
+        assert!(validate_digest("digest", "latest").is_err());
+    }
 }

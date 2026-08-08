@@ -1,48 +1,53 @@
-use compatforge_domain::{
-    CpuArchitecture, GraphicsBackendKind, HostCapabilities, HostOs, LaunchRequest, RuntimeKind,
-    TranslatorKind,
-};
+use compatforge_domain::{CoreConfig, LaunchRequest};
 use compatforge_orchestrator::PolicyEngine;
+use std::error::Error;
+use std::fs;
+use std::path::Path;
 
 fn main() {
-    let command = std::env::args().nth(1);
-    match command.as_deref() {
-        Some("--version" | "version") => println!("compatforge-cli 0.1.0"),
-        Some("demo-plan") => demo_plan(),
-        _ => {
-            println!("CompatForge Phase 0 CLI");
-            println!("usage: compatforge-cli [version|demo-plan]");
-        }
+    if let Err(error) = run() {
+        eprintln!("compatforge-cli: {error}");
+        std::process::exit(1);
     }
 }
 
-fn demo_plan() {
-    let host = HostCapabilities {
-        os: HostOs::Linux,
-        architecture: CpuArchitecture::Arm64,
-        runtimes: vec![RuntimeKind::Wine, RuntimeKind::Remote],
-        translators: vec![TranslatorKind::Fex, TranslatorKind::Qemu],
-        graphics_backends: vec![
-            GraphicsBackendKind::Dxvk,
-            GraphicsBackendKind::Vkd3dProton,
-            GraphicsBackendKind::WineD3d,
-        ],
-    };
-    let request = LaunchRequest {
-        bottle_id: "demo".into(),
-        executable: "C:\\Program Files\\7-Zip\\7zFM.exe".into(),
-        guest_architecture: CpuArchitecture::X86_64,
-        requires_kernel_driver: false,
-        requires_directx_12: false,
-        allow_virtual_machine: false,
-        allow_remote: true,
-    };
-
-    match PolicyEngine::compile(&host, &request) {
-        Ok(plan) => println!("{plan:#?}"),
-        Err(error) => {
-            eprintln!("planning failed: {error:?}");
-            std::process::exit(1);
+fn run() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    match arguments.as_slice() {
+        [command] if matches!(command.as_str(), "--version" | "version") => {
+            println!("compatforge-cli 0.2.0");
         }
+        [command] if command == "demo-plan" => {
+            let config: CoreConfig =
+                serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json"))?;
+            let request: LaunchRequest = serde_json::from_str(include_str!("../../../examples/launch-request.json"))?;
+            print_plan(&config, &request)?;
+        }
+        [command, config_path, request_path] if command == "plan" => {
+            let config = read_json::<CoreConfig>(Path::new(config_path))?;
+            let request = read_json::<LaunchRequest>(Path::new(request_path))?;
+            print_plan(&config, &request)?;
+        }
+        _ => print_help(),
     }
+    Ok(())
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn print_plan(config: &CoreConfig, request: &LaunchRequest) -> Result<(), Box<dyn Error>> {
+    let plan = PolicyEngine::compile(config, request)?;
+    println!("{}", serde_json::to_string_pretty(&plan)?);
+    Ok(())
+}
+
+fn print_help() {
+    println!("CompatForge Core CLI");
+    println!("usage:");
+    println!("  compatforge-cli version");
+    println!("  compatforge-cli demo-plan");
+    println!("  compatforge-cli plan <context-config.json> <launch-request.json>");
 }

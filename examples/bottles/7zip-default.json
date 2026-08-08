@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "id": "7zip-default",
+  "name": "7-Zip",
+  "guest": {
+    "windowsVersion": "win11",
+    "architecture": "x86_64"
+  },
+  "runtimePack": {
+    "id": "wine-linux-arm64-fex",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "recipes": [
+    {
+      "id": "7zip",
+      "version": "2",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "storage": {
+    "layoutVersion": 1,
+    "state": "ready"
+  },
+  "createdAt": "2026-08-08T00:00:00Z",
+  "updatedAt": "2026-08-08T00:00:00Z"
+}

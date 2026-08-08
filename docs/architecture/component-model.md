@@ -4,13 +4,14 @@
 
 | 组件 | 路径 | 当前责任 | 下一步 |
 |---|---|---|---|
-| Domain | `crates/compatforge-domain` | 平台无关枚举、能力、请求与计划概念 | 接入 schema codegen/serde，拆分稳定 API 与内部模型 |
-| Orchestrator | `crates/compatforge-orchestrator` | 无副作用的基本回退策略与测试 | Provider probe、约束求解、认证结果评分、decision trace |
-| C ABI | `crates/compatforge-ffi` | ABI/API 版本探针和 C header | opaque context、JSON request/response、事件与释放函数 |
-| CLI | `apps/cli` | 演示策略编译 | host probe、validate、plan、launch、doctor、lab 子命令 |
+| Domain | `crates/compatforge-domain` | 与 Schema 对齐的能力、请求、计划、Bottle、Runtime Pack DTO 与校验 | 生成 Swift/Kotlin 绑定，拆分公共 API 与内部模型 |
+| Storage | `crates/compatforge-storage` | macOS/XDG/Windows/Android 路径解析、受限相对路径、可恢复 JSON 写入 | manifest locking、snapshot 与迁移事务 |
+| Orchestrator | `crates/compatforge-orchestrator` | 无副作用的硬约束、Provider 回退、固定 Runtime Pack 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |
+| C ABI | `crates/compatforge-ffi` | opaque context、JSON plan、稳定 status、结构化错误与所有权释放 | 启动 handle、事件与取消 |
+| CLI | `apps/cli` | 从 JSON 文件生成 LaunchPlan | host probe、validate、launch、doctor、lab 子命令 |
 | Contracts | `schemas/` | 版本化交换格式 | 生成绑定、兼容性测试、签名 canonicalization |
 
-Phase 0 代码刻意不依赖第三方 crate，以保证新仓库能在三大桌面 CI 上快速建立基线。这不是长期限制；Phase 1 可在 ADR 评审后加入 serde、tokio、tracing、rusqlite 等依赖。
+Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未知字段，避免安全相关配置被静默忽略。异步运行时、数据库和遥测仍留到相应 Provider/进程监督需求出现后单独决策。
 
 ## 目标 Workspace
 

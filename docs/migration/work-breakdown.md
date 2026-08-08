@@ -6,6 +6,12 @@
 
 目标周期：2–4 周。当前仓库已交付设计骨架，仍需完成与 Mac-Win 的首轮集成验证。
 
+### 当前实现检查点（0.2.0）
+
+- 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
+- 待接入 Mac-Win：`RuntimeClient` protocol、动态/静态库装载、Swift smoke test；
+- 仍未实现：host probe、进程启动/监督、Runtime 安装、Bottle 迁移写入。
+
 ### 工作包
 
 - P0.1：确认根许可证、贡献方式和第三方合规负责人；

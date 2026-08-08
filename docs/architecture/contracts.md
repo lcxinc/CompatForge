@@ -53,25 +53,30 @@ pub trait GraphicsBackend: Send + Sync {
 
 ## C ABI
 
-Phase 0 只公开：
+Phase 0 最初只公开版本探针；首个纵向切片已经加入无副作用的 plan API：
 
 ```c
 const char *cf_api_version(void);
 uint32_t cf_abi_version(void);
-```
-
-Phase 1 使用 opaque handle 和调用方可释放字符串：
-
-```c
 typedef struct cf_context cf_context_t;
-typedef struct cf_launch cf_launch_t;
+typedef uint32_t cf_status_t;
 
 cf_status_t cf_context_create(const char *config_json, cf_context_t **out);
 cf_status_t cf_compile_launch(
-    cf_context_t *context,
+    const cf_context_t *context,
     const char *request_json,
     char **out_plan_json
 );
+cf_status_t cf_last_error_json(char **out_error_json);
+void cf_string_free(char *value);
+void cf_context_release(cf_context_t *context);
+```
+
+Phase 1 在相同 opaque-handle 规则下继续加入启动与事件 API：
+
+```c
+typedef struct cf_launch cf_launch_t;
+
 cf_status_t cf_launch_start(
     cf_context_t *context,
     const char *plan_json,
@@ -82,9 +87,7 @@ cf_status_t cf_launch_next_event(
     uint32_t timeout_ms,
     char **out_event_json
 );
-void cf_string_free(char *value);
 void cf_launch_release(cf_launch_t *launch);
-void cf_context_release(cf_context_t *context);
 ```
 
 C ABI 约束：
@@ -92,6 +95,7 @@ C ABI 约束：
 - ABI major 不兼容时拒绝初始化；API schema 可独立演进。
 - 所有跨边界对象由创建方释放，文档明确所有权。
 - 不跨 FFI 抛出 panic/exception；映射为稳定 status + structured error。
+- `cf_compile_launch` 只编译计划，没有下载、文件修改或进程副作用。
 - 回调默认不在 UI 主线程执行；客户端自行调度。
 - Swift/Kotlin 不持有 Rust 引用，只持有 opaque pointer。
 

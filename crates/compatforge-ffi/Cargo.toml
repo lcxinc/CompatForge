@@ -8,5 +8,10 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
+[dependencies]
+compatforge-domain = { path = "../compatforge-domain" }
+compatforge-orchestrator = { path = "../compatforge-orchestrator" }
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Phase 0 架构基线。仓库包含可编译的无外部依赖 Rust 骨架、C ABI 探针、策略引擎、版本化 JSON Schema、迁移计划和 CI；尚不包含可分发的 Wine Runtime。
+> 当前状态：Phase 0 首个纵向切片。Core 已能读取版本化 Context/LaunchRequest JSON，经约束校验生成完整 LaunchPlan JSON，并通过稳定 C ABI 或 CLI 返回；尚不启动进程，也不包含可分发的 Wine Runtime。
 
 ## 目标
 
@@ -50,7 +50,7 @@ flowchart TD
 
 ```text
 apps/                         CLI 与未来平台前端
-crates/                       Rust 核心、编排与 C ABI
+crates/                       版本化领域模型、存储、编排与 C ABI
 schemas/                      稳定的跨进程/跨语言数据契约
 examples/                     契约示例，不是可发布 Runtime
 docs/architecture/            架构和 Provider 接口
@@ -71,13 +71,24 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p compatforge-cli -- demo-plan
 ```
 
-Phase 0 没有第三方 Rust crate，因此首次检查不需要从 crates.io 下载依赖。
+首次构建会下载 `serde` 与 `serde_json`。它们只用于版本化契约和 JSON 边界；引入依据见 [ADR-0005](docs/decisions/0005-serde-for-versioned-contracts.md)。
+
+生成可复现 LaunchPlan：
+
+```bash
+cargo run -p compatforge-cli -- plan \
+  examples/context-config.linux-arm64.json \
+  examples/launch-request.json
+```
+
+Swift/C 客户端当前可使用 `cf_context_create`、`cf_compile_launch`、`cf_last_error_json`、`cf_string_free` 与 `cf_context_release`。调用方不需要了解 Rust 对象布局。
 
 ## 设计入口
 
 - [总体架构](docs/architecture/overview.md)
 - [组件与所有权](docs/architecture/component-model.md)
 - [Provider、IPC 与 C ABI 契约](docs/architecture/contracts.md)
+- [Phase 0 纵向切片](docs/implementation/phase-0-vertical-slice.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
 - [安全模型](docs/security.md)
