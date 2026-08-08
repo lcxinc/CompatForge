@@ -1,5 +1,6 @@
 use compatforge_capability::HostProbe;
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest, RuntimeEventKind, RuntimePackManifest};
+use compatforge_inspect::inspect_path;
 use compatforge_orchestrator::PolicyEngine;
 use compatforge_process::{EventPoll, ProcessSupervisor};
 use compatforge_provider_macos::{MacOsProviderConfig, MacOsProviderSet};
@@ -25,6 +26,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         [command] if command == "probe" => {
             println!("{}", serde_json::to_string_pretty(&HostProbe::probe()?)?);
+        }
+        [command, executable_path] if command == "inspect" => {
+            let executable_path = fs::canonicalize(executable_path)?;
+            println!("{}", serde_json::to_string_pretty(&inspect_path(&executable_path)?)?);
         }
         [group, platform, command, config_path] if group == "provider" && platform == "macos" && command == "probe" => {
             let config = read_json::<MacOsProviderConfig>(Path::new(config_path))?;
@@ -139,6 +144,7 @@ fn print_help() {
     println!("usage:");
     println!("  compatforge-cli version");
     println!("  compatforge-cli probe");
+    println!("  compatforge-cli inspect <windows-executable>");
     println!("  compatforge-cli provider macos probe <provider-config.json>");
     println!("  compatforge-cli provider macos context <provider-config.json> <storage-root>");
     println!("  compatforge-cli demo-plan");

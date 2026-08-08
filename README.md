@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.8.0`。除 `Context/LaunchRequest → LaunchPlan → 进程树监督` 闭环外，已加入三平台只读 Host Capability、ABI v1 能力查询、Runtime Pack 内容存储，以及首个 macOS Wine/Native/Rosetta/WineD3D Provider 纵向切片。macOS Provider 只执行已安装 Pack 对应、digest 与 Mach-O 架构均验证的入口点；D3DMetal 作为同 Pack 的可选外部插件，不随 Core 分发。Runtime artifact 通用解包、可信公钥和真正的 OS 沙箱仍待后续实现。
+> 当前状态：Core `0.9.0`。除 `Context/LaunchRequest → LaunchPlan → 进程树监督` 闭环外，已加入三平台只读 Host Capability、ABI v1 能力与 PE inspection 查询、Runtime Pack 内容存储，以及首个 macOS Wine/Native/Rosetta/WineD3D Provider 纵向切片。PE inspection 只解析 64 MiB 内的 PE32/PE32+ 元数据，不映射或执行来宾代码。Runtime artifact 通用解包、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -71,6 +71,7 @@ cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p compatforge-cli -- probe
+cargo run -p compatforge-cli -- inspect tests/fixtures/hello-x86_64.exe
 cargo run -p compatforge-cli -- demo-plan
 cargo run -p compatforge-cli -- provider macos probe <provider-config.json>
 cargo run -p compatforge-cli -- provider macos context <provider-config.json> <storage-root>
@@ -88,7 +89,7 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_capabilities_get`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。`cf_capabilities_get` 自 API `0.6.0` 起作为 ABI v1 的只读 additive extension：它返回 Context 中已验证、确定性排序且经过公开字段白名单投影的 Schema v1 能力报告，不会复制 secret/用户路径/进程信息，也不会启动 Provider 或修改宿主状态。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
+C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_context_create`、`cf_capabilities_get`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。`cf_inspect_executable` 自 API `0.9.0` 起作为 ABI v1 的只读 additive extension：它只返回经过严格边界验证的 Schema v1 PE 元数据，不启动 Provider、不生成 LaunchPlan，也不修改宿主状态。调用方必须先检查 API 版本，再解析新增符号。
 
 ## 设计入口
 
@@ -100,6 +101,7 @@ C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_capa
 - [Host Capability 纵向切片](docs/implementation/phase-1-host-capability.md)
 - [Runtime Pack 存储纵向切片](docs/implementation/phase-1-runtime-pack.md)
 - [macOS Provider 纵向切片](docs/implementation/phase-1-macos-provider.md)
+- [PE inspection 纵向切片](docs/implementation/phase-1-pe-inspection.md)
 - [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [能力证据与 Provider 声明决策](docs/decisions/0007-capability-evidence-boundary.md)
 - [Runtime Pack 内容寻址与原子激活决策](docs/decisions/0008-runtime-pack-content-store.md)

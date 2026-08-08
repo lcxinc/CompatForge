@@ -4,6 +4,8 @@
 
 CompatForge 是兼容运行“控制平面”，不是新的 Windows API 实现。它负责发现主机能力、验证可信资产、选择运行路径、编译 LaunchPlan、监督进程、收集结构化事件并把结果写入兼容知识库。Wine、FEX、Box64、QEMU、DXVK 等保持各自原生语言与构建系统，通过 Provider 边界集成。
 
+敌对 Windows 文件在规划前只进入独立、只读且有限大小的 PE inspection 边界。检查报告是兼容性输入，不是授权；解析成功不会触发 Provider、OS loader 或进程监督。
+
 ## 分层
 
 ```mermaid

@@ -6,6 +6,7 @@
 |---|---|---|---|
 | Domain | `crates/compatforge-domain` | 与 Schema 对齐的能力、请求、计划、Bottle、Runtime Pack DTO 与校验 | 生成 Swift/Kotlin 绑定，拆分公共 API 与内部模型 |
 | Capability | `crates/compatforge-capability` | 三平台 OS/架构/版本/设备基线、native translator 与来源化 observations | Runtime Pack、GPU/driver 与 translator 专项 probe |
+| Inspect | `crates/compatforge-inspect` | 64 MiB 内 PE32/PE32+ 只读解析、SHA-256、section/import 摘要 | fuzz corpus、签名/资源的独立有界解析 |
 | Storage | `crates/compatforge-storage` | macOS/XDG/Windows/Android 路径解析、受限相对路径、可恢复 JSON 写入 | manifest locking、snapshot 与迁移事务 |
 | Runtime Pack | `crates/compatforge-runtime` | 规范化 manifest digest、artifact SHA-256、内容寻址发布、原子 active ref、校验与回滚 | 可信密钥 provider、归档物化、垃圾回收与跨进程 writer |
 | Orchestrator | `crates/compatforge-orchestrator` | 无副作用的硬约束、Provider 回退、固定 Runtime Pack 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |

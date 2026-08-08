@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "fileDigest": "sha256:49c866f38f749fc92ded8749930b07eea51b1b8931492eff00c80c037ce46d02",
+  "fileSizeBytes": 1024,
+  "format": "pe32Plus",
+  "architecture": "x86_64",
+  "machineCode": 34404,
+  "imageKind": "executable",
+  "subsystem": "windowsConsole",
+  "subsystemCode": 3,
+  "entryPointRva": 0,
+  "sections": [
+    {
+      "name": ".rdata",
+      "virtualAddress": 4096,
+      "virtualSize": 512,
+      "rawDataSize": 512,
+      "readable": true,
+      "writable": false,
+      "executable": false
+    }
+  ],
+  "importLibraries": [
+    "kernel32.dll"
+  ]
+}
