@@ -157,6 +157,15 @@ impl RuntimePackStore {
         self.verify_installed_manifest(digest, &manifest)
     }
 
+    /// Load a manifest only after re-verifying its requested digest and every
+    /// content-addressed component object.
+    pub fn verified_manifest(&self, digest: &str) -> Result<RuntimePackManifest, RuntimePackError> {
+        validate_digest("runtimePack.digest", digest)?;
+        let manifest = self.load_manifest(digest)?;
+        self.verify_installed_manifest(digest, &manifest)?;
+        Ok(manifest)
+    }
+
     pub fn active_digest(&self, pack_id: &str) -> Result<Option<String>, RuntimePackError> {
         validate_id("runtimePack.id", pack_id)?;
         let state = read_optional_ref(&JsonStore::new(&self.root), &active_ref_path(pack_id))?;

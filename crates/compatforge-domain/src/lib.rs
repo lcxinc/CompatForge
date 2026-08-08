@@ -20,7 +20,7 @@ pub enum HostOs {
     Windows,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum CpuArchitecture {
     #[serde(rename = "i386")]
     I386,

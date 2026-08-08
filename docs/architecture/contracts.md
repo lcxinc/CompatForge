@@ -113,6 +113,8 @@ C ABI 约束：
 
 CapabilityReport 中的 `observations` 记录事实来源、检测状态和值/失败原因。Core 内建 probe 只声明 native translator；Wine、FEX/Box64/QEMU、DXVK/vkd3d/D3DMetal 等必须由固定 Runtime Pack、受信任系统适配器或远端认证提供证据，不能由文件名或 PATH 命中推断。
 
+Core `0.8.0` 的 macOS Provider 实现这一边界：先复验已安装 Runtime Pack 的 manifest 与全部对象，再校验物化 `wine`、`wineserver` 及可选 D3DMetal probe file 的 SHA-256、Mach-O 架构、根目录约束与可执行权限。版本探测使用固定绝对入口、清空环境、独立 argv 和五秒上限，不扫描 `PATH`、不调用 shell，也不生成 `/usr/bin/arch -x86_64`。ARM64 主机只有实际执行该 Pack 的 x86_64 Wine 成功后才发布 Rosetta available；同架构 Runtime 只发布 Native。Provider 生成的 RuntimeBinding 固定相同 `packId/packDigest` 和受保护环境，再交给既有 Planner/Process Supervisor。
+
 ForgeOS 的能力协商路径先解析 `cf_api_version` 与 `cf_abi_version`；确认 API 至少包含 `0.6.0` 能力查询且 ABI 为 1 后，才解析 `cf_capabilities_get`、`cf_last_error_json` 与 `cf_string_free`。Context 的创建与配置验证属于宿主集成初始化，不会在能力查询过程中隐式发生。ABI v1 客户端必须容忍后续 additive symbol，且不得依赖 Rust 对象布局。
 
 ## Desktop IPC
