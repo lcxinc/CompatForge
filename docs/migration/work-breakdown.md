@@ -6,13 +6,13 @@
 
 目标周期：2–4 周。当前仓库已交付设计骨架，仍需完成与 Mac-Win 的首轮集成验证。
 
-### 当前实现检查点（0.3.0）
+### 当前实现检查点（0.4.0）
 
 - 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
-- 已完成：LaunchPlan 对 Context 再授权、直接子进程监督、有序 stdout/stderr/exit 事件、轮询超时、终止与 C ABI/CLI 执行入口；
+- 已完成：LaunchPlan 对 Context 再授权、Unix process group、Windows Job Object、有序事件、最大运行时限、软终止/强制升级、Wine prefix 排他租约与 `wineserver` 清理；
 - 已冻结：Mac-Win Bridge 检查点 `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`，不再继续 SwiftUI 接入；
 - 已确定：桌面 UI 为 Qt 6/QML，UI 只消费 Core API；
-- 仍未实现：host probe、process group/Job Object、Wine Provider、Runtime 安装、Bottle 迁移写入。
+- 仍未实现：host probe、OS sandbox/资源配额、完整 Wine Provider、Runtime 安装、Bottle 迁移写入。
 
 ### 工作包
 
@@ -42,7 +42,7 @@
 | P1.1 | Host Capability | macOS/Linux CPU/GPU/Translator/Wine/图形能力结构化 probe |
 | P1.2 | Runtime Pack | manifest、内容存储、签名、安装、固定、回滚 |
 | P1.3 | Launch Planner | hard constraints、provider scoring、decision trace |
-| P1.4 | Process Supervisor | Unix process group、Windows Job Object、取消/超时升级、wineserver 清理 |
+| P1.4 | Process Supervisor | 已完成进程树/超时/wineserver 基线；继续 OS sandbox、资源配额与 daemon 级租约 |
 | P1.5 | macOS Providers | Wine、Rosetta、D3DMetal/WineD3D、App Support/沙箱适配 |
 | P1.6 | Recipe v2 | 现有 profile/recipes 数据化、typed action、签名与灰度 |
 | P1.7 | Bottle Bridge | 旧 manifest 双读、snapshot、layout migration、rollback |

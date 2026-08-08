@@ -11,7 +11,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::time::Duration;
 
-const API_VERSION: &[u8] = b"0.3.0\0";
+const API_VERSION: &[u8] = b"0.4.0\0";
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -399,6 +399,7 @@ mod tests {
         let executable = std::env::current_exe().unwrap().to_string_lossy().into_owned();
         config.storage_root.clone_from(&root);
         config.runtime_bindings[0].executable.clone_from(&executable);
+        config.runtime_bindings[0].wineserver_executable = None;
 
         let plan = LaunchPlan {
             schema_version: "1".into(),
@@ -431,6 +432,11 @@ mod tests {
                 profile: config.sandbox_profile,
                 network: compatforge_domain::NetworkPolicy::Deny,
                 allow_devices: Vec::new(),
+            },
+            lifecycle: compatforge_domain::ProcessLifecycle {
+                termination_grace_milliseconds: config.supervisor.termination_grace_milliseconds,
+                maximum_runtime_milliseconds: config.supervisor.maximum_runtime_milliseconds,
+                wineserver: None,
             },
             decision_trace: Vec::new(),
         };

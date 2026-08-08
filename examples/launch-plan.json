@@ -35,6 +35,14 @@
     "network": "allow",
     "allowDevices": []
   },
+  "lifecycle": {
+    "terminationGraceMilliseconds": 3000,
+    "maximumRuntimeMilliseconds": 21600000,
+    "wineserver": {
+      "executable": "/opt/compatforge/runtime/bin/wineserver",
+      "prefix": "/var/lib/compatforge/bottles/7zip-default/prefix"
+    }
+  },
   "decisionTrace": [
     "local Wine is available",
     "x86_64 guest on ARM64 requires translation",

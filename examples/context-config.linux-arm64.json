@@ -46,11 +46,16 @@
       "packId": "wine-linux-arm64-fex",
       "packDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "executable": "/opt/compatforge/runtime/bin/wine",
+      "wineserverExecutable": "/opt/compatforge/runtime/bin/wineserver",
       "environment": {
         "COMPATFORGE_RUNTIME_PACK": "wine-linux-arm64-fex"
       }
     }
   ],
   "storageRoot": "/var/lib/compatforge",
-  "sandboxProfile": "desktop"
+  "sandboxProfile": "desktop",
+  "supervisor": {
+    "terminationGraceMilliseconds": 3000,
+    "maximumRuntimeMilliseconds": 21600000
+  }
 }

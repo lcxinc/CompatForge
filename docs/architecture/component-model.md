@@ -7,7 +7,7 @@
 | Domain | `crates/compatforge-domain` | 与 Schema 对齐的能力、请求、计划、Bottle、Runtime Pack DTO 与校验 | 生成 Swift/Kotlin 绑定，拆分公共 API 与内部模型 |
 | Storage | `crates/compatforge-storage` | macOS/XDG/Windows/Android 路径解析、受限相对路径、可恢复 JSON 写入 | manifest locking、snapshot 与迁移事务 |
 | Orchestrator | `crates/compatforge-orchestrator` | 无副作用的硬约束、Provider 回退、固定 Runtime Pack 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |
-| Process | `crates/compatforge-process` | 直接进程启动、stdout/stderr 事件、退出结果、终止与释放清理 | process group/Job Object、优雅终止、超时升级、wineserver 范围清理 |
+| Process | `crates/compatforge-process` | Unix process group、Windows Job Object、有序事件、超时/分级终止、prefix 排他租约与 wineserver 清理 | OS sandbox、资源限制、daemon 级持久租约 |
 | C ABI | `crates/compatforge-ffi` | opaque context/launch、plan/start/events/terminate、稳定 status 与所有权释放 | IPC daemon 与 Qt C++ wrapper |
 | CLI | `apps/cli` | plan 与受控 launch | host probe、validate、doctor、lab 子命令 |
 | Contracts | `schemas/` | 版本化交换格式 | 生成绑定、兼容性测试、签名 canonicalization |

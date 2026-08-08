@@ -25,4 +25,4 @@ Provider 可用但没有 `packDigest` 绑定时，计划失败；不会退回到
 
 ## 明确边界
 
-该切片本身只编译计划：不下载 Runtime、不启动 Wine、不创建 Bottle、不修改注册表。后续 `0.3.0` 已在[受控进程纵向切片](phase-0-process-supervisor.md)加入再授权、启动、事件和退出闭环。Mac-Win Bridge 作为历史检查点保留，不再继续维护。
+该切片本身只编译计划：不下载 Runtime、不启动 Wine、不创建 Bottle、不修改注册表。后续 `0.3.0` 加入再授权、启动、事件和退出闭环，`0.4.0` 又在[受控进程纵向切片](phase-0-process-supervisor.md)完成进程树、超时升级与 Wine prefix 生命周期。Mac-Win Bridge 作为历史检查点保留，不再继续维护。

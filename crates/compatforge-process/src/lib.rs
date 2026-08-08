@@ -1,35 +1,41 @@
-//! Cross-platform process supervision for authorized CompatForge launch plans.
+//! Cross-platform process-tree supervision for authorized CompatForge launch plans.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use compatforge_domain::{
     ContractError, LaunchPlan, OutputStream, ProcessExit, ProcessOutput, RuntimeEvent, RuntimeEventKind,
-    SCHEMA_VERSION_V1,
+    WineServerLifecycle, SCHEMA_VERSION_V1,
 };
+use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const WINE_SERVER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum ProcessError {
     InvalidPlan(ContractError),
+    Isolation(io::Error),
     Spawn(io::Error),
     Terminate(io::Error),
+    WinePrefixBusy(String),
 }
 
 impl fmt::Display for ProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
+            Self::Isolation(error) => write!(formatter, "process-tree isolation failed: {error}"),
             Self::Spawn(error) => write!(formatter, "process spawn failed: {error}"),
             Self::Terminate(error) => write!(formatter, "process termination failed: {error}"),
+            Self::WinePrefixBusy(prefix) => write!(formatter, "Wine prefix already has an active launch: {prefix}"),
         }
     }
 }
@@ -38,7 +44,8 @@ impl std::error::Error for ProcessError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidPlan(error) => Some(error),
-            Self::Spawn(error) | Self::Terminate(error) => Some(error),
+            Self::Isolation(error) | Self::Spawn(error) | Self::Terminate(error) => Some(error),
+            Self::WinePrefixBusy(_) => None,
         }
     }
 }
@@ -56,6 +63,7 @@ impl ProcessSupervisor {
     /// Start a plan that has already been authorized against a trusted context.
     pub fn start(plan: &LaunchPlan) -> Result<LaunchHandle, ProcessError> {
         plan.validate().map_err(ProcessError::InvalidPlan)?;
+        let wine_session = WineSession::acquire(plan)?;
 
         let mut command = Command::new(&plan.process.executable);
         command
@@ -67,38 +75,70 @@ impl ProcessSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        let prepared_tree = platform::PreparedProcessTree::prepare(&mut command).map_err(ProcessError::Isolation)?;
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+        let process_tree = match prepared_tree.attach(&child) {
+            Ok(process_tree) => Arc::new(process_tree),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ProcessError::Isolation(error));
+            }
+        };
+
         let process_id = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let child = Arc::new(Mutex::new(child));
-        let finished = Arc::new(AtomicBool::new(false));
+        let root_exited = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
         let emitter = Arc::new(EventEmitter::new(plan.request_id.clone(), sender));
-        emitter.emit(RuntimeEventKind::Started, Some(process_id), None, None, None);
+        let controller = Arc::new(TerminationController {
+            child: Arc::clone(&child),
+            process_tree: Arc::clone(&process_tree),
+            emitter: Arc::clone(&emitter),
+            root_exited: Arc::clone(&root_exited),
+            completed: Arc::clone(&completed),
+            termination_started: AtomicBool::new(false),
+            process_id,
+            grace_period: Duration::from_millis(plan.lifecycle.termination_grace_milliseconds),
+            wine_session: wine_session.clone(),
+        });
 
+        emitter.emit(RuntimeEventKind::Started, Some(process_id), None, None, None);
         if let Some(pipe) = stdout {
             spawn_output_reader(pipe, OutputStream::Stdout, Arc::clone(&emitter));
         }
         if let Some(pipe) = stderr {
             spawn_output_reader(pipe, OutputStream::Stderr, Arc::clone(&emitter));
         }
-        spawn_exit_watcher(Arc::clone(&child), Arc::clone(&finished), Arc::clone(&emitter));
+        spawn_exit_watcher(
+            child,
+            process_tree,
+            Arc::clone(&root_exited),
+            Arc::clone(&completed),
+            Arc::clone(&emitter),
+            wine_session,
+        );
+        if let Some(maximum_runtime) = plan.lifecycle.maximum_runtime_milliseconds {
+            spawn_timeout_watcher(
+                Arc::downgrade(&controller),
+                root_exited,
+                Duration::from_millis(maximum_runtime),
+            );
+        }
 
         Ok(LaunchHandle {
-            child,
             receiver: Mutex::new(receiver),
-            emitter,
-            finished,
+            controller,
         })
     }
 }
 
 pub struct LaunchHandle {
-    child: Arc<Mutex<Child>>,
     receiver: Mutex<Receiver<RuntimeEvent>>,
-    emitter: Arc<EventEmitter>,
-    finished: Arc<AtomicBool>,
+    controller: Arc<TerminationController>,
 }
 
 impl LaunchHandle {
@@ -112,30 +152,126 @@ impl LaunchHandle {
         }
     }
 
+    /// Request idempotent graceful termination followed by forced tree cleanup.
     pub fn terminate(&self) -> Result<(), ProcessError> {
-        if self.finished.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        let mut child = lock_recover(&self.child);
-        if child.try_wait().map_err(ProcessError::Terminate)?.is_some() {
-            self.finished.store(true, Ordering::Release);
-            return Ok(());
-        }
-        self.emitter
-            .emit(RuntimeEventKind::TerminateRequested, Some(child.id()), None, None, None);
-        child.kill().map_err(ProcessError::Terminate)
+        self.controller.request_termination(TerminationReason::User)
     }
 
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        self.controller.completed.load(Ordering::Acquire)
     }
 }
 
 impl Drop for LaunchHandle {
     fn drop(&mut self) {
-        let _ = self.terminate();
+        let _ = self.controller.request_termination(TerminationReason::HandleDropped);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TerminationReason {
+    User,
+    Timeout,
+    HandleDropped,
+}
+
+struct TerminationController {
+    child: Arc<Mutex<Child>>,
+    process_tree: Arc<platform::ProcessTree>,
+    emitter: Arc<EventEmitter>,
+    root_exited: Arc<AtomicBool>,
+    completed: Arc<AtomicBool>,
+    termination_started: AtomicBool,
+    process_id: u32,
+    grace_period: Duration,
+    wine_session: Option<Arc<WineSession>>,
+}
+
+impl TerminationController {
+    fn request_termination(self: &Arc<Self>, reason: TerminationReason) -> Result<(), ProcessError> {
+        if self.root_exited.load(Ordering::Acquire) || self.completed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self
+            .termination_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let (kind, message) = match reason {
+            TerminationReason::Timeout => (RuntimeEventKind::TimedOut, Some("maximum runtime exceeded".into())),
+            TerminationReason::User => (
+                RuntimeEventKind::TerminateRequested,
+                Some("termination requested".into()),
+            ),
+            TerminationReason::HandleDropped => (
+                RuntimeEventKind::TerminateRequested,
+                Some("launch handle released while process was running".into()),
+            ),
+        };
+        self.emitter.emit(kind, Some(self.process_id), None, None, message);
+
+        if let Err(error) = self.process_tree.request_graceful() {
+            self.emitter.emit(
+                RuntimeEventKind::Failed,
+                Some(self.process_id),
+                None,
+                None,
+                Some(format!("graceful process-tree termination failed: {error}")),
+            );
+            let _ = self.process_tree.force_kill();
+            return Err(ProcessError::Terminate(error));
+        }
+
+        let controller = Arc::clone(self);
+        thread::spawn(move || controller.escalate_after_grace());
+        Ok(())
+    }
+
+    fn escalate_after_grace(&self) {
+        let deadline = Instant::now() + self.grace_period;
+        while Instant::now() < deadline {
+            if self.root_exited.load(Ordering::Acquire) {
+                return;
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        if self.root_exited.load(Ordering::Acquire) {
+            return;
+        }
+
+        self.emitter.emit(
+            RuntimeEventKind::GracePeriodExpired,
+            Some(self.process_id),
+            None,
+            None,
+            Some("graceful termination period expired; forcing process tree shutdown".into()),
+        );
+        if let Some(wine_session) = &self.wine_session {
+            if let Err(error) = wine_session.stop(&self.emitter) {
+                self.emitter.emit(
+                    RuntimeEventKind::Failed,
+                    Some(self.process_id),
+                    None,
+                    None,
+                    Some(format!("wineserver cleanup failed: {error}")),
+                );
+            }
+        }
+        if let Err(error) = self.process_tree.force_kill() {
+            self.emitter.emit(
+                RuntimeEventKind::Failed,
+                Some(self.process_id),
+                None,
+                None,
+                Some(format!("forced process-tree termination failed: {error}")),
+            );
+            let mut child = lock_recover(&self.child);
+            let _ = child.kill();
+        }
     }
 }
 
@@ -197,7 +333,7 @@ impl EventEmitter {
 }
 
 fn spawn_output_reader(pipe: impl Read + Send + 'static, stream: OutputStream, emitter: Arc<EventEmitter>) {
-    let _ = thread::spawn(move || {
+    thread::spawn(move || {
         let mut reader = BufReader::new(pipe);
         let mut buffer = Vec::new();
         loop {
@@ -229,7 +365,14 @@ fn spawn_output_reader(pipe: impl Read + Send + 'static, stream: OutputStream, e
     });
 }
 
-fn spawn_exit_watcher(child: Arc<Mutex<Child>>, finished: Arc<AtomicBool>, emitter: Arc<EventEmitter>) {
+fn spawn_exit_watcher(
+    child: Arc<Mutex<Child>>,
+    process_tree: Arc<platform::ProcessTree>,
+    root_exited: Arc<AtomicBool>,
+    completed: Arc<AtomicBool>,
+    emitter: Arc<EventEmitter>,
+    wine_session: Option<Arc<WineSession>>,
+) {
     thread::spawn(move || {
         let result = loop {
             let result = lock_recover(&child).try_wait();
@@ -239,6 +382,28 @@ fn spawn_exit_watcher(child: Arc<Mutex<Child>>, finished: Arc<AtomicBool>, emitt
                 Err(error) => break Err(error),
             }
         };
+        root_exited.store(true, Ordering::Release);
+
+        if let Some(wine_session) = wine_session {
+            if let Err(error) = wine_session.stop(&emitter) {
+                emitter.emit(
+                    RuntimeEventKind::Failed,
+                    None,
+                    None,
+                    None,
+                    Some(format!("wineserver cleanup failed: {error}")),
+                );
+            }
+        }
+        if let Err(error) = process_tree.force_kill() {
+            emitter.emit(
+                RuntimeEventKind::Failed,
+                None,
+                None,
+                None,
+                Some(format!("descendant process cleanup failed: {error}")),
+            );
+        }
 
         match result {
             Ok(status) => emit_exit(&emitter, status),
@@ -250,7 +415,26 @@ fn spawn_exit_watcher(child: Arc<Mutex<Child>>, finished: Arc<AtomicBool>, emitt
                 Some(format!("process wait failed: {error}")),
             ),
         }
-        finished.store(true, Ordering::Release);
+        completed.store(true, Ordering::Release);
+    });
+}
+
+fn spawn_timeout_watcher(
+    controller: Weak<TerminationController>,
+    root_exited: Arc<AtomicBool>,
+    maximum_runtime: Duration,
+) {
+    thread::spawn(move || {
+        let deadline = Instant::now() + maximum_runtime;
+        while Instant::now() < deadline {
+            if root_exited.load(Ordering::Acquire) || controller.strong_count() == 0 {
+                return;
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+        if let Some(controller) = controller.upgrade() {
+            let _ = controller.request_termination(TerminationReason::Timeout);
+        }
     });
 }
 
@@ -267,16 +451,353 @@ fn emit_exit(emitter: &EventEmitter, status: ExitStatus) {
     );
 }
 
+struct WineSession {
+    lifecycle: WineServerLifecycle,
+    environment: Vec<(String, String)>,
+    working_directory: String,
+    stop_started: AtomicBool,
+    lease_released: AtomicBool,
+}
+
+impl WineSession {
+    fn acquire(plan: &LaunchPlan) -> Result<Option<Arc<Self>>, ProcessError> {
+        let Some(lifecycle) = plan.lifecycle.wineserver.clone() else {
+            return Ok(None);
+        };
+        let mut leases = lock_recover(wine_prefix_leases());
+        if !leases.insert(lifecycle.prefix.clone()) {
+            return Err(ProcessError::WinePrefixBusy(lifecycle.prefix));
+        }
+        drop(leases);
+
+        Ok(Some(Arc::new(Self {
+            lifecycle,
+            environment: plan
+                .process
+                .environment
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            working_directory: plan.process.working_directory.clone(),
+            stop_started: AtomicBool::new(false),
+            lease_released: AtomicBool::new(false),
+        })))
+    }
+
+    fn stop(&self, emitter: &EventEmitter) -> io::Result<()> {
+        if self
+            .stop_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        emitter.emit(
+            RuntimeEventKind::WineServerStopRequested,
+            None,
+            None,
+            None,
+            Some(format!("stopping wineserver for prefix {}", self.lifecycle.prefix)),
+        );
+
+        let stop_result = self.run_command("-k").and_then(|()| self.run_command("-w"));
+        self.release_lease();
+        stop_result
+    }
+
+    fn run_command(&self, argument: &str) -> io::Result<()> {
+        let mut child = Command::new(&self.lifecycle.executable)
+            .arg(argument)
+            .current_dir(&self.working_directory)
+            .env_clear()
+            .envs(self.environment.iter().cloned())
+            .env("WINEPREFIX", &self.lifecycle.prefix)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let deadline = Instant::now() + WINE_SERVER_COMMAND_TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!("wineserver {argument} exited with {status}")))
+                };
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("wineserver {argument} did not exit within 5 seconds"),
+                ));
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+    }
+
+    fn release_lease(&self) {
+        if !self.lease_released.swap(true, Ordering::AcqRel) {
+            let _ = lock_recover(wine_prefix_leases()).remove(&self.lifecycle.prefix);
+        }
+    }
+}
+
+impl Drop for WineSession {
+    fn drop(&mut self) {
+        self.release_lease();
+    }
+}
+
+fn wine_prefix_leases() -> &'static Mutex<HashSet<String>> {
+    static LEASES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    LEASES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(unix)]
+mod platform {
+    use std::io;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    const SIGKILL: i32 = 9;
+    const SIGTERM: i32 = 15;
+    const ESRCH: i32 = 3;
+
+    extern "C" {
+        fn kill(process_id: i32, signal: i32) -> i32;
+        fn setpgid(process_id: i32, process_group_id: i32) -> i32;
+    }
+
+    pub struct PreparedProcessTree;
+
+    impl PreparedProcessTree {
+        pub fn prepare(command: &mut Command) -> io::Result<Self> {
+            // SAFETY: `setpgid` is async-signal-safe and the closure captures no
+            // heap-backed state, which is required between fork and exec.
+            unsafe {
+                command.pre_exec(|| {
+                    // SAFETY: zero selects the calling child process and creates
+                    // a group whose id equals that child's process id.
+                    if setpgid(0, 0) == -1 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            Ok(Self)
+        }
+
+        pub fn attach(self, child: &Child) -> io::Result<ProcessTree> {
+            let process_group_id = i32::try_from(child.id())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "child pid does not fit in i32"))?;
+            Ok(ProcessTree { process_group_id })
+        }
+    }
+
+    pub struct ProcessTree {
+        process_group_id: i32,
+    }
+
+    impl ProcessTree {
+        pub fn request_graceful(&self) -> io::Result<()> {
+            self.send_signal(SIGTERM)
+        }
+
+        pub fn force_kill(&self) -> io::Result<()> {
+            self.send_signal(SIGKILL)
+        }
+
+        fn send_signal(&self, signal: i32) -> io::Result<()> {
+            // SAFETY: the negative id targets the process group created for this
+            // launch. No Rust memory is shared with the operating system call.
+            if unsafe { kill(-self.process_group_id, signal) } == -1 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(ESRCH) {
+                    return Err(error);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for ProcessTree {
+        fn drop(&mut self) {
+            let _ = self.force_kill();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Child, Command};
+
+    type Bool = i32;
+    type Dword = u32;
+    type Handle = *mut c_void;
+
+    const CREATE_NEW_PROCESS_GROUP: Dword = 0x0000_0200;
+    const CTRL_BREAK_EVENT: Dword = 1;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct JobObjectBasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: Dword,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: Dword,
+        affinity: usize,
+        priority_class: Dword,
+        scheduling_class: Dword,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct JobObjectExtendedLimitInformation {
+        basic_limit_information: JobObjectBasicLimitInformation,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
+        fn CloseHandle(object: Handle) -> Bool;
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
+        fn GenerateConsoleCtrlEvent(control_event: Dword, process_group_id: Dword) -> Bool;
+        fn SetInformationJobObject(job: Handle, class: i32, information: *const c_void, length: Dword) -> Bool;
+        fn TerminateJobObject(job: Handle, exit_code: u32) -> Bool;
+    }
+
+    pub struct PreparedProcessTree {
+        job: JobHandle,
+    }
+
+    impl PreparedProcessTree {
+        pub fn prepare(command: &mut Command) -> io::Result<Self> {
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+            Ok(Self {
+                job: JobHandle::create()?,
+            })
+        }
+
+        pub fn attach(self, child: &Child) -> io::Result<ProcessTree> {
+            let process = child.as_raw_handle().cast::<c_void>();
+            // SAFETY: both handles are live kernel handles. Assignment does not
+            // transfer ownership of either handle.
+            if unsafe { AssignProcessToJobObject(self.job.raw(), process) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(ProcessTree {
+                job: self.job,
+                process_group_id: child.id(),
+            })
+        }
+    }
+
+    pub struct ProcessTree {
+        job: JobHandle,
+        process_group_id: u32,
+    }
+
+    impl ProcessTree {
+        pub fn request_graceful(&self) -> io::Result<()> {
+            // CTRL_BREAK is best-effort: GUI processes and detached console
+            // processes commonly cannot receive it, so timeout escalation to
+            // the Job Object remains the reliable termination mechanism.
+            // SAFETY: the group id belongs to the child created with
+            // CREATE_NEW_PROCESS_GROUP.
+            let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, self.process_group_id) };
+            Ok(())
+        }
+
+        pub fn force_kill(&self) -> io::Result<()> {
+            // SAFETY: the Job Object handle remains owned by `self`.
+            if unsafe { TerminateJobObject(self.job.raw(), 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    struct JobHandle(usize);
+
+    impl JobHandle {
+        fn create() -> io::Result<Self> {
+            // SAFETY: null security attributes and name request an unnamed Job
+            // Object with default security.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle as usize);
+            let mut limits = JobObjectExtendedLimitInformation::default();
+            limits.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let length = u32::try_from(std::mem::size_of_val(&limits))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Job Object limits are too large"))?;
+            // SAFETY: `limits` has the layout required by the selected Job
+            // Object information class and is valid for `length` bytes.
+            if unsafe {
+                SetInformationJobObject(
+                    job.raw(),
+                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                    std::ptr::addr_of!(limits).cast::<c_void>(),
+                    length,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        fn raw(&self) -> Handle {
+            self.0 as Handle
+        }
+    }
+
+    impl Drop for JobHandle {
+        fn drop(&mut self) {
+            // SAFETY: `self` uniquely owns this Job Object handle.
+            let _ = unsafe { CloseHandle(self.raw()) };
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use compatforge_domain::{
-        GraphicsBackendKind, GraphicsSelection, NativeCommand, NetworkPolicy, RuntimeKind, RuntimeSelection,
-        SandboxPolicy, SandboxProfile, TranslatorKind, TranslatorSelection,
+        GraphicsBackendKind, GraphicsSelection, NativeCommand, NetworkPolicy, ProcessLifecycle, RuntimeKind,
+        RuntimeSelection, SandboxPolicy, SandboxProfile, TranslatorKind, TranslatorSelection,
     };
     use std::collections::BTreeMap;
 
@@ -310,16 +831,26 @@ mod tests {
                 network: NetworkPolicy::Deny,
                 allow_devices: Vec::new(),
             },
+            lifecycle: ProcessLifecycle::default(),
             decision_trace: Vec::new(),
         }
     }
 
-    #[test]
-    fn emits_started_output_and_exit_in_sequence() {
-        let handle = ProcessSupervisor::start(&fixture_plan()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut events = Vec::new();
+    fn helper_plan() -> LaunchPlan {
+        let mut plan = fixture_plan();
+        plan.process.arguments = vec![
+            "--exact".into(),
+            "tests::supervisor_helper".into(),
+            "--nocapture".into(),
+        ];
+        plan.process
+            .environment
+            .insert("COMPATFORGE_PROCESS_TEST_HELPER".into(), "sleep".into());
+        plan
+    }
 
+    fn collect_until_exit(handle: &LaunchHandle, deadline: Instant) -> Vec<RuntimeEvent> {
+        let mut events = Vec::new();
         while Instant::now() < deadline {
             if let EventPoll::Event(event) = handle.next_event(Duration::from_millis(250)) {
                 let exited = event.kind == RuntimeEventKind::Exited;
@@ -329,12 +860,150 @@ mod tests {
                 }
             }
         }
+        events
+    }
+
+    #[test]
+    fn emits_started_output_and_exit_in_sequence() {
+        let handle = ProcessSupervisor::start(&fixture_plan()).unwrap();
+        let events = collect_until_exit(&handle, Instant::now() + Duration::from_secs(10));
 
         assert_eq!(events.first().map(|event| event.kind), Some(RuntimeEventKind::Started));
         assert!(events.iter().any(|event| event.kind == RuntimeEventKind::Output));
         assert_eq!(events.last().map(|event| event.kind), Some(RuntimeEventKind::Exited));
         assert!(events.last().and_then(|event| event.exit.as_ref()).unwrap().success);
         assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+    }
+
+    #[test]
+    fn explicit_termination_is_idempotent_and_reaches_exit() {
+        let handle = ProcessSupervisor::start(&helper_plan()).unwrap();
+        assert!(matches!(
+            handle.next_event(Duration::from_secs(2)),
+            EventPoll::Event(RuntimeEvent {
+                kind: RuntimeEventKind::Started,
+                ..
+            })
+        ));
+        handle.terminate().unwrap();
+        handle.terminate().unwrap();
+        let events = collect_until_exit(&handle, Instant::now() + Duration::from_secs(10));
+
+        assert!(events
+            .iter()
+            .any(|event| event.kind == RuntimeEventKind::TerminateRequested));
+        assert_eq!(events.last().map(|event| event.kind), Some(RuntimeEventKind::Exited));
+    }
+
+    #[test]
+    fn maximum_runtime_triggers_automatic_tree_termination() {
+        let mut plan = helper_plan();
+        plan.lifecycle.maximum_runtime_milliseconds = Some(100);
+        plan.lifecycle.termination_grace_milliseconds = 100;
+        let handle = ProcessSupervisor::start(&plan).unwrap();
+        let events = collect_until_exit(&handle, Instant::now() + Duration::from_secs(10));
+
+        assert!(events.iter().any(|event| event.kind == RuntimeEventKind::TimedOut));
+        assert_eq!(events.last().map(|event| event.kind), Some(RuntimeEventKind::Exited));
+    }
+
+    #[test]
+    fn termination_prevents_a_descendant_from_escaping_the_process_tree() {
+        let marker = std::env::temp_dir().join(format!("compatforge-descendant-test-{}.marker", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let mut plan = helper_plan();
+        plan.lifecycle.termination_grace_milliseconds = 100;
+        plan.process
+            .environment
+            .insert("COMPATFORGE_PROCESS_TEST_HELPER".into(), "spawn-descendant".into());
+        plan.process.environment.insert(
+            "COMPATFORGE_DESCENDANT_MARKER".into(),
+            marker.to_string_lossy().into_owned(),
+        );
+        let handle = ProcessSupervisor::start(&plan).unwrap();
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        while Instant::now() < ready_deadline && !ready {
+            if let EventPoll::Event(event) = handle.next_event(Duration::from_millis(250)) {
+                ready = event
+                    .output
+                    .as_ref()
+                    .is_some_and(|output| output.text.contains("descendant-ready"));
+            }
+        }
+        assert!(ready);
+
+        handle.terminate().unwrap();
+        let events = collect_until_exit(&handle, Instant::now() + Duration::from_secs(10));
+        assert_eq!(events.last().map(|event| event.kind), Some(RuntimeEventKind::Exited));
+        thread::sleep(Duration::from_millis(1_500));
+        assert!(!marker.exists(), "descendant escaped process-tree termination");
+    }
+
+    #[test]
+    fn rejects_concurrent_launches_for_the_same_managed_wine_prefix() {
+        let mut plan = fixture_plan();
+        let prefix = format!("test-prefix-{}", std::process::id());
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: plan.process.executable.clone(),
+            prefix,
+        });
+        let first = WineSession::acquire(&plan).unwrap().unwrap();
+        assert!(matches!(
+            WineSession::acquire(&plan),
+            Err(ProcessError::WinePrefixBusy(_))
+        ));
+        drop(first);
+        assert!(WineSession::acquire(&plan).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wineserver_cleanup_uses_pinned_executable_and_prefix() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("compatforge-wineserver-test-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("wineserver");
+        let staged_executable = directory.join("wineserver.staged");
+        let output = directory.join("calls.log");
+        let mut executable_file = std::fs::File::create(&staged_executable).unwrap();
+        executable_file
+            .write_all(b"#!/bin/sh\nprintf '%s:%s\\n' \"$1\" \"$WINEPREFIX\" >> \"$COMPATFORGE_WINESERVER_LOG\"\n")
+            .unwrap();
+        executable_file.sync_all().unwrap();
+        drop(executable_file);
+        let mut permissions = std::fs::metadata(&staged_executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&staged_executable, permissions).unwrap();
+        std::fs::rename(&staged_executable, &executable).unwrap();
+
+        let mut plan = fixture_plan();
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: executable.to_string_lossy().into_owned(),
+            prefix: directory.join("prefix").to_string_lossy().into_owned(),
+        });
+        plan.process.environment.insert(
+            "COMPATFORGE_WINESERVER_LOG".into(),
+            output.to_string_lossy().into_owned(),
+        );
+        plan.process.working_directory = directory.to_string_lossy().into_owned();
+        let session = WineSession::acquire(&plan).unwrap().unwrap();
+        let (sender, _receiver) = mpsc::channel();
+        let emitter = EventEmitter::new("wine-cleanup-test".into(), sender);
+
+        session.stop(&emitter).unwrap();
+
+        let prefix = plan.lifecycle.wineserver.unwrap().prefix;
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            format!("-k:{prefix}\n-w:{prefix}\n")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -356,5 +1025,35 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let restored: RuntimeEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, event);
+    }
+
+    #[test]
+    fn supervisor_helper() {
+        match std::env::var("COMPATFORGE_PROCESS_TEST_HELPER").as_deref() {
+            Ok("sleep") => {
+                println!("helper-ready");
+                thread::sleep(Duration::from_secs(30));
+            }
+            Ok("spawn-descendant") => {
+                let marker = std::env::var("COMPATFORGE_DESCENDANT_MARKER").unwrap();
+                let mut descendant = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "tests::supervisor_helper", "--nocapture"])
+                    .env_clear()
+                    .env("COMPATFORGE_PROCESS_TEST_HELPER", "write-marker")
+                    .env("COMPATFORGE_DESCENDANT_MARKER", marker)
+                    .spawn()
+                    .unwrap();
+                println!("descendant-ready");
+                thread::sleep(Duration::from_secs(30));
+                let _ = descendant.kill();
+                let _ = descendant.wait();
+            }
+            Ok("write-marker") => {
+                thread::sleep(Duration::from_secs(1));
+                std::fs::write(std::env::var("COMPATFORGE_DESCENDANT_MARKER").unwrap(), "escaped").unwrap();
+                thread::sleep(Duration::from_secs(30));
+            }
+            _ => {}
+        }
     }
 }

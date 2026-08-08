@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.3.0`。已打通 `Context/LaunchRequest → LaunchPlan → 再授权 → 受控进程 → RuntimeEvent/退出结果`，并通过 CLI 与稳定 C ABI 暴露；尚不包含可分发的 Wine Runtime，也尚未完成生产级进程组与 OS 沙箱。
+> 当前状态：Core `0.4.0`。已打通 `Context/LaunchRequest → LaunchPlan → 再授权 → 进程树监督 → 超时/分级终止 → RuntimeEvent/退出结果`；Unix 使用独立 process group，Windows 使用 `KILL_ON_JOB_CLOSE` Job Object，受管 Wine 启动具备 prefix 排他租约与 `wineserver -k/-w` 清理。尚不包含可分发 Runtime 或真正的 OS 沙箱。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -92,6 +92,7 @@ C/Qt 客户端可使用 `cf_context_create`、`cf_compile_launch`、`cf_launch_s
 - [Provider、IPC 与 C ABI 契约](docs/architecture/contracts.md)
 - [Phase 0 纵向切片](docs/implementation/phase-0-vertical-slice.md)
 - [受控进程纵向切片](docs/implementation/phase-0-process-supervisor.md)
+- [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
 - [安全模型](docs/security.md)
