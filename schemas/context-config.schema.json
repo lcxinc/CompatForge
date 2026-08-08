@@ -20,6 +20,7 @@
           "packId": { "$ref": "#/$defs/id" },
           "packDigest": { "$ref": "#/$defs/digest" },
           "executable": { "type": "string", "minLength": 1 },
+          "wineserverExecutable": { "type": "string", "minLength": 1 },
           "environment": {
             "type": "object",
             "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
@@ -32,6 +33,15 @@
     "storageRoot": { "type": "string", "minLength": 1 },
     "sandboxProfile": {
       "enum": ["strict", "desktop", "game", "developer", "unconfined"]
+    },
+    "supervisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terminationGraceMilliseconds"],
+      "properties": {
+        "terminationGraceMilliseconds": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "maximumRuntimeMilliseconds": { "type": "integer", "minimum": 1, "maximum": 604800000 }
+      }
     }
   },
   "$defs": {

@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub const SCHEMA_VERSION_V1: &str = "1";
+pub const DEFAULT_TERMINATION_GRACE_MILLISECONDS: u64 = 3_000;
+pub const MAX_TERMINATION_GRACE_MILLISECONDS: u64 = 60_000;
+pub const MAX_RUNTIME_MILLISECONDS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -196,6 +199,45 @@ pub struct LaunchConstraints {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupervisorPolicy {
+    #[serde(default = "default_termination_grace_milliseconds")]
+    pub termination_grace_milliseconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_runtime_milliseconds: Option<u64>,
+}
+
+impl Default for SupervisorPolicy {
+    fn default() -> Self {
+        Self {
+            termination_grace_milliseconds: DEFAULT_TERMINATION_GRACE_MILLISECONDS,
+            maximum_runtime_milliseconds: None,
+        }
+    }
+}
+
+impl SupervisorPolicy {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if !(1..=MAX_TERMINATION_GRACE_MILLISECONDS).contains(&self.termination_grace_milliseconds) {
+            return Err(ContractError::UnsupportedValue(
+                "supervisor.terminationGraceMilliseconds",
+            ));
+        }
+        if self
+            .maximum_runtime_milliseconds
+            .is_some_and(|value| value == 0 || value > MAX_RUNTIME_MILLISECONDS)
+        {
+            return Err(ContractError::UnsupportedValue("supervisor.maximumRuntimeMilliseconds"));
+        }
+        Ok(())
+    }
+}
+
+const fn default_termination_grace_milliseconds() -> u64 {
+    DEFAULT_TERMINATION_GRACE_MILLISECONDS
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaunchRequest {
     pub schema_version: String,
     pub request_id: String,
@@ -240,6 +282,8 @@ pub struct RuntimeBinding {
     pub pack_id: String,
     pub pack_digest: String,
     pub executable: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wineserver_executable: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -254,6 +298,9 @@ impl RuntimeBinding {
         if self.executable.is_empty() {
             return Err(ContractError::MissingField("runtimeBindings.executable"));
         }
+        if self.wineserver_executable.as_deref() == Some("") {
+            return Err(ContractError::MissingField("runtimeBindings.wineserverExecutable"));
+        }
         Ok(())
     }
 }
@@ -267,6 +314,8 @@ pub struct CoreConfig {
     pub storage_root: String,
     #[serde(default)]
     pub sandbox_profile: SandboxProfile,
+    #[serde(default)]
+    pub supervisor: SupervisorPolicy,
 }
 
 impl CoreConfig {
@@ -279,6 +328,7 @@ impl CoreConfig {
         for binding in &self.runtime_bindings {
             binding.validate()?;
         }
+        self.supervisor.validate()?;
         Ok(())
     }
 }
@@ -342,6 +392,53 @@ pub struct SandboxPolicy {
     pub allow_devices: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WineServerLifecycle {
+    pub executable: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProcessLifecycle {
+    #[serde(default = "default_termination_grace_milliseconds")]
+    pub termination_grace_milliseconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum_runtime_milliseconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wineserver: Option<WineServerLifecycle>,
+}
+
+impl Default for ProcessLifecycle {
+    fn default() -> Self {
+        Self {
+            termination_grace_milliseconds: DEFAULT_TERMINATION_GRACE_MILLISECONDS,
+            maximum_runtime_milliseconds: None,
+            wineserver: None,
+        }
+    }
+}
+
+impl ProcessLifecycle {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        SupervisorPolicy {
+            termination_grace_milliseconds: self.termination_grace_milliseconds,
+            maximum_runtime_milliseconds: self.maximum_runtime_milliseconds,
+        }
+        .validate()?;
+        if let Some(wineserver) = &self.wineserver {
+            if wineserver.executable.is_empty() {
+                return Err(ContractError::MissingField("lifecycle.wineserver.executable"));
+            }
+            if wineserver.prefix.is_empty() {
+                return Err(ContractError::MissingField("lifecycle.wineserver.prefix"));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaunchPlan {
@@ -354,6 +451,8 @@ pub struct LaunchPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<Mount>,
     pub sandbox: SandboxPolicy,
+    #[serde(default)]
+    pub lifecycle: ProcessLifecycle,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decision_trace: Vec<String>,
 }
@@ -372,6 +471,7 @@ impl LaunchPlan {
         if self.process.working_directory.is_empty() {
             return Err(ContractError::MissingField("process.workingDirectory"));
         }
+        self.lifecycle.validate()?;
         Ok(())
     }
 }
@@ -382,6 +482,9 @@ pub enum RuntimeEventKind {
     Started,
     Output,
     TerminateRequested,
+    TimedOut,
+    GracePeriodExpired,
+    WineServerStopRequested,
     Exited,
     Failed,
 }
@@ -630,6 +733,11 @@ mod tests {
 
         let plan: LaunchPlan = serde_json::from_str(include_str!("../../../examples/launch-plan.json")).unwrap();
         assert_eq!(plan.runtime.provider, RuntimeKind::Wine);
+        plan.validate().unwrap();
+
+        let config: CoreConfig =
+            serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap();
+        config.validate().unwrap();
 
         let event: RuntimeEvent = serde_json::from_str(include_str!("../../../examples/runtime-event.json")).unwrap();
         assert_eq!(event.kind, RuntimeEventKind::Output);
@@ -663,5 +771,21 @@ mod tests {
         assert!(validate_id("id", "../escape").is_err());
         assert!(validate_digest("digest", &format!("sha256:{}", "a".repeat(64))).is_ok());
         assert!(validate_digest("digest", "latest").is_err());
+    }
+
+    #[test]
+    fn rejects_unbounded_supervisor_policies() {
+        assert!(SupervisorPolicy {
+            termination_grace_milliseconds: 0,
+            maximum_runtime_milliseconds: None,
+        }
+        .validate()
+        .is_err());
+        assert!(SupervisorPolicy {
+            termination_grace_milliseconds: DEFAULT_TERMINATION_GRACE_MILLISECONDS,
+            maximum_runtime_milliseconds: Some(MAX_RUNTIME_MILLISECONDS + 1),
+        }
+        .validate()
+        .is_err());
     }
 }

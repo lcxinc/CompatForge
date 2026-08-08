@@ -11,7 +11,16 @@
     "sequence": { "type": "integer", "minimum": 0 },
     "elapsedMilliseconds": { "type": "integer", "minimum": 0 },
     "kind": {
-      "enum": ["started", "output", "terminate-requested", "exited", "failed"]
+      "enum": [
+        "started",
+        "output",
+        "terminate-requested",
+        "timed-out",
+        "grace-period-expired",
+        "wine-server-stop-requested",
+        "exited",
+        "failed"
+      ]
     },
     "processId": { "type": "integer", "minimum": 1 },
     "output": {

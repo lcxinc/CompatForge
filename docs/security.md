@@ -23,6 +23,8 @@ CompatForge 运行来源和质量不一的 Windows 二进制，并组合多个 J
 - USB、串口、摄像头、麦克风和输入注入是高敏感设备能力，默认关闭。
 - 高风险修复必须创建快照，显示动作，并要求确认。
 - 远程 Provider 不接收本地完整文件树；上传按任务和目录逐项授权。
+- PID 和进程树只归 process supervisor 所有；前端释放 handle 时内核仍完成分级终止，Unix process group 与 Windows Job Object 防止后代脱离清理。
+- `wineserver` 必须由固定 Runtime Binding 提供绝对路径；Core 只用标准 argv 执行 `-k/-w`，并以 prefix 排他租约避免清理同前缀的并发会话。
 
 ## Bottle 不是安全边界
 

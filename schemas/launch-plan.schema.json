@@ -4,7 +4,7 @@
   "title": "CompatForge Compiled Launch Plan",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "requestId", "runtime", "translator", "graphics", "process", "sandbox"],
+  "required": ["schemaVersion", "requestId", "runtime", "translator", "graphics", "process", "sandbox", "lifecycle"],
   "properties": {
     "schemaVersion": { "const": "1" },
     "requestId": { "type": "string", "format": "uuid" },
@@ -75,6 +75,24 @@
         "profile": { "enum": ["strict", "desktop", "game", "developer", "unconfined"] },
         "network": { "enum": ["deny", "installer-only", "allow"] },
         "allowDevices": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["terminationGraceMilliseconds"],
+      "properties": {
+        "terminationGraceMilliseconds": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "maximumRuntimeMilliseconds": { "type": "integer", "minimum": 1, "maximum": 604800000 },
+        "wineserver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable", "prefix"],
+          "properties": {
+            "executable": { "type": "string", "minLength": 1 },
+            "prefix": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "decisionTrace": {

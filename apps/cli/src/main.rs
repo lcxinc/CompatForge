@@ -18,7 +18,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.as_slice() {
         [command] if matches!(command.as_str(), "--version" | "version") => {
-            println!("compatforge-cli 0.3.0");
+            println!("compatforge-cli 0.4.0");
         }
         [command] if command == "demo-plan" => {
             let config: CoreConfig =

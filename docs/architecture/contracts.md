@@ -72,7 +72,7 @@ void cf_string_free(char *value);
 void cf_context_release(cf_context_t *context);
 ```
 
-Core `0.3.0` 已在相同 opaque-handle 规则下加入启动与事件 API：
+Core `0.4.0` 已在相同 opaque-handle 规则下加入进程树启动、事件与分级终止 API：
 
 ```c
 typedef struct cf_launch cf_launch_t;
@@ -102,7 +102,7 @@ C ABI 约束：
 - 回调默认不在 UI 主线程执行；客户端自行调度。
 - Qt/C++、Swift/Kotlin 不持有 Rust 引用，只持有 opaque pointer。
 
-当前进程层只保证直接子进程清理；Unix process group、Windows Job Object 与 wineserver 范围终止是下一个内核门禁。
+进程层拥有 PID 与全部后代：Unix 使用独立 process group，Windows 使用 Job Object。Context 固定的 supervisor policy 会进入 LaunchPlan 并在启动前再次授权；UI 不能延长最大运行时间或替换 wineserver。受管 Wine prefix 在同一 Core 进程内具有排他租约，终止或根进程退出后执行前缀级 `wineserver -k/-w`，再清理残留进程树。
 
 ## Desktop IPC
 

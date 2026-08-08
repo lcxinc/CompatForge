@@ -4,8 +4,8 @@
 
 use compatforge_domain::{
     CapabilityReport, ContractError, CoreConfig, CpuArchitecture, GraphicsBackendKind, GraphicsSelection, HostOs,
-    LaunchPlan, LaunchRequest, NativeCommand, ProviderDescriptor, RuntimeKind, RuntimeSelection, SandboxPolicy,
-    TranslatorKind, TranslatorSelection, SCHEMA_VERSION_V1,
+    LaunchPlan, LaunchRequest, NativeCommand, ProcessLifecycle, ProviderDescriptor, RuntimeKind, RuntimeSelection,
+    SandboxPolicy, TranslatorKind, TranslatorSelection, WineServerLifecycle, SCHEMA_VERSION_V1,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -76,6 +76,13 @@ impl PolicyEngine {
         if !is_absolute_host_path(&binding.executable) {
             return Err(PlanError::InvalidHostPath("runtimeBindings.executable"));
         }
+        if binding
+            .wineserver_executable
+            .as_deref()
+            .is_some_and(|path| !is_absolute_host_path(path))
+        {
+            return Err(PlanError::InvalidHostPath("runtimeBindings.wineserverExecutable"));
+        }
 
         let translator = Self::select_translator(&config.capabilities, request, runtime_kind)?;
         let graphics = Self::select_graphics(&config.capabilities, request, runtime_kind)?;
@@ -83,8 +90,9 @@ impl PolicyEngine {
 
         let mut environment = request.environment.clone();
         environment.extend(binding.environment.clone());
-        if runtime_kind == RuntimeKind::Wine {
-            environment.insert("WINEPREFIX".into(), join_host_path(&bottle_directory, &["prefix"]));
+        let wine_prefix = (runtime_kind == RuntimeKind::Wine).then(|| join_host_path(&bottle_directory, &["prefix"]));
+        if let Some(prefix) = &wine_prefix {
+            environment.insert("WINEPREFIX".into(), prefix.clone());
         }
 
         let mut arguments = Vec::with_capacity(request.arguments.len() + 1);
@@ -132,6 +140,18 @@ impl PolicyEngine {
                 network: request.constraints.network_policy,
                 allow_devices: Vec::new(),
             },
+            lifecycle: ProcessLifecycle {
+                termination_grace_milliseconds: config.supervisor.termination_grace_milliseconds,
+                maximum_runtime_milliseconds: config.supervisor.maximum_runtime_milliseconds,
+                wineserver: binding
+                    .wineserver_executable
+                    .as_ref()
+                    .zip(wine_prefix)
+                    .map(|(executable, prefix)| WineServerLifecycle {
+                        executable: executable.clone(),
+                        prefix,
+                    }),
+            },
             decision_trace,
         })
     }
@@ -174,6 +194,11 @@ impl PolicyEngine {
         if plan.sandbox.profile != config.sandbox_profile {
             return Err(PlanError::PlanMismatch("sandbox profile"));
         }
+        if plan.lifecycle.termination_grace_milliseconds != config.supervisor.termination_grace_milliseconds
+            || plan.lifecycle.maximum_runtime_milliseconds != config.supervisor.maximum_runtime_milliseconds
+        {
+            return Err(PlanError::PlanMismatch("supervisor policy"));
+        }
         if !host_path_is_within(&config.storage_root, &plan.process.working_directory) {
             return Err(PlanError::PlanMismatch("working directory"));
         }
@@ -191,6 +216,18 @@ impl PolicyEngine {
             if !host_path_is_within(&config.storage_root, wine_prefix) {
                 return Err(PlanError::PlanMismatch("WINEPREFIX"));
             }
+            let expected_wineserver = binding
+                .wineserver_executable
+                .as_ref()
+                .map(|executable| WineServerLifecycle {
+                    executable: executable.clone(),
+                    prefix: wine_prefix.clone(),
+                });
+            if plan.lifecycle.wineserver != expected_wineserver {
+                return Err(PlanError::PlanMismatch("wineserver lifecycle"));
+            }
+        } else if plan.lifecycle.wineserver.is_some() {
+            return Err(PlanError::PlanMismatch("wineserver lifecycle"));
         }
         Ok(())
     }
@@ -421,6 +458,7 @@ mod tests {
     use super::*;
     use compatforge_domain::{
         ExecutableRequest, HostDescriptor, LaunchConstraints, NetworkPolicy, RuntimeBinding, SandboxProfile,
+        SupervisorPolicy,
     };
 
     fn provider(id: &str, kind: &str) -> ProviderDescriptor {
@@ -457,6 +495,7 @@ mod tests {
                     pack_id: "wine-test".into(),
                     pack_digest: format!("sha256:{}", "0".repeat(64)),
                     executable: "/opt/compatforge/wine/bin/wine".into(),
+                    wineserver_executable: Some("/opt/compatforge/wine/bin/wineserver".into()),
                     environment: BTreeMap::new(),
                     working_directory: None,
                 },
@@ -465,12 +504,14 @@ mod tests {
                     pack_id: "vm-test".into(),
                     pack_digest: format!("sha256:{}", "1".repeat(64)),
                     executable: "/opt/compatforge/vm/bin/launch".into(),
+                    wineserver_executable: None,
                     environment: BTreeMap::new(),
                     working_directory: None,
                 },
             ],
             storage_root: "/var/lib/compatforge".into(),
             sandbox_profile: SandboxProfile::Desktop,
+            supervisor: SupervisorPolicy::default(),
         }
     }
 
@@ -509,6 +550,16 @@ mod tests {
             plan.process.environment["WINEPREFIX"],
             "/var/lib/compatforge/bottles/example-bottle/prefix"
         );
+        assert_eq!(
+            plan.lifecycle.wineserver.as_ref().unwrap().prefix,
+            "/var/lib/compatforge/bottles/example-bottle/prefix"
+        );
+        assert_eq!(
+            plan.lifecycle.termination_grace_milliseconds,
+            config(CpuArchitecture::X86_64)
+                .supervisor
+                .termination_grace_milliseconds
+        );
     }
 
     #[test]
@@ -517,6 +568,8 @@ mod tests {
         config.capabilities.host.os = HostOs::Windows;
         config.storage_root = "C:\\ProgramData\\CompatForge".into();
         config.runtime_bindings[0].executable = "C:\\Program Files\\CompatForge\\wine.exe".into();
+        config.runtime_bindings[0].wineserver_executable =
+            Some("C:\\Program Files\\CompatForge\\wineserver.exe".into());
 
         let plan = PolicyEngine::compile(&config, &request()).unwrap();
 
@@ -527,6 +580,10 @@ mod tests {
         assert_eq!(
             plan.process.working_directory,
             "C:\\ProgramData\\CompatForge\\bottles\\example-bottle"
+        );
+        assert_eq!(
+            plan.lifecycle.wineserver.unwrap().prefix,
+            "C:\\ProgramData\\CompatForge\\bottles\\example-bottle\\prefix"
         );
     }
 
@@ -543,6 +600,7 @@ mod tests {
         let plan = PolicyEngine::compile(&config(CpuArchitecture::X86_64), &request).unwrap();
         assert_eq!(plan.runtime.provider, RuntimeKind::VirtualMachine);
         assert_eq!(plan.graphics.backend, GraphicsBackendKind::Virtualized);
+        assert!(plan.lifecycle.wineserver.is_none());
     }
 
     #[test]
@@ -570,6 +628,24 @@ mod tests {
         assert!(matches!(
             PolicyEngine::authorize(&config, &plan),
             Err(PlanError::PlanMismatch("runtime executable"))
+        ));
+    }
+
+    #[test]
+    fn rejects_replaced_supervisor_and_wineserver_policies() {
+        let config = config(CpuArchitecture::X86_64);
+        let mut plan = PolicyEngine::compile(&config, &request()).unwrap();
+        plan.lifecycle.termination_grace_milliseconds += 1;
+        assert!(matches!(
+            PolicyEngine::authorize(&config, &plan),
+            Err(PlanError::PlanMismatch("supervisor policy"))
+        ));
+
+        let mut plan = PolicyEngine::compile(&config, &request()).unwrap();
+        plan.lifecycle.wineserver.as_mut().unwrap().executable = "/tmp/untrusted-wineserver".into();
+        assert!(matches!(
+            PolicyEngine::authorize(&config, &plan),
+            Err(PlanError::PlanMismatch("wineserver lifecycle"))
         ));
     }
 
