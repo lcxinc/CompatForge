@@ -63,6 +63,10 @@ typedef uint32_t cf_status_t;
 
 cf_status_t cf_probe_capabilities(char **out_capabilities_json);
 cf_status_t cf_context_create(const char *config_json, cf_context_t **out);
+cf_status_t cf_capabilities_get(
+    const cf_context_t *context,
+    char **out_report_json
+);
 cf_status_t cf_compile_launch(
     const cf_context_t *context,
     const char *request_json,
@@ -99,6 +103,7 @@ C ABI 约束：
 - 不跨 FFI 抛出 panic/exception；映射为稳定 status + structured error。
 - `cf_compile_launch` 只编译计划，没有下载、文件修改或进程副作用。
 - `cf_probe_capabilities` 只读取 OS API/只读系统文件与 Rust 编译目标事实；不扫描 PATH、不执行发现的 Provider、不把未固定组件标记为 available。
+- `cf_capabilities_get` 只克隆 Context 中已验证的 CapabilityReport，并在内存中确定性排序 Provider、capabilities 与 observations；它不读取文件、不访问网络、不执行 Provider、不修改 Bottle/Runtime Pack，也不进入 PE 解析路径。失败时输出保持 `NULL`，成功字符串由 `cf_string_free` 释放。
 - `cf_launch_start` 会把输入计划与 Context 的 Runtime digest、入口、受保护环境、沙箱和存储根再次比对；前端不能借序列化计划执行任意宿主命令。
 - `cf_launch_next_event` 返回 `runtime-event.schema.json`；timeout 与 event-stream end 使用独立稳定状态码。
 - 回调默认不在 UI 主线程执行；客户端自行调度。
@@ -107,6 +112,8 @@ C ABI 约束：
 进程层拥有 PID 与全部后代：Unix 使用独立 process group，Windows 使用 Job Object。Context 固定的 supervisor policy 会进入 LaunchPlan 并在启动前再次授权；UI 不能延长最大运行时间或替换 wineserver。受管 Wine prefix 在同一 Core 进程内具有排他租约，终止或根进程退出后执行前缀级 `wineserver -k/-w`，再清理残留进程树。
 
 CapabilityReport 中的 `observations` 记录事实来源、检测状态和值/失败原因。Core 内建 probe 只声明 native translator；Wine、FEX/Box64/QEMU、DXVK/vkd3d/D3DMetal 等必须由固定 Runtime Pack、受信任系统适配器或远端认证提供证据，不能由文件名或 PATH 命中推断。
+
+ForgeOS 的能力协商路径在取得有效 Context 后只解析 `cf_api_version`、`cf_abi_version`、`cf_capabilities_get`、`cf_last_error_json` 与 `cf_string_free`。Context 的创建与配置验证属于宿主集成初始化，不会在能力查询过程中隐式发生。ABI v1 客户端必须容忍后续 additive symbol，且不得依赖 Rust 对象布局。
 
 ## Desktop IPC
 

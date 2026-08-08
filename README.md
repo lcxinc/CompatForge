@@ -84,7 +84,7 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
+C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_context_create`、`cf_capabilities_get`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。`cf_capabilities_get` 是 ABI v1 的只读 additive extension：它返回 Context 中已验证并确定性排序的 Schema v1 能力报告，不会启动 Provider 或修改宿主状态。调用方不需要了解 Rust 对象布局，也不得直接持有子进程。
 
 ## 设计入口
 

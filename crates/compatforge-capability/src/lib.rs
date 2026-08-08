@@ -3,8 +3,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use compatforge_domain::{
-    CapabilityObservation, CapabilityReport, CpuArchitecture, HostDescriptor, HostOs, ProbeSource, ProbeStatus,
-    ProviderDescriptor, SCHEMA_VERSION_V1,
+    CapabilityObservation, CapabilityReport, CoreConfig, CpuArchitecture, HostDescriptor, HostOs, ProbeSource,
+    ProbeStatus, ProviderDescriptor, SCHEMA_VERSION_V1,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -35,6 +35,25 @@ impl fmt::Display for ProbeError {
 impl std::error::Error for ProbeError {}
 
 pub struct HostProbe;
+
+/// Pure, context-backed capability report construction for stable API clients.
+///
+/// This query intentionally accepts only an already validated in-memory
+/// [`CoreConfig`]. It cannot discover providers, touch the filesystem, access
+/// the network, execute a process, or inspect a guest executable.
+pub struct ContextCapabilityQuery;
+
+impl ContextCapabilityQuery {
+    /// Clone and canonicalize the trusted capability snapshot held by a context.
+    pub fn report(config: &CoreConfig) -> Result<CapabilityReport, ProbeError> {
+        let mut report = config.capabilities.clone();
+        canonicalize_report(&mut report);
+        report
+            .validate()
+            .map_err(|error| ProbeError::InvalidReport(error.to_string()))?;
+        Ok(report)
+    }
+}
 
 impl HostProbe {
     /// Build a read-only snapshot from operating-system data and Rust target facts.
@@ -129,6 +148,20 @@ impl HostProbe {
             .map_err(|error| ProbeError::InvalidReport(error.to_string()))?;
         Ok(report)
     }
+}
+
+fn canonicalize_report(report: &mut CapabilityReport) {
+    canonicalize_providers(&mut report.runtime_providers);
+    canonicalize_providers(&mut report.translators);
+    canonicalize_providers(&mut report.graphics_backends);
+    report.observations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn canonicalize_providers(providers: &mut [ProviderDescriptor]) {
+    for provider in providers.iter_mut() {
+        provider.capabilities.sort();
+    }
+    providers.sort_by(|left, right| left.id.cmp(&right.id));
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +458,13 @@ const fn windows_version() -> Option<String> {
 mod tests {
     use super::*;
 
+    fn context_config(architecture: CpuArchitecture) -> CoreConfig {
+        let mut config: CoreConfig =
+            serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap();
+        config.capabilities.host.architecture = architecture;
+        config
+    }
+
     #[test]
     fn probe_matches_the_compilation_target() {
         let report = HostProbe::probe().unwrap();
@@ -467,5 +507,88 @@ mod tests {
             vec!["i386-on-x86_64", "x86_64-on-x86_64"]
         );
         assert_eq!(native_capabilities(CpuArchitecture::Arm64), vec!["arm64-on-arm64"]);
+    }
+
+    #[test]
+    fn context_query_maps_linux_x86_64_and_arm64_hosts() {
+        for architecture in [CpuArchitecture::X86_64, CpuArchitecture::Arm64] {
+            let report = ContextCapabilityQuery::report(&context_config(architecture)).unwrap();
+            assert_eq!(report.host.os, HostOs::Linux);
+            assert_eq!(report.host.architecture, architecture);
+            assert_eq!(report.schema_version, SCHEMA_VERSION_V1);
+        }
+    }
+
+    #[test]
+    fn context_query_preserves_empty_and_unavailable_providers() {
+        let mut config = context_config(CpuArchitecture::Arm64);
+        config.capabilities.runtime_providers.clear();
+        config.capabilities.translators.clear();
+        config.capabilities.graphics_backends.clear();
+
+        let empty = ContextCapabilityQuery::report(&config).unwrap();
+        assert!(empty.runtime_providers.is_empty());
+        assert!(empty.translators.is_empty());
+        assert!(empty.graphics_backends.is_empty());
+
+        config.capabilities.runtime_providers.push(ProviderDescriptor {
+            id: "wine-unavailable".into(),
+            kind: "wine".into(),
+            version: "pack-pinned".into(),
+            available: false,
+            reason: Some("runtime pack is not installed".into()),
+            capabilities: vec!["win64".into(), "win32".into()],
+        });
+        let unavailable = ContextCapabilityQuery::report(&config).unwrap();
+        assert!(!unavailable.runtime_providers[0].available);
+        assert_eq!(
+            unavailable.runtime_providers[0].reason.as_deref(),
+            Some("runtime pack is not installed")
+        );
+    }
+
+    #[test]
+    fn context_query_canonicalizes_all_ordered_collections() {
+        let mut config = context_config(CpuArchitecture::Arm64);
+        config.capabilities.runtime_providers.push(ProviderDescriptor {
+            id: "zzz-runtime".into(),
+            kind: "virtual-machine".into(),
+            version: "test".into(),
+            available: true,
+            reason: None,
+            capabilities: vec!["guest-x86_64".into(), "guest-i386".into()],
+        });
+        config.capabilities.runtime_providers.reverse();
+        config.capabilities.translators.reverse();
+        config.capabilities.graphics_backends.reverse();
+        config.capabilities.observations.reverse();
+        for provider in config
+            .capabilities
+            .runtime_providers
+            .iter_mut()
+            .chain(config.capabilities.translators.iter_mut())
+            .chain(config.capabilities.graphics_backends.iter_mut())
+        {
+            provider.capabilities.reverse();
+        }
+
+        let report = ContextCapabilityQuery::report(&config).unwrap();
+        let second = ContextCapabilityQuery::report(&config).unwrap();
+        assert_eq!(
+            serde_json::to_string(&report).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+        assert!(report
+            .runtime_providers
+            .windows(2)
+            .all(|providers| providers[0].id < providers[1].id));
+        assert!(report
+            .observations
+            .windows(2)
+            .all(|observations| observations[0].id < observations[1].id));
+        assert!(report.runtime_providers.iter().all(|provider| provider
+            .capabilities
+            .windows(2)
+            .all(|capabilities| capabilities[0] < capabilities[1])));
     }
 }
