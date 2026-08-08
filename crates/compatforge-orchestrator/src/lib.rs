@@ -16,10 +16,12 @@ use std::path::Path;
 pub enum PlanError {
     InvalidConfig(ContractError),
     InvalidRequest(ContractError),
+    InvalidPlan(ContractError),
     MissingRequiredCapability(String),
     NoCompatibleRuntime,
     MissingRuntimeBinding(String),
     InvalidHostPath(&'static str),
+    PlanMismatch(&'static str),
     NoCompatibleTranslator,
     NoCompatibleGraphicsBackend,
 }
@@ -29,6 +31,7 @@ impl fmt::Display for PlanError {
         match self {
             Self::InvalidConfig(error) => write!(formatter, "invalid core config: {error}"),
             Self::InvalidRequest(error) => write!(formatter, "invalid launch request: {error}"),
+            Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
             Self::MissingRequiredCapability(capability) => {
                 write!(formatter, "required capability is unavailable: {capability}")
             }
@@ -37,6 +40,7 @@ impl fmt::Display for PlanError {
                 write!(formatter, "runtime provider {provider} has no pinned binding")
             }
             Self::InvalidHostPath(field) => write!(formatter, "{field} must be an absolute host path"),
+            Self::PlanMismatch(field) => write!(formatter, "launch plan does not match trusted context: {field}"),
             Self::NoCompatibleTranslator => formatter.write_str("no compatible architecture translator"),
             Self::NoCompatibleGraphicsBackend => formatter.write_str("no compatible graphics backend"),
         }
@@ -46,7 +50,7 @@ impl fmt::Display for PlanError {
 impl std::error::Error for PlanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InvalidConfig(error) | Self::InvalidRequest(error) => Some(error),
+            Self::InvalidConfig(error) | Self::InvalidRequest(error) | Self::InvalidPlan(error) => Some(error),
             _ => None,
         }
     }
@@ -80,13 +84,14 @@ impl PolicyEngine {
         let paths = AppPaths::from_root(&config.storage_root);
         let bottle_directory = paths.bottle(&request.bottle_id);
 
-        let mut environment = binding.environment.clone();
+        let mut environment = request.environment.clone();
+        environment.extend(binding.environment.clone());
         if runtime_kind == RuntimeKind::Wine {
-            environment
-                .entry("WINEPREFIX".into())
-                .or_insert_with(|| bottle_directory.join("prefix").to_string_lossy().into_owned());
+            environment.insert(
+                "WINEPREFIX".into(),
+                bottle_directory.join("prefix").to_string_lossy().into_owned(),
+            );
         }
-        environment.extend(request.environment.clone());
 
         let mut arguments = Vec::with_capacity(request.arguments.len() + 1);
         arguments.push(request.executable.path.clone());
@@ -135,6 +140,65 @@ impl PolicyEngine {
             },
             decision_trace,
         })
+    }
+
+    /// Re-authorize a serialized plan before it crosses the process boundary.
+    ///
+    /// A frontend may cache or transport a plan, but it cannot replace the
+    /// pinned runtime executable, digest, protected environment, sandbox, or
+    /// storage location selected by the trusted context.
+    pub fn authorize(config: &CoreConfig, plan: &LaunchPlan) -> Result<(), PlanError> {
+        config.validate().map_err(PlanError::InvalidConfig)?;
+        plan.validate().map_err(PlanError::InvalidPlan)?;
+
+        if !is_absolute_host_path(&config.storage_root) {
+            return Err(PlanError::InvalidHostPath("storageRoot"));
+        }
+        if !is_absolute_host_path(&plan.process.executable) {
+            return Err(PlanError::InvalidHostPath("process.executable"));
+        }
+        if !is_absolute_host_path(&plan.process.working_directory) {
+            return Err(PlanError::InvalidHostPath("process.workingDirectory"));
+        }
+
+        let binding = config
+            .runtime_bindings
+            .iter()
+            .find(|candidate| {
+                candidate.pack_id == plan.runtime.pack_id && candidate.pack_digest == plan.runtime.pack_digest
+            })
+            .ok_or(PlanError::PlanMismatch("runtime pack or digest"))?;
+        if binding.executable != plan.process.executable {
+            return Err(PlanError::PlanMismatch("runtime executable"));
+        }
+        let provider_matches = config.capabilities.runtime_providers.iter().any(|provider| {
+            provider.available && provider.id == binding.provider_id && provider.kind == plan.runtime.provider.as_str()
+        });
+        if !provider_matches {
+            return Err(PlanError::PlanMismatch("runtime provider"));
+        }
+        if plan.sandbox.profile != config.sandbox_profile {
+            return Err(PlanError::PlanMismatch("sandbox profile"));
+        }
+        if !host_path_is_within(&config.storage_root, &plan.process.working_directory) {
+            return Err(PlanError::PlanMismatch("working directory"));
+        }
+        for (key, value) in &binding.environment {
+            if plan.process.environment.get(key) != Some(value) {
+                return Err(PlanError::PlanMismatch("protected runtime environment"));
+            }
+        }
+        if plan.runtime.provider == RuntimeKind::Wine {
+            let wine_prefix = plan
+                .process
+                .environment
+                .get("WINEPREFIX")
+                .ok_or(PlanError::PlanMismatch("WINEPREFIX"))?;
+            if !host_path_is_within(&config.storage_root, wine_prefix) {
+                return Err(PlanError::PlanMismatch("WINEPREFIX"));
+            }
+        }
+        Ok(())
     }
 
     fn check_required_capabilities(capabilities: &CapabilityReport, request: &LaunchRequest) -> Result<(), PlanError> {
@@ -301,6 +365,15 @@ fn is_absolute_host_path(value: &str) -> bool {
         || value.starts_with("\\\\")
 }
 
+fn host_path_is_within(root: &str, candidate: &str) -> bool {
+    if root.as_bytes().get(1) == Some(&b':') || candidate.as_bytes().get(1) == Some(&b':') {
+        let root = root.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+        let candidate = candidate.replace('\\', "/").to_ascii_lowercase();
+        return candidate == root || candidate.starts_with(&(root + "/"));
+    }
+    Path::new(candidate).starts_with(Path::new(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +492,38 @@ mod tests {
             PolicyEngine::compile(&config, &request()),
             Err(PlanError::MissingRuntimeBinding(_))
         ));
+    }
+
+    #[test]
+    fn authorizes_a_freshly_compiled_plan() {
+        let config = config(CpuArchitecture::X86_64);
+        let plan = PolicyEngine::compile(&config, &request()).unwrap();
+        PolicyEngine::authorize(&config, &plan).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_plan_with_a_replaced_runtime_executable() {
+        let config = config(CpuArchitecture::X86_64);
+        let mut plan = PolicyEngine::compile(&config, &request()).unwrap();
+        plan.process.executable = "/tmp/untrusted-runtime".into();
+        assert!(matches!(
+            PolicyEngine::authorize(&config, &plan),
+            Err(PlanError::PlanMismatch("runtime executable"))
+        ));
+    }
+
+    #[test]
+    fn runtime_binding_environment_cannot_be_overridden_by_a_request() {
+        let mut config = config(CpuArchitecture::X86_64);
+        config.runtime_bindings[0]
+            .environment
+            .insert("COMPATFORGE_RUNTIME_PACK".into(), "trusted".into());
+        let mut request = request();
+        request
+            .environment
+            .insert("COMPATFORGE_RUNTIME_PACK".into(), "untrusted".into());
+        let plan = PolicyEngine::compile(&config, &request).unwrap();
+        assert_eq!(plan.process.environment["COMPATFORGE_RUNTIME_PACK"], "trusted");
+        PolicyEngine::authorize(&config, &plan).unwrap();
     }
 }

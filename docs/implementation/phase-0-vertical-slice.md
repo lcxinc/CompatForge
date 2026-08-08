@@ -25,4 +25,4 @@ Provider 可用但没有 `packDigest` 绑定时，计划失败；不会退回到
 
 ## 明确边界
 
-该切片只编译计划：不下载 Runtime、不启动 Wine、不创建 Bottle、不修改注册表。Mac-Win 已在提交 `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7` 建立 Client protocols 与动态 ABI 适配器；下一步是构建 macOS x86_64/ARM64 dylib、执行 Swift ABI smoke，并对照一次 legacy launch 的计划输入。验证通过前实际执行继续由 legacy runner 承担。
+该切片本身只编译计划：不下载 Runtime、不启动 Wine、不创建 Bottle、不修改注册表。后续 `0.3.0` 已在[受控进程纵向切片](phase-0-process-supervisor.md)加入再授权、启动、事件和退出闭环。Mac-Win Bridge 作为历史检查点保留，不再继续维护。

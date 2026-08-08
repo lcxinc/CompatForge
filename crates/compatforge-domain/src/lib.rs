@@ -358,6 +358,74 @@ pub struct LaunchPlan {
     pub decision_trace: Vec<String>,
 }
 
+impl LaunchPlan {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        if self.request_id.is_empty() {
+            return Err(ContractError::MissingField("requestId"));
+        }
+        validate_id("runtime.packId", &self.runtime.pack_id)?;
+        validate_digest("runtime.packDigest", &self.runtime.pack_digest)?;
+        if self.process.executable.is_empty() {
+            return Err(ContractError::MissingField("process.executable"));
+        }
+        if self.process.working_directory.is_empty() {
+            return Err(ContractError::MissingField("process.workingDirectory"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeEventKind {
+    Started,
+    Output,
+    TerminateRequested,
+    Exited,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProcessOutput {
+    pub stream: OutputStream,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProcessExit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<i32>,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeEvent {
+    pub schema_version: String,
+    pub request_id: String,
+    pub sequence: u64,
+    pub elapsed_milliseconds: u64,
+    pub kind: RuntimeEventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<ProcessOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit: Option<ProcessExit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BottleManifest {
@@ -562,6 +630,9 @@ mod tests {
 
         let plan: LaunchPlan = serde_json::from_str(include_str!("../../../examples/launch-plan.json")).unwrap();
         assert_eq!(plan.runtime.provider, RuntimeKind::Wine);
+
+        let event: RuntimeEvent = serde_json::from_str(include_str!("../../../examples/runtime-event.json")).unwrap();
+        assert_eq!(event.kind, RuntimeEventKind::Output);
 
         let runtime: RuntimePackManifest = serde_json::from_str(include_str!(
             "../../../examples/runtime-packs/wine-linux-arm64-fex.json"

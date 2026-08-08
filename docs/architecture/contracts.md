@@ -72,7 +72,7 @@ void cf_string_free(char *value);
 void cf_context_release(cf_context_t *context);
 ```
 
-Phase 1 在相同 opaque-handle 规则下继续加入启动与事件 API：
+Core `0.3.0` 已在相同 opaque-handle 规则下加入启动与事件 API：
 
 ```c
 typedef struct cf_launch cf_launch_t;
@@ -83,10 +83,11 @@ cf_status_t cf_launch_start(
     cf_launch_t **out
 );
 cf_status_t cf_launch_next_event(
-    cf_launch_t *launch,
+    const cf_launch_t *launch,
     uint32_t timeout_ms,
     char **out_event_json
 );
+cf_status_t cf_launch_terminate(const cf_launch_t *launch);
 void cf_launch_release(cf_launch_t *launch);
 ```
 
@@ -96,8 +97,12 @@ C ABI 约束：
 - 所有跨边界对象由创建方释放，文档明确所有权。
 - 不跨 FFI 抛出 panic/exception；映射为稳定 status + structured error。
 - `cf_compile_launch` 只编译计划，没有下载、文件修改或进程副作用。
+- `cf_launch_start` 会把输入计划与 Context 的 Runtime digest、入口、受保护环境、沙箱和存储根再次比对；前端不能借序列化计划执行任意宿主命令。
+- `cf_launch_next_event` 返回 `runtime-event.schema.json`；timeout 与 event-stream end 使用独立稳定状态码。
 - 回调默认不在 UI 主线程执行；客户端自行调度。
-- Swift/Kotlin 不持有 Rust 引用，只持有 opaque pointer。
+- Qt/C++、Swift/Kotlin 不持有 Rust 引用，只持有 opaque pointer。
+
+当前进程层只保证直接子进程清理；Unix process group、Windows Job Object 与 wineserver 范围终止是下一个内核门禁。
 
 ## Desktop IPC
 

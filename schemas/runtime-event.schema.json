@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/runtime-event.schema.json",
+  "title": "CompatForge Runtime Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requestId", "sequence", "elapsedMilliseconds", "kind"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "requestId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "elapsedMilliseconds": { "type": "integer", "minimum": 0 },
+    "kind": {
+      "enum": ["started", "output", "terminate-requested", "exited", "failed"]
+    },
+    "processId": { "type": "integer", "minimum": 1 },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stream", "text"],
+      "properties": {
+        "stream": { "enum": ["stdout", "stderr"] },
+        "text": { "type": "string" }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success"],
+      "properties": {
+        "code": { "type": "integer" },
+        "success": { "type": "boolean" }
+      }
+    },
+    "message": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "output" } } },
+      "then": { "properties": { "output": true }, "required": ["output"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "exited" } } },
+      "then": { "properties": { "exit": true }, "required": ["exit"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "failed" } } },
+      "then": { "properties": { "message": true }, "required": ["message"] }
+    }
+  ]
+}

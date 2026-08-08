@@ -1,36 +1,37 @@
 # 迁移工作分解与退出标准
 
-工作按能力依赖排序，不按 UI 页面排序。总路线是 macOS 解耦 → Linux x86_64 → Linux ARM64 → Android ARM64；允许团队并行，但不在核心契约未稳定前启动完整 Android 产品化。
+工作按能力依赖排序，不按 UI 页面排序。当前以 CompatForge Rust Core 为唯一主线，macOS 与 Linux 共用 Qt 6/QML 薄前端同步演进，再进入 Linux ARM64 与 Android ARM64；核心契约未稳定前不启动完整 Android 产品化。
 
 ## Phase 0：契约与仓库基线
 
 目标周期：2–4 周。当前仓库已交付设计骨架，仍需完成与 Mac-Win 的首轮集成验证。
 
-### 当前实现检查点（0.2.0）
+### 当前实现检查点（0.3.0）
 
 - 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
-- 已接入 Mac-Win：`RuntimeClient`/`BottleClient`/`DiagnosticsClient` protocol 与显式 dylib 装载适配器（`Mac-Win@4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`）；
-- 待实机验证：macOS 双架构 dylib 构建、Swift Package 实编译、ABI smoke 与 legacy plan 对照；
-- 仍未实现：host probe、进程启动/监督、Runtime 安装、Bottle 迁移写入。
+- 已完成：LaunchPlan 对 Context 再授权、直接子进程监督、有序 stdout/stderr/exit 事件、轮询超时、终止与 C ABI/CLI 执行入口；
+- 已冻结：Mac-Win Bridge 检查点 `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`，不再继续 SwiftUI 接入；
+- 已确定：桌面 UI 为 Qt 6/QML，UI 只消费 Core API；
+- 仍未实现：host probe、process group/Job Object、Wine Provider、Runtime 安装、Bottle 迁移写入。
 
 ### 工作包
 
 - P0.1：确认根许可证、贡献方式和第三方合规负责人；
 - P0.2：稳定 schema v1/v2、canonical JSON 与签名算法 ADR；
-- P0.3：给 Mac-Win 增加 `RuntimeClient`/`BottleClient`/`DiagnosticsClient` protocols；
-- P0.4：建立 Swift ↔ C ABI smoke target；
+- P0.3：稳定 Qt/C++ ↔ C ABI 的 Context/Launch/Event ownership；
+- P0.4：建立 macOS/Linux C ABI 与无头 Qt smoke target；
 - P0.5：把源 Wine/Recipe/fixture 清单导出为带 digest 的迁移 inventory；
 - P0.6：建立 macOS 实机 CI runner 与代表应用最小集合。
 
 ### 退出标准
 
 - Rust workspace 在 Linux/macOS/Windows CI 通过；
-- Swift 能读取 ABI/API 版本并执行一次无副作用 plan；
+- Qt/C++ 能读取 ABI/API 版本、执行一次 plan 并消费受控 helper 的完整事件流；
 - Recipe v1→v2 转换器对现有 catalog 全量通过；
 - 所有迁移输入固定到源 commit 与 digest；
 - 根许可证与第三方分发政策明确。
 
-## Phase 1：macOS 核心解耦
+## Phase 1：macOS/Linux 共享内核与桌面底座
 
 目标周期：3–4 个月；建议 4–6 人。
 
@@ -38,14 +39,14 @@
 
 | 编号 | 工作 | 主要交付 |
 |---|---|---|
-| P1.1 | Host Capability | macOS/CPU/GPU/Rosetta/Wine/图形能力结构化 probe |
+| P1.1 | Host Capability | macOS/Linux CPU/GPU/Translator/Wine/图形能力结构化 probe |
 | P1.2 | Runtime Pack | manifest、内容存储、签名、安装、固定、回滚 |
 | P1.3 | Launch Planner | hard constraints、provider scoring、decision trace |
-| P1.4 | Process Supervisor | 进程组、stdout/stderr events、取消、超时、wineserver 清理 |
+| P1.4 | Process Supervisor | Unix process group、Windows Job Object、取消/超时升级、wineserver 清理 |
 | P1.5 | macOS Providers | Wine、Rosetta、D3DMetal/WineD3D、App Support/沙箱适配 |
 | P1.6 | Recipe v2 | 现有 profile/recipes 数据化、typed action、签名与灰度 |
 | P1.7 | Bottle Bridge | 旧 manifest 双读、snapshot、layout migration、rollback |
-| P1.8 | SwiftUI Strangler | feature clients、legacy/new backend toggle、Store/View 拆分 |
+| P1.8 | Qt/QML Desktop | C++ client、feature models、macOS/Linux 平台适配与无头 smoke |
 | P1.9 | Diagnostics | 结构化事件、脱敏、support bundle、repair audit |
 | P1.10 | macOS Lab | Intel/Apple Silicon、20 个代表应用、图形/IME/字体 probes |
 
@@ -58,7 +59,7 @@
 5. Recipe/compatibility profile；
 6. install flow；
 7. Bottle 写入与迁移；
-8. 删除 legacy runner 分支。
+8. 建立 Qt/QML macOS/Linux 可启动桌面壳。
 
 ### 退出标准
 
