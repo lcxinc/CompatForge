@@ -48,7 +48,7 @@ impl HostProbe {
         let os_version = os_version(os);
         let kernel = kernel_version(os);
         let device_model = device_model(os);
-        let logical_cpu_count = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let logical_cpu_count = std::thread::available_parallelism().map_or(1, |count| count.get());
 
         let mut observations = vec![
             detected(
