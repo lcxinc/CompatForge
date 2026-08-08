@@ -9,7 +9,8 @@
 ### 当前实现检查点（0.2.0）
 
 - 已完成：版本化 Rust DTO、Context/LaunchRequest → LaunchPlan、固定 Runtime digest、跨平台路径、JSON Store、opaque C context、结构化 FFI 错误；
-- 待接入 Mac-Win：`RuntimeClient` protocol、动态/静态库装载、Swift smoke test；
+- 已接入 Mac-Win：`RuntimeClient`/`BottleClient`/`DiagnosticsClient` protocol 与显式 dylib 装载适配器（`Mac-Win@4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`）；
+- 待实机验证：macOS 双架构 dylib 构建、Swift Package 实编译、ABI smoke 与 legacy plan 对照；
 - 仍未实现：host probe、进程启动/监督、Runtime 安装、Bottle 迁移写入。
 
 ### 工作包
