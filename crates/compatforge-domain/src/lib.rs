@@ -996,6 +996,8 @@ mod tests {
         assert!(serde_json::from_value::<CapabilityReport>(null_feature).is_err());
 
         let mut null_observation = serde_json::to_value(&report).unwrap();
+        null_observation["observations"][0]["status"] = serde_json::json!("unknown");
+        null_observation["observations"][0]["reason"] = serde_json::json!("not detected");
         null_observation["observations"][0]["value"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<CapabilityReport>(null_observation).is_err());
     }
