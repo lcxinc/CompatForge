@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.9.0`。除 `Context/LaunchRequest → LaunchPlan → 进程树监督` 闭环外，已加入三平台只读 Host Capability、ABI v1 能力与 PE inspection 查询、Runtime Pack 内容存储，以及首个 macOS Wine/Native/Rosetta/WineD3D Provider 纵向切片。PE inspection 只解析 64 MiB 内的 PE32/PE32+ 元数据，不映射或执行来宾代码。Runtime artifact 通用解包、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
+> 当前状态：Core `0.10.0`。PE inspection 已通过独立 Guest Artifact 内容库接入 opaque `PreparedLaunch`：来宾摘要、真实架构、完整检查报告、Runtime Pack、Context 与 LaunchPlan 在启动前重新绑定验证。第一版只准备 x86/x86_64 Windows Console executable，仍不执行真实 PE。ABI major 保持 1；Runtime artifact 通用解包、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -89,7 +89,7 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_context_create`、`cf_capabilities_get`、`cf_compile_launch`、`cf_launch_start`、`cf_launch_next_event`、`cf_launch_terminate` 和对应 release 函数。`cf_inspect_executable` 自 API `0.9.0` 起作为 ABI v1 的只读 additive extension：它只返回经过严格边界验证的 Schema v1 PE 元数据，不启动 Provider、不生成 LaunchPlan，也不修改宿主状态。调用方必须先检查 API 版本，再解析新增符号。
+C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、Context/plan/process API，以及 API `0.10.0` 新增的 `cf_launch_prepare`、PreparedLaunch getter/start/release。正式外部 PE 路径应使用 PreparedLaunch；`cf_compile_launch` 与不含 `guestArtifact` 的旧计划仅保留给受信任 helper 和兼容测试。ABI major 仍为 1，调用方必须先检查 API 版本再解析 additive symbol。
 
 ## 设计入口
 
@@ -102,10 +102,12 @@ C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_
 - [Runtime Pack 存储纵向切片](docs/implementation/phase-1-runtime-pack.md)
 - [macOS Provider 纵向切片](docs/implementation/phase-1-macos-provider.md)
 - [PE inspection 纵向切片](docs/implementation/phase-1-pe-inspection.md)
+- [Trusted Launch Preparation 纵向切片](docs/implementation/phase-1-trusted-launch-preparation.md)
 - [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [能力证据与 Provider 声明决策](docs/decisions/0007-capability-evidence-boundary.md)
 - [Runtime Pack 内容寻址与原子激活决策](docs/decisions/0008-runtime-pack-content-store.md)
 - [macOS Provider 证据决策](docs/decisions/0009-macos-provider-evidence.md)
+- [Inspection-bound Guest Artifact 决策](docs/decisions/0011-inspection-bound-guest-artifacts.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
 - [安全模型](docs/security.md)

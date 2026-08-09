@@ -60,6 +60,20 @@ jobs:
           target/forgeos-inspection-consumer \
             target/debug/libcompatforge_ffi.so \
             "$PWD/tests/fixtures/hello-x86_64.exe"
+      - name: Run ForgeOS PreparedLaunch C ABI fixture
+        if: runner.os == 'Linux'
+        run: |
+          sed "s#/var/lib/compatforge#$PWD/target/prepared-launch-store#g" \
+            examples/context-config.linux-arm64.json \
+            > target/prepared-launch-context.json
+          cc -std=c11 -Wall -Wextra -Werror \
+            -I crates/compatforge-ffi/include \
+            tests/fixtures/forgeos_prepared_launch_consumer.c \
+            -ldl -o target/forgeos-prepared-launch-consumer
+          target/forgeos-prepared-launch-consumer \
+            target/debug/libcompatforge_ffi.so \
+            target/prepared-launch-context.json \
+            "$PWD/tests/fixtures/hello-x86_64.exe"
       - name: Run tests
         run: cargo test --workspace --locked
       - name: Install Runtime Pack fixture v1

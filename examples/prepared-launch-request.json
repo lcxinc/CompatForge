@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "requestId": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+  "bottleId": "prepared-console-example",
+  "executable": {
+    "path": "/absolute/path/to/hello-x86_64.exe",
+    "architecture": "x86_64",
+    "sha256": "49c866f38f749fc92ded8749930b07eea51b1b8931492eff00c80c037ce46d02"
+  },
+  "arguments": [],
+  "environment": {},
+  "constraints": {
+    "allowVirtualMachine": false,
+    "allowRemote": false,
+    "requiresKernelDriver": false,
+    "requiresDirectX12": false,
+    "networkPolicy": "deny",
+    "requiredCapabilities": []
+  }
+}

@@ -19,7 +19,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "compatforge-capability"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-domain",
  "serde_json",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-capability",
  "compatforge-domain",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-domain"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-ffi"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-capability",
  "compatforge-domain",
@@ -61,8 +61,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "compatforge-guest-artifact"
+version = "0.10.0"
+dependencies = [
+ "compatforge-domain",
+ "compatforge-inspect",
+ "sha2",
+]
+
+[[package]]
 name = "compatforge-inspect"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "sha2",
@@ -70,24 +79,28 @@ dependencies = [
 
 [[package]]
 name = "compatforge-orchestrator"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-domain",
+ "compatforge-guest-artifact",
+ "compatforge-inspect",
  "compatforge-storage",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
 name = "compatforge-process"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-domain",
+ "compatforge-guest-artifact",
  "serde_json",
 ]
 
 [[package]]
 name = "compatforge-provider-macos"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-orchestrator",
@@ -99,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-runtime"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "compatforge-domain",
  "compatforge-storage",
@@ -110,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "compatforge-storage"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",

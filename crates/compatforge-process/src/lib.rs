@@ -6,6 +6,7 @@ use compatforge_domain::{
     ContractError, LaunchPlan, OutputStream, ProcessExit, ProcessOutput, RuntimeEvent, RuntimeEventKind,
     WineServerLifecycle, SCHEMA_VERSION_V1,
 };
+use compatforge_guest_artifact::{verify_binding_contents, GuestArtifactError};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
@@ -24,6 +25,7 @@ const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 #[derive(Debug)]
 pub enum ProcessError {
     InvalidPlan(ContractError),
+    InvalidGuestArtifact(GuestArtifactError),
     Isolation(io::Error),
     Spawn(io::Error),
     Terminate(io::Error),
@@ -34,6 +36,7 @@ impl fmt::Display for ProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
+            Self::InvalidGuestArtifact(error) => write!(formatter, "invalid guest artifact: {error}"),
             Self::Isolation(error) => write!(formatter, "process-tree isolation failed: {error}"),
             Self::Spawn(error) => write!(formatter, "process spawn failed: {error}"),
             Self::Terminate(error) => write!(formatter, "process termination failed: {error}"),
@@ -46,6 +49,7 @@ impl std::error::Error for ProcessError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidPlan(error) => Some(error),
+            Self::InvalidGuestArtifact(error) => Some(error),
             Self::Isolation(error) | Self::Spawn(error) | Self::Terminate(error) => Some(error),
             Self::WinePrefixBusy(_) => None,
         }
@@ -65,6 +69,9 @@ impl ProcessSupervisor {
     /// Start a plan that has already been authorized against a trusted context.
     pub fn start(plan: &LaunchPlan) -> Result<LaunchHandle, ProcessError> {
         plan.validate().map_err(ProcessError::InvalidPlan)?;
+        if let Some(binding) = &plan.guest_artifact {
+            verify_binding_contents(binding).map_err(ProcessError::InvalidGuestArtifact)?;
+        }
         let wine_session = WineSession::acquire(plan)?;
 
         let mut command = Command::new(&plan.process.executable);
@@ -842,8 +849,9 @@ mod platform {
 mod tests {
     use super::*;
     use compatforge_domain::{
-        GraphicsBackendKind, GraphicsSelection, NativeCommand, NetworkPolicy, ProcessLifecycle, RuntimeKind,
-        RuntimeSelection, SandboxPolicy, SandboxProfile, TranslatorKind, TranslatorSelection,
+        CpuArchitecture, GraphicsBackendKind, GraphicsSelection, GuestArtifactBinding, NativeCommand, NetworkPolicy,
+        ProcessLifecycle, RuntimeKind, RuntimeSelection, SandboxPolicy, SandboxProfile, TranslatorKind,
+        TranslatorSelection,
     };
     use std::collections::BTreeMap;
 
@@ -871,6 +879,7 @@ mod tests {
                 environment: BTreeMap::new(),
                 working_directory: std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             },
+            guest_artifact: None,
             mounts: Vec::new(),
             sandbox: SandboxPolicy {
                 profile: SandboxProfile::Desktop,
@@ -880,6 +889,34 @@ mod tests {
             lifecycle: ProcessLifecycle::default(),
             decision_trace: Vec::new(),
         }
+    }
+
+    #[test]
+    fn refuses_a_tampered_bound_guest_before_spawning() {
+        let root = std::env::temp_dir().join(format!("compatforge-process-guest-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let guest_path = root.join("guest.exe");
+        std::fs::write(&guest_path, b"tampered").unwrap();
+        let stored_path = guest_path.to_string_lossy().into_owned();
+        let mut plan = fixture_plan();
+        plan.process.arguments = vec![stored_path.clone()];
+        plan.guest_artifact = Some(GuestArtifactBinding {
+            digest: format!("sha256:{}", "0".repeat(64)),
+            size_bytes: 8,
+            stored_path,
+            original_name: "guest.exe".into(),
+            architecture: CpuArchitecture::X86_64,
+            image_kind: "executable".into(),
+            subsystem: "windowsConsole".into(),
+            inspection_schema_version: SCHEMA_VERSION_V1.into(),
+        });
+        assert!(matches!(
+            ProcessSupervisor::start(&plan),
+            Err(ProcessError::InvalidGuestArtifact(
+                GuestArtifactError::DigestMismatch { .. }
+            ))
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn helper_plan() -> LaunchPlan {
