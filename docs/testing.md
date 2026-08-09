@@ -87,5 +87,6 @@ recipe digest
 - CapabilityReport Domain 使用 boolean/string/number 标量闭集；负向测试拒绝 feature 与 observation value 中的 object、array 和 null，FFI 输出再经过严格 DTO 反序列化、Domain 条件/唯一性校验及 Schema v1 标量断言。
 - Context capability 查询覆盖 Linux x86_64/ARM64 映射、空 Provider、不可用 Provider、NULL 输出语义、确定性排序、无文件/进程物化边界，以及 token、用户路径、任意进程 observation 不进入公开报告；该路径不依赖或调用 PE 解析模块。
 - PE inspection 覆盖 DOS/PE signature、optional header/machine 一致性、section/header 上限、RVA 映射、import 终止和名称闭集；确定性无代码 fixture 在三平台 CLI 检查，Linux C consumer 先验证 API 0.9.0/ABI 1 再解析 additive symbol。
+- PreparedLaunch 覆盖来源修改不影响固定对象、对象篡改、符号链接、路径/架构/digest 伪报、Context/sandbox/工作目录漂移和确定性重编。Linux 动态 C consumer 验证 API 0.10.0/ABI 1 的 `prepare → inspection-get → plan-get`；该 fixture 不调用 start，不执行真实 PE。
 - Runtime Pack 覆盖 NIST SHA-256 vectors、流式边界、manifest 规范化排序、组件/manifest digest 失败、stable/candidate 签名 fail-closed、幂等安装、对象复用、active ref 原子可见性、目标重校验与回滚。
 - 三平台 CI 使用两个本地 preview bundle 执行 `install v1 → install v2 → verify v2 → rollback v1`；fixture 只包含可公开文本 blob，不包含 Wine 或商业二进制。

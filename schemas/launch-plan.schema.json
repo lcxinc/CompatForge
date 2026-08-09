@@ -54,6 +54,7 @@
         "workingDirectory": { "type": "string", "minLength": 1 }
       }
     },
+    "guestArtifact": { "$ref": "guest-artifact.schema.json" },
     "mounts": {
       "type": "array",
       "items": {

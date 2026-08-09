@@ -32,6 +32,18 @@ pub enum CpuArchitecture {
     Unknown,
 }
 
+impl CpuArchitecture {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::I386 => "i386",
+            Self::X86_64 => "x86_64",
+            Self::Arm64 => "arm64",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 pub enum RuntimeKind {
     #[serde(rename = "wine")]
@@ -534,6 +546,50 @@ pub struct NativeCommand {
     pub working_directory: String,
 }
 
+/// Immutable evidence binding for a guest executable materialized in the
+/// dedicated content-addressed guest artifact store.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GuestArtifactBinding {
+    pub digest: String,
+    pub size_bytes: u64,
+    pub stored_path: String,
+    pub original_name: String,
+    pub architecture: CpuArchitecture,
+    pub image_kind: String,
+    pub subsystem: String,
+    pub inspection_schema_version: String,
+}
+
+impl GuestArtifactBinding {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_digest("guestArtifact.digest", &self.digest)?;
+        if self.size_bytes == 0 {
+            return Err(ContractError::UnsupportedValue("guestArtifact.sizeBytes"));
+        }
+        if self.stored_path.is_empty() {
+            return Err(ContractError::MissingField("guestArtifact.storedPath"));
+        }
+        if self.original_name.is_empty()
+            || self.original_name.contains('/')
+            || self.original_name.contains('\\')
+            || matches!(self.original_name.as_str(), "." | "..")
+        {
+            return Err(ContractError::UnsupportedValue("guestArtifact.originalName"));
+        }
+        if !matches!(self.architecture, CpuArchitecture::I386 | CpuArchitecture::X86_64) {
+            return Err(ContractError::UnsupportedValue("guestArtifact.architecture"));
+        }
+        if self.image_kind != "executable" {
+            return Err(ContractError::UnsupportedValue("guestArtifact.imageKind"));
+        }
+        if self.subsystem != "windowsConsole" {
+            return Err(ContractError::UnsupportedValue("guestArtifact.subsystem"));
+        }
+        validate_schema_version(&self.inspection_schema_version)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Mount {
@@ -614,6 +670,8 @@ pub struct LaunchPlan {
     pub translator: TranslatorSelection,
     pub graphics: GraphicsSelection,
     pub process: NativeCommand,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_artifact: Option<GuestArtifactBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<Mount>,
     pub sandbox: SandboxPolicy,
@@ -636,6 +694,12 @@ impl LaunchPlan {
         }
         if self.process.working_directory.is_empty() {
             return Err(ContractError::MissingField("process.workingDirectory"));
+        }
+        if let Some(binding) = &self.guest_artifact {
+            binding.validate()?;
+            if self.process.arguments.first() != Some(&binding.stored_path) {
+                return Err(ContractError::UnsupportedValue("process.arguments[0]"));
+            }
         }
         self.lifecycle.validate()?;
         Ok(())

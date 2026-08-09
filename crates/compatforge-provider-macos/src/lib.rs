@@ -759,6 +759,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static TEMP_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
     struct SuccessfulCommand {
         calls: AtomicUsize,
     }
@@ -784,8 +786,9 @@ mod tests {
 
     fn temporary_directory(name: &str) -> PathBuf {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let sequence = TEMP_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "compatforge-macos-provider-{name}-{}-{nonce}",
+            "compatforge-macos-provider-{name}-{}-{nonce}-{sequence}",
             std::process::id()
         ))
     }

@@ -1,5 +1,5 @@
 [package]
-name = "compatforge-process"
+name = "compatforge-guest-artifact"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,8 @@ publish.workspace = true
 
 [dependencies]
 compatforge-domain = { path = "../compatforge-domain" }
-compatforge-guest-artifact = { path = "../compatforge-guest-artifact" }
-
-[dev-dependencies]
-serde_json.workspace = true
+compatforge-inspect = { path = "../compatforge-inspect" }
+sha2.workspace = true
 
 [lints]
 workspace = true

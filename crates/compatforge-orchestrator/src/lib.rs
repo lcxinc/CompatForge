@@ -3,12 +3,17 @@
 #![forbid(unsafe_code)]
 
 use compatforge_domain::{
-    CapabilityReport, ContractError, CoreConfig, CpuArchitecture, GraphicsBackendKind, GraphicsSelection, HostOs,
-    LaunchPlan, LaunchRequest, NativeCommand, ProcessLifecycle, ProviderDescriptor, RuntimeKind, RuntimeSelection,
-    SandboxPolicy, TranslatorKind, TranslatorSelection, WineServerLifecycle, SCHEMA_VERSION_V1,
+    CapabilityReport, ContractError, CoreConfig, CpuArchitecture, GraphicsBackendKind, GraphicsSelection,
+    GuestArtifactBinding, HostOs, LaunchPlan, LaunchRequest, NativeCommand, ProcessLifecycle, ProviderDescriptor,
+    RuntimeKind, RuntimeSelection, SandboxPolicy, TranslatorKind, TranslatorSelection, WineServerLifecycle,
+    SCHEMA_VERSION_V1,
 };
+use compatforge_guest_artifact::{GuestArtifactError, GuestArtifactStore};
+use compatforge_inspect::PeInspectionReport;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
@@ -22,6 +27,172 @@ pub enum PlanError {
     PlanMismatch(&'static str),
     NoCompatibleTranslator,
     NoCompatibleGraphicsBackend,
+}
+
+#[derive(Debug)]
+pub enum PreparationError {
+    InvalidRequest(ContractError),
+    SourcePathMismatch,
+    ArchitectureMismatch {
+        requested: CpuArchitecture,
+        inspected: CpuArchitecture,
+    },
+    DigestMismatch,
+    GuestArtifact(GuestArtifactError),
+    Planning(PlanError),
+    ContextSerialization(serde_json::Error),
+    ContextMismatch,
+    PreparedPlanMismatch,
+}
+
+impl fmt::Display for PreparationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest(error) => write!(formatter, "invalid launch request: {error}"),
+            Self::SourcePathMismatch => {
+                formatter.write_str("launch request executable path does not match the selected source")
+            }
+            Self::ArchitectureMismatch { requested, inspected } => write!(
+                formatter,
+                "requested architecture {requested:?} does not match inspected architecture {inspected:?}"
+            ),
+            Self::DigestMismatch => formatter.write_str("requested executable digest does not match inspected content"),
+            Self::GuestArtifact(error) => write!(formatter, "guest artifact preparation failed: {error}"),
+            Self::Planning(error) => write!(formatter, "prepared launch planning failed: {error}"),
+            Self::ContextSerialization(error) => write!(formatter, "trusted context serialization failed: {error}"),
+            Self::ContextMismatch => formatter.write_str("prepared launch context fingerprint mismatch"),
+            Self::PreparedPlanMismatch => {
+                formatter.write_str("prepared launch no longer recompiles to the pinned plan")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PreparationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidRequest(error) => Some(error),
+            Self::GuestArtifact(error) => Some(error),
+            Self::Planning(error) => Some(error),
+            Self::ContextSerialization(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// An opaque, inspection-bound launch decision. The original request is kept
+/// privately so authorization can deterministically recompile the complete
+/// plan against the caller's current trusted context.
+#[derive(Debug, Clone)]
+pub struct PreparedLaunch {
+    request: LaunchRequest,
+    inspection: PeInspectionReport,
+    binding: GuestArtifactBinding,
+    plan: LaunchPlan,
+    context_fingerprint: String,
+}
+
+impl PreparedLaunch {
+    pub fn prepare(config: &CoreConfig, source: &Path, request: &LaunchRequest) -> Result<Self, PreparationError> {
+        config
+            .validate()
+            .map_err(PlanError::InvalidConfig)
+            .map_err(PreparationError::Planning)?;
+        request.validate().map_err(PreparationError::InvalidRequest)?;
+        if Path::new(&request.executable.path) != source {
+            return Err(PreparationError::SourcePathMismatch);
+        }
+        let store = GuestArtifactStore::new(&config.storage_root);
+        let prepared = store.prepare(source).map_err(PreparationError::GuestArtifact)?;
+        if request.executable.architecture != prepared.binding.architecture {
+            return Err(PreparationError::ArchitectureMismatch {
+                requested: request.executable.architecture,
+                inspected: prepared.binding.architecture,
+            });
+        }
+        if request.executable.sha256.as_deref().is_some_and(|digest| {
+            !prepared
+                .binding
+                .digest
+                .strip_prefix("sha256:")
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(digest))
+        }) {
+            return Err(PreparationError::DigestMismatch);
+        }
+
+        let mut trusted_request = request.clone();
+        trusted_request
+            .executable
+            .path
+            .clone_from(&prepared.binding.stored_path);
+        trusted_request.executable.architecture = prepared.binding.architecture;
+        trusted_request.executable.sha256 = prepared.binding.digest.strip_prefix("sha256:").map(str::to_owned);
+        let plan = compile_prepared_plan(config, &trusted_request, &prepared.binding)?;
+        let context_fingerprint = fingerprint_context(config)?;
+        Ok(Self {
+            request: trusted_request,
+            inspection: prepared.inspection,
+            binding: prepared.binding,
+            plan,
+            context_fingerprint,
+        })
+    }
+
+    #[must_use]
+    pub const fn inspection(&self) -> &PeInspectionReport {
+        &self.inspection
+    }
+
+    #[must_use]
+    pub const fn plan(&self) -> &LaunchPlan {
+        &self.plan
+    }
+
+    pub fn authorize<'a>(&'a self, config: &CoreConfig) -> Result<&'a LaunchPlan, PreparationError> {
+        if fingerprint_context(config)? != self.context_fingerprint {
+            return Err(PreparationError::ContextMismatch);
+        }
+        GuestArtifactStore::new(&config.storage_root)
+            .verify(&self.binding)
+            .map_err(PreparationError::GuestArtifact)?;
+        let recompiled = compile_prepared_plan(config, &self.request, &self.binding)?;
+        if recompiled != self.plan {
+            return Err(PreparationError::PreparedPlanMismatch);
+        }
+        PolicyEngine::authorize(config, &self.plan).map_err(PreparationError::Planning)?;
+        Ok(&self.plan)
+    }
+}
+
+fn compile_prepared_plan(
+    config: &CoreConfig,
+    request: &LaunchRequest,
+    binding: &GuestArtifactBinding,
+) -> Result<LaunchPlan, PreparationError> {
+    let mut plan = PolicyEngine::compile(config, request).map_err(PreparationError::Planning)?;
+    plan.guest_artifact = Some(binding.clone());
+    plan.decision_trace
+        .push(format!("guest-artifact {} pinned", binding.digest));
+    plan.decision_trace.push(format!(
+        "inspection {} {} accepted",
+        binding.architecture.as_str(),
+        binding.subsystem
+    ));
+    plan.validate()
+        .map_err(PlanError::InvalidPlan)
+        .map_err(PreparationError::Planning)?;
+    Ok(plan)
+}
+
+fn fingerprint_context(config: &CoreConfig) -> Result<String, PreparationError> {
+    let bytes = serde_json::to_vec(config).map_err(PreparationError::ContextSerialization)?;
+    let mut value = String::with_capacity(71);
+    value.push_str("sha256:");
+    for byte in Sha256::digest(bytes) {
+        use std::fmt::Write as _;
+        write!(value, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(value)
 }
 
 impl fmt::Display for PlanError {
@@ -134,6 +305,7 @@ impl PolicyEngine {
                 environment,
                 working_directory,
             },
+            guest_artifact: None,
             mounts: Vec::new(),
             sandbox: SandboxPolicy {
                 profile: config.sandbox_profile,
@@ -173,6 +345,23 @@ impl PolicyEngine {
         }
         if !is_absolute_host_path(&plan.process.working_directory) {
             return Err(PlanError::InvalidHostPath("process.workingDirectory"));
+        }
+
+        if let Some(guest) = &plan.guest_artifact {
+            let digest = guest
+                .digest
+                .strip_prefix("sha256:")
+                .ok_or(PlanError::PlanMismatch("guest artifact digest"))?;
+            let expected = join_host_path(
+                &config.storage_root,
+                &["guest-artifacts", "objects", "sha256", &digest.to_ascii_lowercase()],
+            );
+            if guest.stored_path != expected || !host_path_is_within(&config.storage_root, &guest.stored_path) {
+                return Err(PlanError::PlanMismatch("guest artifact path"));
+            }
+            if plan.process.arguments.first() != Some(&guest.stored_path) {
+                return Err(PlanError::PlanMismatch("guest executable argument"));
+            }
         }
 
         let binding = config
@@ -538,6 +727,120 @@ mod tests {
                 required_capabilities: Vec::new(),
             },
         }
+    }
+
+    fn prepared_fixture() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hello-x86_64.exe")
+            .canonicalize()
+            .unwrap()
+    }
+
+    fn prepared_config(label: &str) -> (CoreConfig, std::path::PathBuf) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("compatforge-{label}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = config(CpuArchitecture::X86_64);
+        config.storage_root = root.join("store").to_string_lossy().into_owned();
+        (config, root)
+    }
+
+    fn prepared_request() -> LaunchRequest {
+        let mut request = request();
+        request.executable.path = prepared_fixture().to_string_lossy().into_owned();
+        request
+    }
+
+    fn make_object_writable(prepared: &PreparedLaunch) {
+        let path = Path::new(&prepared.binding.stored_path);
+        #[cfg(unix)]
+        if let Ok(mut permissions) = std::fs::metadata(path).map(|metadata| metadata.permissions()) {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("attrib")
+                .arg("-R")
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn prepares_an_inspection_bound_launch_plan() {
+        let (config, root) = prepared_config("prepared-plan");
+        let prepared = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
+        let guest = prepared.plan().guest_artifact.as_ref().unwrap();
+        assert_eq!(guest.digest, prepared.inspection().file_digest);
+        assert_eq!(guest.architecture, CpuArchitecture::X86_64);
+        assert_eq!(prepared.plan().translator.provider, TranslatorKind::Native);
+        prepared.authorize(&config).unwrap();
+        make_object_writable(&prepared);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_caller_architecture_and_digest_lies() {
+        let (config, root) = prepared_config("prepared-lies");
+        let mut request = prepared_request();
+        request.executable.architecture = CpuArchitecture::I386;
+        assert!(matches!(
+            PreparedLaunch::prepare(&config, &prepared_fixture(), &request),
+            Err(PreparationError::ArchitectureMismatch { .. })
+        ));
+
+        let mut request = prepared_request();
+        request.executable.sha256 = Some("0".repeat(64));
+        assert!(matches!(
+            PreparedLaunch::prepare(&config, &prepared_fixture(), &request),
+            Err(PreparationError::DigestMismatch)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_context_changes_after_preparation() {
+        let (config, root) = prepared_config("prepared-context");
+        let prepared = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
+        let mut changed = config.clone();
+        changed.sandbox_profile = SandboxProfile::Strict;
+        assert!(matches!(
+            prepared.authorize(&changed),
+            Err(PreparationError::ContextMismatch)
+        ));
+        make_object_writable(&prepared);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_guest_object_tampering_before_start() {
+        let (config, root) = prepared_config("prepared-tamper");
+        let prepared = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
+        make_object_writable(&prepared);
+        std::fs::write(&prepared.binding.stored_path, b"replaced object").unwrap();
+        assert!(matches!(
+            prepared.authorize(&config),
+            Err(PreparationError::GuestArtifact(_))
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preparation_is_deterministic_for_the_same_context_and_input() {
+        let (config, root) = prepared_config("prepared-deterministic");
+        let first = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
+        let second = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
+        assert_eq!(first.inspection(), second.inspection());
+        assert_eq!(first.plan(), second.plan());
+        make_object_writable(&first);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

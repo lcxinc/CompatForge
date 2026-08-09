@@ -5,7 +5,7 @@
 use compatforge_capability::{ContextCapabilityQuery, HostProbe};
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
 use compatforge_inspect::inspect_path;
-use compatforge_orchestrator::PolicyEngine;
+use compatforge_orchestrator::{PolicyEngine, PreparedLaunch};
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
@@ -35,6 +35,7 @@ pub enum CfStatus {
     EndOfStream = 9,
     ProbeFailed = 10,
     InspectionFailed = 11,
+    PreparationFailed = 12,
     Panic = 255,
 }
 
@@ -46,6 +47,11 @@ pub struct CfContext {
 #[repr(C)]
 pub struct CfLaunch {
     handle: LaunchHandle,
+}
+
+#[repr(C)]
+pub struct CfPreparedLaunch {
+    prepared: PreparedLaunch,
 }
 
 struct FfiFailure {
@@ -238,6 +244,131 @@ pub unsafe extern "C" fn cf_compile_launch(
     })
 }
 
+/// Inspect and materialize a selected PE into an opaque trusted launch.
+///
+/// # Safety
+///
+/// `context` must be a live context. Both string pointers must be valid UTF-8
+/// NUL-terminated strings. `out_prepared` is cleared before validation and a
+/// non-null result must be released with [`cf_prepared_launch_release`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_launch_prepare(
+    context: *const CfContext,
+    absolute_executable_path: *const c_char,
+    request_json: *const c_char,
+    out_prepared: *mut *mut CfPreparedLaunch,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_prepared.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_prepared is null"));
+        }
+        unsafe { ptr::write(out_prepared, ptr::null_mut()) };
+        if context.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "context is null"));
+        }
+        let path = unsafe { read_utf8(absolute_executable_path, "absolute_executable_path") }?;
+        let request_text = unsafe { read_utf8(request_json, "request_json") }?;
+        let request: LaunchRequest = serde_json::from_str(&request_text)
+            .map_err(|error| FfiFailure::new(CfStatus::InvalidJson, format!("invalid launch request JSON: {error}")))?;
+        let context = unsafe { &*context };
+        let prepared = PreparedLaunch::prepare(&context.config, Path::new(&path), &request)
+            .map_err(|error| FfiFailure::new(CfStatus::PreparationFailed, error.to_string()))?;
+        unsafe { ptr::write(out_prepared, Box::into_raw(Box::new(CfPreparedLaunch { prepared }))) };
+        Ok(())
+    })
+}
+
+/// Serialize the inspection evidence owned by a prepared launch.
+///
+/// # Safety
+///
+/// `prepared` must be live and `out_report_json` valid for one pointer write.
+#[no_mangle]
+pub unsafe extern "C" fn cf_prepared_launch_inspection_get(
+    prepared: *const CfPreparedLaunch,
+    out_report_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_report_json.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_report_json is null"));
+        }
+        unsafe { ptr::write(out_report_json, ptr::null_mut()) };
+        if prepared.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "prepared is null"));
+        }
+        let prepared = unsafe { &*prepared };
+        let json = serde_json::to_string_pretty(prepared.prepared.inspection()).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::PreparationFailed,
+                format!("inspection serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_report_json) }
+    })
+}
+
+/// Serialize the immutable plan owned by a prepared launch.
+///
+/// # Safety
+///
+/// `prepared` must be live and `out_plan_json` valid for one pointer write.
+#[no_mangle]
+pub unsafe extern "C" fn cf_prepared_launch_plan_get(
+    prepared: *const CfPreparedLaunch,
+    out_plan_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_plan_json.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_plan_json is null"));
+        }
+        unsafe { ptr::write(out_plan_json, ptr::null_mut()) };
+        if prepared.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "prepared is null"));
+        }
+        let prepared = unsafe { &*prepared };
+        let json = serde_json::to_string_pretty(prepared.prepared.plan()).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::PreparationFailed,
+                format!("plan serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_plan_json) }
+    })
+}
+
+/// Re-authorize and start an opaque prepared launch against a context.
+///
+/// # Safety
+///
+/// All input handles must be live. `out_launch` is cleared before validation
+/// and a non-null result must be released with [`cf_launch_release`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_prepared_launch_start(
+    context: *const CfContext,
+    prepared: *const CfPreparedLaunch,
+    out_launch: *mut *mut CfLaunch,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_launch.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_launch is null"));
+        }
+        unsafe { ptr::write(out_launch, ptr::null_mut()) };
+        if context.is_null() || prepared.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "context or prepared is null"));
+        }
+        let context = unsafe { &*context };
+        let prepared = unsafe { &*prepared };
+        let plan = prepared
+            .prepared
+            .authorize(&context.config)
+            .map_err(|error| FfiFailure::new(CfStatus::AuthorizationFailed, error.to_string()))?;
+        let handle = ProcessSupervisor::start(plan)
+            .map_err(|error| FfiFailure::new(CfStatus::ProcessFailed, error.to_string()))?;
+        unsafe { ptr::write(out_launch, Box::into_raw(Box::new(CfLaunch { handle }))) };
+        Ok(())
+    })
+}
+
 /// Start an authorized launch plan and return an opaque process handle.
 ///
 /// # Safety
@@ -381,6 +512,20 @@ pub unsafe extern "C" fn cf_context_release(context: *mut CfContext) {
     }
 }
 
+/// Release an opaque prepared launch.
+///
+/// # Safety
+///
+/// `prepared` must be null or a live pointer returned by [`cf_launch_prepare`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_prepared_launch_release(prepared: *mut CfPreparedLaunch) {
+    if !prepared.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            drop(Box::from_raw(prepared));
+        }));
+    }
+}
+
 /// Release a launch handle, terminating a still-running child first.
 ///
 /// # Safety
@@ -462,6 +607,25 @@ mod tests {
         context
     }
 
+    fn make_object_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("attrib")
+                .arg("-R")
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
     fn example_config() -> CoreConfig {
         serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap()
     }
@@ -519,7 +683,10 @@ mod tests {
 
     #[test]
     fn inspects_a_pe_fixture_across_the_c_abi() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/hello-x86_64.exe");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hello-x86_64.exe")
+            .canonicalize()
+            .unwrap();
         let fixture = CString::new(fixture.to_string_lossy().as_bytes()).unwrap();
         let mut output = ptr::null_mut();
         unsafe {
@@ -707,6 +874,138 @@ mod tests {
     }
 
     #[test]
+    fn prepares_and_reads_an_inspection_bound_launch_across_the_c_abi() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("compatforge-ffi-prepare-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hello-x86_64.exe")
+            .canonicalize()
+            .unwrap();
+        let mut config = example_config();
+        config.storage_root = root.join("store").to_string_lossy().into_owned();
+        let mut request: LaunchRequest =
+            serde_json::from_str(include_str!("../../../examples/launch-request.json")).unwrap();
+        request.executable.path = fixture.to_string_lossy().into_owned();
+        request.executable.architecture = compatforge_domain::CpuArchitecture::X86_64;
+        request.executable.sha256 = None;
+
+        let context = create_context(&config);
+        let fixture = CString::new(fixture.to_string_lossy().as_bytes()).unwrap();
+        let request = CString::new(serde_json::to_string(&request).unwrap()).unwrap();
+        let mut prepared = ptr::null_mut();
+        let mut inspection_json = ptr::null_mut();
+        let mut plan_json = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                cf_launch_prepare(context, fixture.as_ptr(), request.as_ptr(), &mut prepared),
+                CfStatus::Ok
+            );
+            assert_eq!(
+                cf_prepared_launch_inspection_get(prepared, &mut inspection_json),
+                CfStatus::Ok
+            );
+            assert_eq!(cf_prepared_launch_plan_get(prepared, &mut plan_json), CfStatus::Ok);
+            let inspection: PeInspectionReport =
+                serde_json::from_str(CStr::from_ptr(inspection_json).to_str().unwrap()).unwrap();
+            let plan: LaunchPlan = serde_json::from_str(CStr::from_ptr(plan_json).to_str().unwrap()).unwrap();
+            assert_eq!(plan.guest_artifact.as_ref().unwrap().digest, inspection.file_digest);
+
+            let object = Path::new(&plan.guest_artifact.as_ref().unwrap().stored_path);
+            make_object_writable(object);
+
+            cf_string_free(inspection_json);
+            cf_string_free(plan_json);
+            cf_prepared_launch_release(prepared);
+            cf_context_release(context);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_launch_rejects_a_different_context_before_process_creation() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("compatforge-ffi-context-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/hello-x86_64.exe")
+            .canonicalize()
+            .unwrap();
+        let mut config = example_config();
+        config.storage_root = root.join("store").to_string_lossy().into_owned();
+        let original_context = create_context(&config);
+        config.sandbox_profile = compatforge_domain::SandboxProfile::Strict;
+        let changed_context = create_context(&config);
+        let mut request: LaunchRequest =
+            serde_json::from_str(include_str!("../../../examples/launch-request.json")).unwrap();
+        request.executable.path = fixture.to_string_lossy().into_owned();
+        request.executable.architecture = compatforge_domain::CpuArchitecture::X86_64;
+        request.executable.sha256 = None;
+        let fixture = CString::new(fixture.to_string_lossy().as_bytes()).unwrap();
+        let request = CString::new(serde_json::to_string(&request).unwrap()).unwrap();
+        let mut prepared = ptr::null_mut();
+        let mut launch = ptr::null_mut();
+        let mut plan_json = ptr::null_mut();
+
+        unsafe {
+            assert_eq!(
+                cf_launch_prepare(original_context, fixture.as_ptr(), request.as_ptr(), &mut prepared),
+                CfStatus::Ok
+            );
+            assert_eq!(
+                cf_prepared_launch_start(changed_context, prepared, &mut launch),
+                CfStatus::AuthorizationFailed
+            );
+            assert!(launch.is_null());
+            assert_eq!(cf_prepared_launch_plan_get(prepared, &mut plan_json), CfStatus::Ok);
+            let plan: LaunchPlan = serde_json::from_str(CStr::from_ptr(plan_json).to_str().unwrap()).unwrap();
+            let object = Path::new(&plan.guest_artifact.as_ref().unwrap().stored_path);
+            make_object_writable(object);
+            cf_string_free(plan_json);
+            cf_prepared_launch_release(prepared);
+            cf_context_release(original_context);
+            cf_context_release(changed_context);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepared_launch_functions_clear_outputs_before_handle_validation() {
+        let mut prepared = std::ptr::NonNull::<CfPreparedLaunch>::dangling().as_ptr();
+        let mut text = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+        let mut launch = std::ptr::NonNull::<CfLaunch>::dangling().as_ptr();
+        unsafe {
+            assert_eq!(
+                cf_launch_prepare(ptr::null(), ptr::null(), ptr::null(), &mut prepared),
+                CfStatus::NullPointer
+            );
+            assert!(prepared.is_null());
+            assert_eq!(
+                cf_prepared_launch_inspection_get(ptr::null(), &mut text),
+                CfStatus::NullPointer
+            );
+            assert!(text.is_null());
+            text = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+            assert_eq!(
+                cf_prepared_launch_plan_get(ptr::null(), &mut text),
+                CfStatus::NullPointer
+            );
+            assert!(text.is_null());
+            assert_eq!(
+                cf_prepared_launch_start(ptr::null(), ptr::null(), &mut launch),
+                CfStatus::NullPointer
+            );
+            assert!(launch.is_null());
+        }
+    }
+
+    #[test]
     fn contains_json_errors_without_unwinding() {
         let config = CString::new(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap();
         let invalid_request = CString::new("{").unwrap();
@@ -765,6 +1064,7 @@ mod tests {
                 ]),
                 working_directory: root,
             },
+            guest_artifact: None,
             mounts: Vec::new(),
             sandbox: compatforge_domain::SandboxPolicy {
                 profile: config.sandbox_profile,

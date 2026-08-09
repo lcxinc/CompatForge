@@ -7,8 +7,11 @@ publish.workspace = true
 
 [dependencies]
 compatforge-domain = { path = "../compatforge-domain" }
+compatforge-guest-artifact = { path = "../compatforge-guest-artifact" }
+compatforge-inspect = { path = "../compatforge-inspect" }
 compatforge-storage = { path = "../compatforge-storage" }
 serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

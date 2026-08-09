@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct cf_context cf_context_t;
 typedef struct cf_launch cf_launch_t;
+typedef struct cf_prepared_launch cf_prepared_launch_t;
 typedef uint32_t cf_status_t;
 
 #define CF_STATUS_OK ((cf_status_t)0)
@@ -23,6 +24,7 @@ typedef uint32_t cf_status_t;
 #define CF_STATUS_END_OF_STREAM ((cf_status_t)9)
 #define CF_STATUS_PROBE_FAILED ((cf_status_t)10)
 #define CF_STATUS_INSPECTION_FAILED ((cf_status_t)11)
+#define CF_STATUS_PREPARATION_FAILED ((cf_status_t)12)
 #define CF_STATUS_PANIC ((cf_status_t)255)
 
 const char *cf_api_version(void);
@@ -43,6 +45,25 @@ cf_status_t cf_compile_launch(
     const char *request_json,
     char **out_plan_json
 );
+cf_status_t cf_launch_prepare(
+    const cf_context_t *context,
+    const char *absolute_executable_path,
+    const char *request_json,
+    cf_prepared_launch_t **out_prepared
+);
+cf_status_t cf_prepared_launch_inspection_get(
+    const cf_prepared_launch_t *prepared,
+    char **out_report_json
+);
+cf_status_t cf_prepared_launch_plan_get(
+    const cf_prepared_launch_t *prepared,
+    char **out_plan_json
+);
+cf_status_t cf_prepared_launch_start(
+    const cf_context_t *context,
+    const cf_prepared_launch_t *prepared,
+    cf_launch_t **out_launch
+);
 cf_status_t cf_launch_start(
     const cf_context_t *context,
     const char *plan_json,
@@ -58,6 +79,7 @@ cf_status_t cf_last_error_json(char **out_error_json);
 
 void cf_string_free(char *value);
 void cf_context_release(cf_context_t *context);
+void cf_prepared_launch_release(cf_prepared_launch_t *prepared);
 void cf_launch_release(cf_launch_t *launch);
 
 #ifdef __cplusplus
