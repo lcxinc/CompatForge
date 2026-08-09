@@ -607,6 +607,25 @@ mod tests {
         context
     }
 
+    fn make_object_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("attrib")
+                .arg("-R")
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
     fn example_config() -> CoreConfig {
         serde_json::from_str(include_str!("../../../examples/context-config.linux-arm64.json")).unwrap()
     }
@@ -896,15 +915,7 @@ mod tests {
             assert_eq!(plan.guest_artifact.as_ref().unwrap().digest, inspection.file_digest);
 
             let object = Path::new(&plan.guest_artifact.as_ref().unwrap().stored_path);
-            let mut permissions = std::fs::metadata(object).unwrap().permissions();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o600);
-            }
-            #[cfg(not(unix))]
-            permissions.set_readonly(false);
-            std::fs::set_permissions(object, permissions).unwrap();
+            make_object_writable(object);
 
             cf_string_free(inspection_json);
             cf_string_free(plan_json);
@@ -955,15 +966,7 @@ mod tests {
             assert_eq!(cf_prepared_launch_plan_get(prepared, &mut plan_json), CfStatus::Ok);
             let plan: LaunchPlan = serde_json::from_str(CStr::from_ptr(plan_json).to_str().unwrap()).unwrap();
             let object = Path::new(&plan.guest_artifact.as_ref().unwrap().stored_path);
-            let mut permissions = std::fs::metadata(object).unwrap().permissions();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o600);
-            }
-            #[cfg(not(unix))]
-            permissions.set_readonly(false);
-            std::fs::set_permissions(object, permissions).unwrap();
+            make_object_writable(object);
             cf_string_free(plan_json);
             cf_prepared_launch_release(prepared);
             cf_context_release(original_context);

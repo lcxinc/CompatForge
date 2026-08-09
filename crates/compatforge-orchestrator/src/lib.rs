@@ -756,15 +756,20 @@ mod tests {
 
     fn make_object_writable(prepared: &PreparedLaunch) {
         let path = Path::new(&prepared.binding.stored_path);
+        #[cfg(unix)]
         if let Ok(mut permissions) = std::fs::metadata(path).map(|metadata| metadata.permissions()) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o600);
-            }
-            #[cfg(not(unix))]
-            permissions.set_readonly(false);
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o600);
             let _ = std::fs::set_permissions(path, permissions);
+        }
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("attrib")
+                .arg("-R")
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
         }
     }
 

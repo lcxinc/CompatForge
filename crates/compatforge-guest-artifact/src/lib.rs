@@ -386,15 +386,22 @@ mod tests {
     }
 
     fn make_writable(path: &Path) {
-        let mut permissions = fs::metadata(path).unwrap().permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).unwrap().permissions();
             permissions.set_mode(0o600);
+            fs::set_permissions(path, permissions).unwrap();
         }
-        #[cfg(not(unix))]
-        permissions.set_readonly(false);
-        fs::set_permissions(path, permissions).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("attrib")
+                .arg("-R")
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
     }
 
     #[test]
