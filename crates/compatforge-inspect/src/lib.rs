@@ -96,6 +96,13 @@ pub struct PeInspectionReport {
 
 /// Inspect one absolute regular-file path with a 64 MiB pre-allocation limit.
 pub fn inspect_path(path: &Path) -> Result<PeInspectionReport, InspectionError> {
+    inspect_path_with_before_open(path, || {})
+}
+
+fn inspect_path_with_before_open(
+    path: &Path,
+    before_open: impl FnOnce(),
+) -> Result<PeInspectionReport, InspectionError> {
     if !path.is_absolute() {
         return Err(InspectionError::RelativePath(path.to_owned()));
     }
@@ -104,20 +111,33 @@ pub fn inspect_path(path: &Path) -> Result<PeInspectionReport, InspectionError> 
         path: path.to_owned(),
         source,
     })?;
-    if path_metadata.file_type().is_symlink() {
+    if metadata_is_link(&path_metadata) {
         return Err(InspectionError::SymbolicLink(path.to_owned()));
     }
     if !path_metadata.is_file() {
         return Err(InspectionError::NotRegularFile(path.to_owned()));
     }
-    let mut file = fs::File::open(path).map_err(|source| InspectionError::Filesystem {
-        path: path.to_owned(),
-        source,
-    })?;
+
+    before_open();
+    let mut file = match open_without_following_links(path) {
+        Ok(file) => file,
+        Err(source) => {
+            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata_is_link(&metadata)) {
+                return Err(InspectionError::SymbolicLink(path.to_owned()));
+            }
+            return Err(InspectionError::Filesystem {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
     let metadata = file.metadata().map_err(|source| InspectionError::Filesystem {
         path: path.to_owned(),
         source,
     })?;
+    if metadata_is_link(&metadata) {
+        return Err(InspectionError::SymbolicLink(path.to_owned()));
+    }
     if !metadata.is_file() {
         return Err(InspectionError::NotRegularFile(path.to_owned()));
     }
@@ -140,6 +160,43 @@ pub fn inspect_path(path: &Path) -> Result<PeInspectionReport, InspectionError> 
         return Err(InspectionError::ChangedDuringRead);
     }
     inspect_bytes(&bytes)
+}
+
+#[cfg(unix)]
+fn open_without_following_links(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn open_without_following_links(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("compatforge-inspect requires atomic no-follow file opening support");
+
+#[cfg(not(windows))]
+fn metadata_is_link(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn metadata_is_link(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 /// Inspect an in-memory PE image without executing or mapping it.
@@ -691,6 +748,34 @@ mod tests {
             Err(InspectionError::FileTooLarge(size)) if size == MAX_PE_FILE_BYTES + 1
         ));
         fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_replacement_between_check_and_open() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("compatforge-inspect-race-{}-{nonce}", std::process::id()));
+        let inspected = directory.join("inspected.exe");
+        let target = directory.join("target.exe");
+        fs::create_dir(&directory).unwrap();
+        fs::write(&inspected, fixture()).unwrap();
+        fs::write(&target, fixture()).unwrap();
+
+        let result = inspect_path_with_before_open(&inspected, || {
+            fs::remove_file(&inspected).unwrap();
+            symlink(&target, &inspected).unwrap();
+        });
+
+        assert!(matches!(
+            result,
+            Err(InspectionError::SymbolicLink(_)) | Err(InspectionError::Filesystem { .. })
+        ));
+        fs::remove_file(inspected).unwrap();
+        fs::remove_file(target).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[test]

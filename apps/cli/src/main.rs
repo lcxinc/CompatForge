@@ -8,7 +8,7 @@ use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackS
 use std::error::Error;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -28,7 +28,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             println!("{}", serde_json::to_string_pretty(&HostProbe::probe()?)?);
         }
         [command, executable_path] if command == "inspect" => {
-            let executable_path = fs::canonicalize(executable_path)?;
+            let executable_path = absolute_path(Path::new(executable_path))?;
             println!("{}", serde_json::to_string_pretty(&inspect_path(&executable_path)?)?);
         }
         [group, platform, command, config_path] if group == "provider" && platform == "macos" && command == "probe" => {
@@ -90,6 +90,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         _ => print_help(),
     }
     Ok(())
+}
+
+fn absolute_path(path: &Path) -> io::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn Error>> {
@@ -155,4 +163,18 @@ fn print_help() {
     println!("  compatforge-cli runtime install <store-root> <bundle-root> <manifest-relative-path>");
     println!("  compatforge-cli runtime verify <store-root> <pack-digest>");
     println!("  compatforge-cli runtime rollback <store-root> <pack-id>");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_inspection_path_does_not_canonicalize_components() {
+        let relative = Path::new("inspection/../inspection-link.exe");
+        assert_eq!(
+            absolute_path(relative).unwrap(),
+            std::env::current_dir().unwrap().join(relative)
+        );
+    }
 }
