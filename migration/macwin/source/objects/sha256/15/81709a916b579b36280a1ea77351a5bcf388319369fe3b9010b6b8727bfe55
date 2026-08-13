@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MacWin Chromium Browser Compatibility</title>
+  <style>
+    :root { color-scheme: light; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f5f7; color: #18202a; }
+    main { width: min(920px, calc(100% - 48px)); margin: 40px auto; }
+    header { border-bottom: 1px solid #c8cdd4; padding-bottom: 20px; }
+    h1 { margin: 0 0 8px; font-size: 34px; font-weight: 650; }
+    .status { color: #176b45; font-weight: 600; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 24px 0; }
+    section { min-height: 132px; padding: 18px; border: 1px solid #d4d8de; background: white; }
+    label { display: block; margin-bottom: 8px; font-weight: 600; }
+    input { width: 100%; padding: 9px 10px; border: 1px solid #9299a3; font: inherit; }
+    canvas { display: block; width: 100%; height: 110px; border: 1px solid #b6bcc5; background: white; }
+    footer { margin-top: 18px; color: #525b67; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>浏览器兼容性测试</h1>
+      <div class="status" id="status">中文文字显示正常 / English text rendered correctly</div>
+    </header>
+    <div class="grid">
+      <section><strong>字体</strong><p>微软雅黑、Segoe UI 与系统后备字体。</p></section>
+      <section><strong>布局</strong><p>CSS Grid 三列布局和边框已加载。</p></section>
+      <section><strong>脚本</strong><p id="script-result">JavaScript 正在初始化...</p></section>
+    </div>
+    <label for="input">输入测试 / Keyboard input</label>
+    <input id="input" value="MacWin 输入控件可用" aria-label="兼容性输入框">
+    <h2>Canvas 渲染</h2>
+    <canvas id="canvas" width="860" height="110"></canvas>
+    <footer>MACWIN_CHROMIUM_FIXTURE_READY</footer>
+  </main>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+    const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+    gradient.addColorStop(0, '#1f6feb');
+    gradient.addColorStop(0.5, '#27a269');
+    gradient.addColorStop(1, '#d97706');
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#ffffff';
+    context.font = '600 24px "Microsoft YaHei UI", "Segoe UI", sans-serif';
+    context.fillText('Canvas 中文与 English 渲染通过', 28, 66);
+    document.getElementById('script-result').textContent = 'JavaScript 与 Canvas 已就绪。';
+    document.documentElement.dataset.macwinReady = 'true';
+  </script>
+</body>
+</html>

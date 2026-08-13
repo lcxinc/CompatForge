@@ -1,0 +1,52 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Media",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+  },
+  "id" : "vlc",
+  "installer" : {
+    "arguments" : [
+      "/S"
+    ],
+    "fileName" : "vlc-3.0.23-win64.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "20ad191348684b470ddc4e05204316f3d8e39655f412b3e392a0eef97639daaf",
+    "url" : "https://get.videolan.org/vlc/3.0.23/win64/vlc-3.0.23-win64.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "VLC media player",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+      "id" : "vlc",
+      "showInHome" : true
+    }
+  ],
+  "name" : "VLC media player",
+  "postInstall" : [
+
+  ],
+  "publisher" : "VideoLAN",
+  "warnings" : [
+    "Media playback exercises GStreamer and graphics paths; compatibility may vary by codec. Uses the official 64-bit NSIS installer; the installer stub is PE32 and therefore requires a WoW64-capable engine."
+  ]
+}

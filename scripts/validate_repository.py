@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -29,6 +30,7 @@ MIGRATION_ENVIRONMENT_NAMES = frozenset(
         "WINDIR",
     }
 )
+SOURCE_PACK_VALIDATOR = Path(__file__).resolve().parents[1] / "tools" / "import_macwin_source_pack.py"
 
 
 def validate_macwin_asset_migration() -> list[str]:
@@ -137,11 +139,64 @@ def validate_markdown_links() -> list[str]:
     return errors
 
 
+def _validated_macwin_source_pack_paths() -> tuple[set[Path], list[str]]:
+    """Return only leaves authenticated by the complete offline source-pack validator."""
+    source_root = ROOT / "migration" / "macwin" / "source"
+    try:
+        source_metadata = source_root.lstat()
+    except FileNotFoundError:
+        return set(), ["Mac-Win source pack validation failed"]
+    except OSError:
+        return set(), ["Mac-Win source pack validation failed"]
+    if (
+        not stat.S_ISDIR(source_metadata.st_mode)
+        or stat.S_ISLNK(source_metadata.st_mode)
+        or getattr(source_metadata, "st_reparse_tag", 0)
+    ):
+        return set(), ["Mac-Win source pack validation failed"]
+
+    try:
+        validator_metadata = SOURCE_PACK_VALIDATOR.lstat()
+    except OSError:
+        return set(), ["Mac-Win source pack validation failed"]
+    if (
+        not stat.S_ISREG(validator_metadata.st_mode)
+        or stat.S_ISLNK(validator_metadata.st_mode)
+        or getattr(validator_metadata, "st_reparse_tag", 0)
+    ):
+        return set(), ["Mac-Win source pack validation failed"]
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "repository_macwin_source_pack_validator", SOURCE_PACK_VALIDATOR
+        )
+        if spec is None or spec.loader is None:
+            return set(), ["Mac-Win source pack validation failed"]
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(spec.name, None)
+        manifest = module.validate_source_pack(source_root)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return set(), ["Mac-Win source pack validation failed"]
+
+    paths = {source_root / "index.json"}
+    for record in manifest["assets"]:
+        paths.add(source_root / Path(*record["objectPath"].split("/")))
+    if len(paths) != 91:
+        return set(), ["Mac-Win source pack validation failed"]
+    return {path.absolute() for path in paths}, []
+
+
 def validate_no_developer_paths() -> list[str]:
-    errors: list[str] = []
+    exempt_paths, errors = _validated_macwin_source_pack_paths()
     forbidden = ("/Users/a1-6/", "/home/a1-6/")
     for path in sorted(ROOT.rglob("*")):
         if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.absolute() in exempt_paths:
             continue
         if path.resolve() == Path(__file__).resolve():
             continue

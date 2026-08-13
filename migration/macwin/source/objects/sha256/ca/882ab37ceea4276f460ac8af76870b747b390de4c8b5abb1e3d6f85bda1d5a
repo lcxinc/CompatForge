@@ -1,0 +1,70 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Diagnostics",
+  "compatibilityRating" : "excellent",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+  },
+  "id" : "macwin-probes",
+  "installer" : {
+    "hints" : [
+
+    ],
+    "mode" : "none"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Vulkan Probe",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+      "id" : "vulkan-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D11 Shader Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+      "id" : "d3d11-shader-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "IPC / File Mapping Probe",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/90_ipc_file_mapping_probe.exe",
+      "id" : "ipc-file-mapping-probe",
+      "showInHome" : true
+    }
+  ],
+  "name" : "MacWin Probe Suite",
+  "postInstall" : [
+
+  ],
+  "publisher" : "MacWin",
+  "warnings" : [
+    "Runs local synthetic EXE probes generated for this Wine build."
+  ]
+}

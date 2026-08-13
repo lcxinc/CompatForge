@@ -1,0 +1,21 @@
+; Engine configuration file.
+; Used by the MacWin Vulkan compatibility workload.
+
+config_version=5
+
+[application]
+
+config/name="MacWin Vulkan Smoke"
+run/main_scene="res://main.tscn"
+
+[display]
+
+window/size/viewport_width=960
+window/size/viewport_height=540
+window/size/window_width_override=960
+window/size/window_height_override=540
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+environment/defaults/default_clear_color=Color(0.025, 0.035, 0.055, 1)

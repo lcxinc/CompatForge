@@ -1,0 +1,145 @@
+diff --git a/Modules/install-renv.R.in b/Modules/install-renv.R.in
+index 6003f48..27f080e 100644
+--- a/Modules/install-renv.R.in
++++ b/Modules/install-renv.R.in
+@@ -2,6 +2,8 @@
+ #
+ 
+ RENV_LIBRARY <- "@RENV_LIBRARY@"
++options(timeout = max(300, getOption("timeout")))
++LOCAL_RENV_PACKAGE <- Sys.getenv("MACWIN_JASP_RENV_PACKAGE", "")
+ 
+ mkdir <- function(paths) {
+   for (path in paths)
+@@ -20,12 +22,21 @@ if (!dir.exists(file.path(RENV_LIBRARY, "renv"))) {
+       lib          = RENV_LIBRARY,
+       INSTALL_opts ='--no-multiarch --no-docs --no-test-load') # --no-test-load is dubious here
+   } else {
+-    cat(paste0(c("Installing renv from '", paste(repos), "'\n")))
+-    install.packages(
+-      pkgs         = "renv",
+-      lib          = RENV_LIBRARY,
+-      repos        = repos,
+-      INSTALL_opts ='--no-multiarch --no-docs --no-test-load') # --no-test-load is dubious here
++    if (nzchar(LOCAL_RENV_PACKAGE) && file.exists(LOCAL_RENV_PACKAGE)) {
++      cat(paste0(c("Installing renv from local package '", LOCAL_RENV_PACKAGE, "'\n")))
++      install.packages(
++        pkgs         = LOCAL_RENV_PACKAGE,
++        lib          = RENV_LIBRARY,
++        repos        = NULL,
++        type         = "binary")
++    } else {
++      cat(paste0(c("Installing renv from '", paste(repos), "'\n")))
++      install.packages(
++        pkgs         = "renv",
++        lib          = RENV_LIBRARY,
++        repos        = repos,
++        INSTALL_opts ='--no-multiarch --no-docs --no-test-load') # --no-test-load is dubious here
++    }
+   }
+ } else {
+   cat("renv already installed, not reinstalling\n")
+diff --git a/Modules/install-tools.R.in b/Modules/install-tools.R.in
+index 28ca3e2..9527406 100644
+--- a/Modules/install-tools.R.in
++++ b/Modules/install-tools.R.in
+@@ -5,6 +5,8 @@ JASP_MODULE_BUNDLE_MANAGER_LIBRARY 	<- "@JASP_MODULE_BUNDLE_MANAGER_LIBRARY@"
+ RENV_LIBRARY                		    <- "@RENV_LIBRARY@"
+ R_CPP_INCLUDES_LIBRARY              <- "@R_CPP_INCLUDES_LIBRARY@"
+ 
++options(timeout = max(300, getOption("timeout")))
++LOCAL_LIBARCHIVE_PREFIX <- Sys.getenv("MACWIN_JASP_LIBARCHIVE_PREFIX", "")
+ ENGINE                 <- file.path("@PROJECT_SOURCE_DIR@", "Engine")
+ MODULES                <- file.path("@PROJECT_SOURCE_DIR@", "Modules")
+ 
+@@ -18,11 +20,26 @@ mkdir(c(R_CPP_INCLUDES_LIBRARY, JASP_MODULE_BUNDLE_MANAGER_LIBRARY))
+ .libPaths(RENV_LIBRARY)
+ options(repos = c(CRAN = "https://packagemanager.posit.co/cran/latest"))
+ options(INSTALL_opts = "--no-test-load")
++
++if (nzchar(LOCAL_LIBARCHIVE_PREFIX) && dir.exists(LOCAL_LIBARCHIVE_PREFIX)) {
++  libarchive_include <- file.path(LOCAL_LIBARCHIVE_PREFIX, "include")
++  libarchive_lib <- file.path(LOCAL_LIBARCHIVE_PREFIX, "lib")
++  libarchive_pkgconfig <- file.path(libarchive_lib, "pkgconfig")
++  pkg_config_path <- Sys.getenv("PKG_CONFIG_PATH", "")
++  Sys.setenv(
++    INCLUDE_DIR = libarchive_include,
++    LIB_DIR = libarchive_lib,
++    PKG_CONFIG_PATH = paste(c(libarchive_pkgconfig, pkg_config_path), collapse = .Platform$path.sep)
++  )
++  cat(paste0("Using local libarchive prefix: ", LOCAL_LIBARCHIVE_PREFIX, "\n"))
++}
++
+ cat("Restoring Rcpp & RInside\n")
+ renv::restore(
+   library  = R_CPP_INCLUDES_LIBRARY,
+   lockfile = file.path(MODULES, "Rcpp_RInside.lock"),
+-  clean    = TRUE
++  clean    = TRUE,
++  prompt   = FALSE
+ )
+ 
+ cat("restoring jaspModuleBundleManager deps\n")
+diff --git a/Tools/CMake/R.cmake b/Tools/CMake/R.cmake
+index 9a34b9f..ba1d659 100644
+--- a/Tools/CMake/R.cmake
++++ b/Tools/CMake/R.cmake
+@@ -478,6 +478,12 @@ if(APPLE)
+         message(CHECK_FAIL "not found")
+         message(FATAL_ERROR "Please install 'gfortran' before continuing.")
+       else()
++        if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
++          set(BUNDLED_AARCH64_GFORTRAN "${R_OPT_PATH}/R/arm64/gfortran/bin/aarch64-apple-darwin20.0-gfortran")
++          if(EXISTS ${BUNDLED_AARCH64_GFORTRAN})
++            set(FORTRAN_EXECUTABLE ${BUNDLED_AARCH64_GFORTRAN} CACHE FILEPATH "'gfortran' is needed for building some of the R packages" FORCE)
++          endif()
++        endif()
+         message(CHECK_PASS "found")
+         message(STATUS "  ${FORTRAN_EXECUTABLE}")
+       endif()
+@@ -584,6 +590,12 @@ if(APPLE)
+ 	  message(CHECK_FAIL "not found")
+ 	  message(FATAL_ERROR "Please install 'gfortran' before continuing.")
+ 	else()
++	  if(APPLE AND CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
++	    set(BUNDLED_AARCH64_GFORTRAN "${R_OPT_PATH}/R/arm64/gfortran/bin/aarch64-apple-darwin20.0-gfortran")
++	    if(EXISTS ${BUNDLED_AARCH64_GFORTRAN})
++	      set(FORTRAN_EXECUTABLE ${BUNDLED_AARCH64_GFORTRAN} CACHE FILEPATH "'gfortran' is needed for building some of the R packages" FORCE)
++	    endif()
++	  endif()
+ 	  message(CHECK_PASS "found")
+ 	  message(STATUS "FORTRAN_EXECUTABLE=${FORTRAN_EXECUTABLE}")
+ 	endif()
+@@ -879,10 +891,14 @@ configure_file(${PROJECT_SOURCE_DIR}/Modules/install-renv.R.in
+ execute_process(
+   COMMAND_ECHO STDOUT
+   #ERROR_QUIET OUTPUT_QUIET
++  RESULT_VARIABLE _install_renv_result
+   WORKING_DIRECTORY ${R_HOME_PATH}
+   COMMAND 
+-    ${R_EXECUTABLE} --slave --no-restore --no-save --file=${SCRIPT_DIRECTORY}/install-renv.R
++    ${CMAKE_COMMAND} -E env "JASP_R_HOME=${R_HOME_PATH}" ${R_EXECUTABLE} --slave --no-restore --no-save --file=${SCRIPT_DIRECTORY}/install-renv.R
+ )
++if(NOT _install_renv_result EQUAL 0)
++  message(FATAL_ERROR "install-renv.R failed with exit code ${_install_renv_result}")
++endif()
+ 
+ if(APPLE)
+   # Patch renv
+@@ -909,11 +925,15 @@ configure_file(${PROJECT_SOURCE_DIR}/Modules/install-tools.R.in
+ execute_process(
+   COMMAND_ECHO STDOUT
+   #ERROR_QUIET OUTPUT_QUIET
++  RESULT_VARIABLE _install_tools_result
+   WORKING_DIRECTORY ${R_HOME_PATH}
+   COMMAND 
+-    ${R_EXECUTABLE} --slave --no-restore --no-save --file=${SCRIPT_DIRECTORY}/install-tools.R
++    ${CMAKE_COMMAND} -E env "JASP_R_HOME=${R_HOME_PATH}" "MACWIN_JASP_LIBARCHIVE_PREFIX=$ENV{MACWIN_JASP_LIBARCHIVE_PREFIX}" ${R_EXECUTABLE} --slave --no-restore --no-save --file=${SCRIPT_DIRECTORY}/install-tools.R
+     
+ )
++if(NOT _install_tools_result EQUAL 0)
++  message(FATAL_ERROR "install-tools.R failed with exit code ${_install_tools_result}")
++endif()
+ 
+ if(APPLE)
+   message(CHECK_START "Patching ${CMAKE_BINARY_DIR}/Modules/Tools/")

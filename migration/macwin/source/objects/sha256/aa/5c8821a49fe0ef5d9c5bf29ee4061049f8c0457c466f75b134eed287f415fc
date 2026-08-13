@@ -1,0 +1,211 @@
+diff --git a/dlls/shell32/Makefile.in b/dlls/shell32/Makefile.in
+index 84615e29e3e..e8854b38489 100644
+--- a/dlls/shell32/Makefile.in
++++ b/dlls/shell32/Makefile.in
+@@ -100,4 +100,5 @@ SOURCES = \
+ 	shlview.c \
+ 	shlview_cmenu.c \
+ 	shpolicy.c \
+-	systray.c
++	systray.c \
++	virtualdesktop.c
+diff --git a/dlls/shell32/shell32.rgs b/dlls/shell32/shell32.rgs
+index 877be6bc814..e10c50df7a1 100644
+--- a/dlls/shell32/shell32.rgs
++++ b/dlls/shell32/shell32.rgs
+@@ -13,6 +13,13 @@ HKCR
+             DefaultIcon = s '%MODULE%,-33'
+         }
+         '{00021401-0000-0000-C000-000000000046}' { shellex { MayChangeDefaultMenu } }
++        '{AA509086-5CA9-4C25-8F95-589D3C07B48A}' = s 'Virtual Desktop Manager'
++        {
++            InprocServer32 = s '%MODULE%'
++            {
++                val ThreadingModel = s 'Both'
++            }
++        }
+     }
+ }
+ 
+diff --git a/dlls/shell32/shell32_main.h b/dlls/shell32/shell32_main.h
+index 299fc1978fe..902c2bfa954 100644
+--- a/dlls/shell32/shell32_main.h
++++ b/dlls/shell32/shell32_main.h
+@@ -104,6 +104,7 @@ HRESULT WINAPI KnownFolderManager_Constructor(IUnknown *pUnkOuter, REFIID riid,
+ HRESULT WINAPI IFileOperation_Constructor(IUnknown *outer, REFIID riid, void **out);
+ HRESULT WINAPI ActiveDesktop_Constructor(IUnknown *outer, REFIID riid, void **out);
+ HRESULT WINAPI EnumerableObjectCollection_Constructor(IUnknown *outer, REFIID riid, void **obj);
++HRESULT WINAPI VirtualDesktopManager_Constructor(IUnknown *outer, REFIID riid, void **obj);
+ 
+ extern HRESULT CPanel_GetIconLocationW(LPCITEMIDLIST, LPWSTR, UINT, int*);
+ HRESULT WINAPI CPanel_ExtractIconA(LPITEMIDLIST pidl, LPCSTR pszFile, UINT nIconIndex, HICON *phiconLarge, HICON *phiconSmall, UINT nIconSize);
+diff --git a/dlls/shell32/shellole.c b/dlls/shell32/shellole.c
+index fc3f6b032cd..bb991d26269 100644
+--- a/dlls/shell32/shellole.c
++++ b/dlls/shell32/shellole.c
+@@ -48,6 +48,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(shell);
+ extern INT WINAPI SHStringFromGUIDW(REFGUID guid, LPWSTR lpszDest, INT cchMax);  /* shlwapi.24 */
+ static HRESULT WINAPI ShellImageDataFactory_Constructor(IUnknown *outer, REFIID riid, void **obj);
+ 
++static const CLSID CLSID_VirtualDesktopManager =
++    {0xaa509086, 0x5ca9, 0x4c25, {0x8f, 0x95, 0x58, 0x9d, 0x3c, 0x07, 0xb4, 0x8a}};
++
+ /**************************************************************************
+  * Default ClassFactory types
+  */
+@@ -88,6 +91,7 @@ static const struct {
+ 	{&CLSID_FileOperation, IFileOperation_Constructor},
+ 	{&CLSID_ActiveDesktop, ActiveDesktop_Constructor},
+ 	{&CLSID_EnumerableObjectCollection, EnumerableObjectCollection_Constructor},
++	{&CLSID_VirtualDesktopManager, VirtualDesktopManager_Constructor},
+ 	{NULL, NULL}
+ };
+ 
+diff --git a/dlls/shell32/virtualdesktop.c b/dlls/shell32/virtualdesktop.c
+new file mode 100644
+index 00000000000..1a523ba0f9d
+--- /dev/null
++++ b/dlls/shell32/virtualdesktop.c
+@@ -0,0 +1,135 @@
++/*
++ * Virtual desktop manager
++ *
++ * Copyright 2026
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++
++#define COBJMACROS
++
++#include "windef.h"
++#include "winbase.h"
++#include "winerror.h"
++
++#include "shell32_main.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(shell);
++
++typedef struct IVirtualDesktopManager IVirtualDesktopManager;
++
++typedef struct IVirtualDesktopManagerVtbl
++{
++    HRESULT (WINAPI *QueryInterface)(IVirtualDesktopManager *iface, REFIID iid, void **out);
++    ULONG (WINAPI *AddRef)(IVirtualDesktopManager *iface);
++    ULONG (WINAPI *Release)(IVirtualDesktopManager *iface);
++    HRESULT (WINAPI *IsWindowOnCurrentVirtualDesktop)(IVirtualDesktopManager *iface, HWND window,
++            BOOL *on_current_desktop);
++    HRESULT (WINAPI *GetWindowDesktopId)(IVirtualDesktopManager *iface, HWND window, GUID *desktop_id);
++    HRESULT (WINAPI *MoveWindowToDesktop)(IVirtualDesktopManager *iface, HWND window, REFGUID desktop_id);
++} IVirtualDesktopManagerVtbl;
++
++struct IVirtualDesktopManager
++{
++    const IVirtualDesktopManagerVtbl *lpVtbl;
++};
++
++static const IID IID_IVirtualDesktopManager =
++    {0xa5cd92ff, 0x29be, 0x454c, {0x8d, 0x04, 0xd8, 0x28, 0x79, 0xfb, 0x3f, 0x1b}};
++
++struct virtual_desktop_manager
++{
++    IVirtualDesktopManager IVirtualDesktopManager_iface;
++    LONG ref;
++};
++
++static inline struct virtual_desktop_manager *impl_from_IVirtualDesktopManager(IVirtualDesktopManager *iface)
++{
++    return CONTAINING_RECORD(iface, struct virtual_desktop_manager, IVirtualDesktopManager_iface);
++}
++
++static HRESULT WINAPI virtual_desktop_manager_QueryInterface(IVirtualDesktopManager *iface, REFIID iid,
++        void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++
++    if (IsEqualIID(iid, &IID_IUnknown) || IsEqualIID(iid, &IID_IVirtualDesktopManager))
++    {
++        *out = iface;
++        IUnknown_AddRef((IUnknown *)iface);
++        return S_OK;
++    }
++
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI virtual_desktop_manager_AddRef(IVirtualDesktopManager *iface)
++{
++    struct virtual_desktop_manager *manager = impl_from_IVirtualDesktopManager(iface);
++    return InterlockedIncrement(&manager->ref);
++}
++
++static ULONG WINAPI virtual_desktop_manager_Release(IVirtualDesktopManager *iface)
++{
++    struct virtual_desktop_manager *manager = impl_from_IVirtualDesktopManager(iface);
++    ULONG ref = InterlockedDecrement(&manager->ref);
++
++    if (!ref) free(manager);
++    return ref;
++}
++
++static HRESULT WINAPI virtual_desktop_manager_IsWindowOnCurrentVirtualDesktop(IVirtualDesktopManager *iface,
++        HWND window, BOOL *on_current_desktop)
++{
++    TRACE("iface %p, window %p, on_current_desktop %p.\n", iface, window, on_current_desktop);
++
++    if (!on_current_desktop) return E_POINTER;
++    *on_current_desktop = TRUE;
++    return S_OK;
++}
++
++static HRESULT WINAPI virtual_desktop_manager_GetWindowDesktopId(IVirtualDesktopManager *iface, HWND window,
++        GUID *desktop_id)
++{
++    TRACE("iface %p, window %p, desktop_id %p.\n", iface, window, desktop_id);
++
++    if (!desktop_id) return E_POINTER;
++    *desktop_id = GUID_NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI virtual_desktop_manager_MoveWindowToDesktop(IVirtualDesktopManager *iface, HWND window,
++        REFGUID desktop_id)
++{
++    TRACE("iface %p, window %p, desktop_id %s.\n", iface, window, debugstr_guid(desktop_id));
++    return desktop_id ? S_OK : E_INVALIDARG;
++}
++
++static const IVirtualDesktopManagerVtbl virtual_desktop_manager_vtbl =
++{
++    virtual_desktop_manager_QueryInterface,
++    virtual_desktop_manager_AddRef,
++    virtual_desktop_manager_Release,
++    virtual_desktop_manager_IsWindowOnCurrentVirtualDesktop,
++    virtual_desktop_manager_GetWindowDesktopId,
++    virtual_desktop_manager_MoveWindowToDesktop,
++};
++
++HRESULT WINAPI VirtualDesktopManager_Constructor(IUnknown *outer, REFIID iid, void **out)
++{
++    struct virtual_desktop_manager *manager;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (outer) return CLASS_E_NOAGGREGATION;
++
++    if (!(manager = calloc(1, sizeof(*manager)))) return E_OUTOFMEMORY;
++    manager->IVirtualDesktopManager_iface.lpVtbl = &virtual_desktop_manager_vtbl;
++    manager->ref = 1;
++
++    hr = virtual_desktop_manager_QueryInterface(&manager->IVirtualDesktopManager_iface, iid, out);
++    virtual_desktop_manager_Release(&manager->IVirtualDesktopManager_iface);
++    return hr;
++}

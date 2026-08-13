@@ -10,6 +10,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1031,6 +1032,12 @@ class MigrationLayoutTests(unittest.TestCase):
             attributes.count(b"/schemas/macwin-*.schema.json text eol=lf\n"),
             1,
         )
+        self.assertEqual(
+            attributes.count(
+                b"/migration/macwin/source/objects/sha256/** binary\n"
+            ),
+            1,
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)
@@ -1621,6 +1628,10 @@ class MigrationLayoutTests(unittest.TestCase):
             encoding="utf-8",
             newline="\n",
         )
+        source = ROOT / "migration/macwin/source"
+        destination = root / "migration/macwin/source"
+        destination.parent.mkdir(parents=True)
+        shutil.copytree(source, destination)
 
     def _prepare_staged_git_repository(self, repository: Path) -> None:
         self._git(repository, "init", "--quiet")
@@ -1744,6 +1755,755 @@ class MigrationLayoutTests(unittest.TestCase):
             text=text,
             timeout=GIT_TIMEOUT_SECONDS,
         )
+
+
+class MacWinSourcePackTests(unittest.TestCase):
+    REPOSITORY = "a1112/Mac-Win"
+    SOURCE_TAG = "mw-migration-baseline-db12d5e"
+    SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
+    INVENTORY_COMMIT = "97f8423094d25325d8f864eb6f49a9e8628dbb93"
+    CATEGORY_COUNTS = {
+        "catalog": 19,
+        "patches": 11,
+        "probes": 26,
+        "fixtures": 30,
+        "bottleSchema": 4,
+    }
+
+    @staticmethod
+    def _temporary_directory():
+        candidate = ROOT.parents[1] / ".codex-tmp"
+        parent = candidate if candidate.is_dir() else None
+        return tempfile.TemporaryDirectory(dir=parent)
+
+    def test_committed_source_pack_has_exact_identity_and_complete_records(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        manifest = importer.validate_source_pack(source_root)
+
+        self.assertEqual(manifest["schemaVersion"], "1")
+        self.assertEqual(manifest["repository"], self.REPOSITORY)
+        self.assertEqual(manifest["sourceTag"], self.SOURCE_TAG)
+        self.assertEqual(manifest["sourceCommit"], self.SOURCE_COMMIT)
+        self.assertEqual(manifest["inventoryCommit"], self.INVENTORY_COMMIT)
+        self.assertEqual(manifest["digestAlgorithm"], "sha256")
+        self.assertEqual(manifest["assetCount"], 90)
+        self.assertEqual(manifest["categoryCounts"], self.CATEGORY_COUNTS)
+
+        assets = manifest["assets"]
+        self.assertEqual(len(assets), 90)
+        paths = [asset["sourcePath"] for asset in assets]
+        self.assertEqual(paths, sorted(paths, key=lambda value: value.encode("ascii")))
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual(len(paths), len({value.casefold() for value in paths}))
+        self.assertEqual(sum(asset["gitMode"] == "100755" for asset in assets), 11)
+        self.assertTrue(
+            all(
+                asset["category"] == "probes"
+                for asset in assets
+                if asset["gitMode"] == "100755"
+            )
+        )
+
+        expected_fields = {
+            "category",
+            "sourcePath",
+            "sourceCommit",
+            "gitBlobOid",
+            "sha256",
+            "byteSize",
+            "gitMode",
+            "kind",
+            "license",
+            "provenance",
+            "intendedOwner",
+            "externalRefs",
+            "developmentDependencies",
+            "objectPath",
+        }
+        total_bytes = 0
+        for asset in assets:
+            with self.subTest(sourcePath=asset["sourcePath"]):
+                self.assertEqual(set(asset), expected_fields)
+                self.assertEqual(asset["sourceCommit"], self.SOURCE_COMMIT)
+                self.assertEqual(asset["license"], {"status": "unresolved"})
+                self.assertEqual(asset["provenance"], {"status": "unresolved"})
+                self.assertEqual(
+                    asset["objectPath"],
+                    "objects/sha256/"
+                    + asset["sha256"][:2]
+                    + "/"
+                    + asset["sha256"][2:],
+                )
+                raw = (source_root / PurePosixPath(asset["objectPath"])).read_bytes()
+                self.assertEqual(len(raw), asset["byteSize"])
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), asset["sha256"])
+                header = f"blob {len(raw)}\0".encode("ascii")
+                self.assertEqual(hashlib.sha1(header + raw).hexdigest(), asset["gitBlobOid"])
+                total_bytes += len(raw)
+        self.assertLessEqual(total_bytes, importer.MAX_TOTAL_SOURCE_BYTES)
+
+    def test_source_pack_index_and_objects_are_canonical_and_exact(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        manifest = importer.validate_source_pack(source_root)
+        index_raw = (source_root / "index.json").read_bytes()
+        common = _load_macwin_asset_common()
+        self.assertEqual(index_raw, common.canonical_json_bytes(manifest))
+
+        expected = {asset["objectPath"] for asset in manifest["assets"]}
+        actual = {
+            path.relative_to(source_root).as_posix()
+            for path in (source_root / "objects/sha256").glob("*/*")
+        }
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(actual), 90)
+
+    def test_source_object_attributes_preserve_raw_bytes_under_autocrlf(self) -> None:
+        attribute_rule = b"/migration/macwin/source/objects/sha256/** binary\n"
+        attributes = (ROOT / ".gitattributes").read_bytes()
+        manifest = json.loads(
+            (ROOT / "migration/macwin/source/index.json").read_text(encoding="utf-8")
+        )
+        text_samples: list[tuple[str, bytes]] = []
+        binary_samples: list[tuple[str, bytes]] = []
+        for record in manifest["assets"]:
+            relative = "migration/macwin/source/" + record["objectPath"]
+            raw = (ROOT / PurePosixPath(relative)).read_bytes()
+            if b"\n" in raw and b"\r\n" not in raw and b"\x00" not in raw:
+                try:
+                    raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    if len(text_samples) < 3:
+                        text_samples.append((relative, raw))
+            if b"\x00" in raw and len(binary_samples) < 2:
+                binary_samples.append((relative, raw))
+        self.assertEqual(len(text_samples), 3)
+        if not binary_samples:
+            binary_samples.extend(
+                (
+                    (
+                        "migration/macwin/source/objects/sha256/00/" + ("0" * 62),
+                        b"\x00\xffsynthetic-binary\r\n",
+                    ),
+                    (
+                        "migration/macwin/source/objects/sha256/ff/" + ("f" * 62),
+                        bytes(range(256)),
+                    ),
+                )
+            )
+
+        old_attributes = attributes.replace(attribute_rule, b"")
+        old_staged, old_checked, _old_semantics = self._autocrlf_roundtrip(
+            old_attributes, text_samples[:1]
+        )
+        old_path, old_raw = text_samples[0]
+        self.assertEqual(old_staged[old_path], old_raw)
+        self.assertNotEqual(old_checked[old_path], old_raw)
+
+        self.assertEqual(attributes.count(attribute_rule), 1)
+        samples = [*text_samples, *binary_samples]
+        staged, checked, semantics = self._autocrlf_roundtrip(attributes, samples)
+        for relative, raw in samples:
+            with self.subTest(path=relative):
+                self.assertEqual(staged[relative], raw)
+                self.assertEqual(checked[relative], raw)
+                header = f"blob {len(raw)}\0".encode("ascii")
+                self.assertEqual(
+                    hashlib.sha1(header + staged[relative]).hexdigest(),
+                    hashlib.sha1(header + raw).hexdigest(),
+                )
+        self.assertEqual(semantics["binary"], "set")
+        self.assertEqual(semantics["diff"], "unset")
+        self.assertEqual(semantics["merge"], "unset")
+        self.assertEqual(semantics["text"], "unset")
+
+    def test_staged_source_pack_preserves_index_and_every_raw_blob_identity(self) -> None:
+        source_root = ROOT / "migration/macwin/source"
+        index_relative = "migration/macwin/source/index.json"
+        index_raw = (source_root / "index.json").read_bytes()
+        self.assertEqual(
+            MigrationLayoutTests._git_bytes(ROOT, "show", f":{index_relative}"),
+            index_raw,
+        )
+        manifest = json.loads(index_raw.decode("utf-8"))
+        for record in manifest["assets"]:
+            relative = "migration/macwin/source/" + record["objectPath"]
+            with self.subTest(sourcePath=record["sourcePath"]):
+                self.assertEqual(
+                    self._git(ROOT, "rev-parse", f":{relative}"),
+                    record["gitBlobOid"],
+                )
+                self.assertEqual(
+                    MigrationLayoutTests._git_bytes(ROOT, "show", f":{relative}"),
+                    (ROOT / PurePosixPath(relative)).read_bytes(),
+                )
+
+    def test_source_pack_rejects_missing_extra_and_mutated_objects(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        for mutation in ("missing", "extra", "byte-drift", "directory"):
+            with self.subTest(mutation=mutation), self._temporary_directory() as directory:
+                copied = self._copy_pack(source_root, Path(directory))
+                object_path = self._first_object(copied)
+                if mutation == "missing":
+                    object_path.unlink()
+                elif mutation == "extra":
+                    extra = copied / "objects/sha256/00" / ("0" * 62)
+                    extra.parent.mkdir(exist_ok=True)
+                    extra.write_bytes(b"extra")
+                elif mutation == "byte-drift":
+                    raw = object_path.read_bytes()
+                    object_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                else:
+                    object_path.unlink()
+                    object_path.mkdir()
+                with self.assertRaises(importer.SourcePackError):
+                    importer.validate_source_pack(copied)
+
+    def test_source_pack_rejects_index_mutations_and_duplicate_identities(self) -> None:
+        importer = self._load_importer()
+        common = _load_macwin_asset_common()
+        source_root = ROOT / "migration/macwin/source"
+        mutations = {
+            "record-order": lambda value: value["assets"].reverse(),
+            "duplicate-path": lambda value: value["assets"][1].__setitem__(
+                "sourcePath", value["assets"][0]["sourcePath"]
+            ),
+            "case-folded-path": lambda value: value["assets"][1].__setitem__(
+                "sourcePath", value["assets"][0]["sourcePath"].swapcase()
+            ),
+            "duplicate-digest": lambda value: (
+                value["assets"][1].__setitem__("sha256", value["assets"][0]["sha256"]),
+                value["assets"][1].__setitem__(
+                    "objectPath", value["assets"][0]["objectPath"]
+                ),
+            ),
+            "wrong-mode": lambda value: value["assets"][0].__setitem__(
+                "gitMode", "120000"
+            ),
+            "unknown-field": lambda value: value.__setitem__("unexpected", True),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), self._temporary_directory() as directory:
+                copied = self._copy_pack(source_root, Path(directory))
+                value = json.loads((copied / "index.json").read_text(encoding="utf-8"))
+                mutate(value)
+                (copied / "index.json").write_bytes(common.canonical_json_bytes(value))
+                with self.assertRaises(importer.SourcePackError):
+                    importer.validate_source_pack(copied)
+
+        with self._temporary_directory() as directory:
+            copied = self._copy_pack(source_root, Path(directory))
+            (copied / "index.json").write_bytes(
+                (copied / "index.json").read_bytes() + b" "
+            )
+            with self.assertRaises(importer.SourcePackError):
+                importer.validate_source_pack(copied)
+
+    def test_source_pack_rejects_a_self_consistent_offline_forgery(self) -> None:
+        importer = self._load_importer()
+        common = _load_macwin_asset_common()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            copied = self._copy_pack(source_root, Path(directory))
+            manifest = json.loads((copied / "index.json").read_text(encoding="utf-8"))
+            record = manifest["assets"][0]
+            old_path = copied / PurePosixPath(record["objectPath"])
+            forged = old_path.read_bytes() + b"\nforged"
+            old_path.unlink()
+            if not any(old_path.parent.iterdir()):
+                old_path.parent.rmdir()
+            digest = hashlib.sha256(forged).hexdigest()
+            record["sha256"] = digest
+            record["byteSize"] = len(forged)
+            record["gitBlobOid"] = hashlib.sha1(
+                f"blob {len(forged)}\0".encode("ascii") + forged
+            ).hexdigest()
+            record["objectPath"] = f"objects/sha256/{digest[:2]}/{digest[2:]}"
+            new_path = copied / PurePosixPath(record["objectPath"])
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            new_path.write_bytes(forged)
+            (copied / "index.json").write_bytes(common.canonical_json_bytes(manifest))
+            with self.assertRaises(importer.SourcePackError):
+                importer.validate_source_pack(copied)
+
+    def test_source_pack_rejects_oversized_index_and_object_before_trusting_them(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        cases = ("index", "object")
+        for case in cases:
+            with self.subTest(case=case), self._temporary_directory() as directory:
+                copied = self._copy_pack(source_root, Path(directory))
+                if case == "index":
+                    (copied / "index.json").write_bytes(
+                        b" " * (importer.MAX_SOURCE_INDEX_BYTES + 1)
+                    )
+                else:
+                    self._first_object(copied).write_bytes(
+                        b"x" * (importer.MAX_SOURCE_OBJECT_BYTES + 1)
+                    )
+                with self.assertRaises(importer.SourcePackError):
+                    importer.validate_source_pack(copied)
+
+    def test_source_pack_rejects_linked_reparse_and_hardlinked_content(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        for kind in ("leaf-symlink", "parent-symlink", "hardlink"):
+            with self.subTest(kind=kind), self._temporary_directory() as directory:
+                root = Path(directory)
+                copied = self._copy_pack(source_root, root)
+                object_path = self._first_object(copied)
+                outside = root / "outside"
+                outside.write_bytes(object_path.read_bytes())
+                try:
+                    if kind == "leaf-symlink":
+                        object_path.unlink()
+                        os.symlink(outside, object_path)
+                    elif kind == "parent-symlink":
+                        shard = object_path.parent
+                        saved = root / "saved-shard"
+                        shard.rename(saved)
+                        os.symlink(saved, shard, target_is_directory=True)
+                    else:
+                        object_path.unlink()
+                        os.link(outside, object_path)
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"linked-file contract cannot be exercised: {error}")
+                with self.assertRaises(importer.SourcePackError):
+                    importer.validate_source_pack(copied)
+
+    def test_source_pack_rejects_a_linked_root_before_resolution(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            copied = self._copy_pack(source_root, root)
+            linked = root / "linked-source"
+            try:
+                os.symlink(copied, linked, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"linked-root contract cannot be exercised: {error}")
+            with self.assertRaises(importer.SourcePackError):
+                importer.validate_source_pack(linked)
+
+    def test_git_subprocess_boundary_is_fixed_scrubbed_and_noninteractive(self) -> None:
+        importer = self._load_importer()
+        repository = ROOT.resolve()
+        hostile = {
+            "GIT_DIR": "hostile.git",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "include.path",
+            "GIT_CONFIG_VALUE_0": "hostile.config",
+            "HTTP_PROXY": "http://hostile.invalid",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False), mock.patch.object(
+            importer.subprocess, "run"
+        ) as run:
+            run.return_value = subprocess.CompletedProcess([], 0, b"ok", b"")
+            completed = importer._run_git(repository, ("status", "--porcelain"))
+        self.assertEqual(completed.stdout, b"ok")
+        command = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(
+            command,
+            [
+                "git",
+                "--no-replace-objects",
+                "-c",
+                f"safe.directory={repository}",
+                "-c",
+                "commit.gpgSign=false",
+                "-c",
+                "tag.gpgSign=false",
+                "-c",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain",
+            ],
+        )
+        self.assertEqual(
+            {
+                key: value
+                for key, value in options["env"].items()
+                if key.upper().startswith("GIT_")
+            },
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+        )
+        self.assertNotIn("HTTP_PROXY", options["env"])
+        self.assertIs(options["stdin"], subprocess.DEVNULL)
+        self.assertIs(options["stdout"], subprocess.PIPE)
+        self.assertIs(options["stderr"], subprocess.PIPE)
+        self.assertFalse(options["shell"])
+        self.assertIsNone(options["executable"])
+        self.assertEqual(options["timeout"], importer.GIT_TIMEOUT_SECONDS)
+
+    def test_git_binding_rejects_wrong_tag_forms_and_nonancestor_source(self) -> None:
+        importer = self._load_importer()
+        scenarios = (
+            "missing",
+            "lightweight",
+            "symbolic",
+            "case-variant",
+            "wrong-target",
+            "non-ancestor",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), self._temporary_directory() as directory:
+                repository, source, inventory = self._make_binding_repository(
+                    Path(directory), scenario
+                )
+                with self.assertRaises(importer.SourcePackError):
+                    importer._bind_repository(
+                        repository,
+                        tag="approved-tag",
+                        source_commit=source,
+                        inventory_commit=inventory,
+                    )
+
+    def test_git_binding_accepts_only_the_exact_annotated_ancestor_contract(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            repository, source, inventory = self._make_binding_repository(
+                Path(directory), "valid"
+            )
+            binding = importer._bind_repository(
+                repository,
+                tag="approved-tag",
+                source_commit=source,
+                inventory_commit=inventory,
+            )
+        self.assertEqual(binding.repository, repository.resolve())
+        self.assertEqual(binding.source_tag, "approved-tag")
+        self.assertEqual(binding.source_commit, source)
+        self.assertEqual(binding.inventory_commit, inventory)
+
+    def test_git_binding_rejects_a_linked_repository_root_before_resolution(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            repository, source, inventory = self._make_binding_repository(root, "valid")
+            linked = root / "linked-repository"
+            try:
+                os.symlink(repository, linked, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"linked-repository contract cannot be exercised: {error}")
+            with self.assertRaises(importer.SourcePackError):
+                importer._bind_repository(
+                    linked,
+                    tag="approved-tag",
+                    source_commit=source,
+                    inventory_commit=inventory,
+                )
+
+    def test_git_binding_rejects_external_object_and_linked_metadata_boundaries(self) -> None:
+        importer = self._load_importer()
+        for scenario in (
+            "alternates",
+            "promisor",
+            "replace",
+            "config-include",
+            "linked-index",
+            "linked-ref",
+            "linked-object",
+            "corrupt-object",
+        ):
+            with self.subTest(scenario=scenario), self._temporary_directory() as directory:
+                repository, source, inventory = self._make_binding_repository(
+                    Path(directory), "valid"
+                )
+                git_dir = repository / ".git"
+                try:
+                    if scenario == "alternates":
+                        path = git_dir / "objects/info/alternates"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("../external\n", encoding="utf-8", newline="\n")
+                    elif scenario == "promisor":
+                        path = git_dir / "objects/pack/hostile.promisor"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"")
+                    elif scenario == "replace":
+                        self._git(
+                            repository,
+                            "update-ref",
+                            f"refs/replace/{source}",
+                            inventory,
+                        )
+                    elif scenario == "config-include":
+                        included = Path(directory) / "included.config"
+                        included.write_text(
+                            "[core]\n\tfsmonitor = hostile\n",
+                            encoding="utf-8",
+                            newline="\n",
+                        )
+                        with (git_dir / "config").open(
+                            "a", encoding="utf-8", newline="\n"
+                        ) as stream:
+                            stream.write(f"[include]\n\tpath = {included.as_posix()}\n")
+                    elif scenario == "linked-index":
+                        index = git_dir / "index"
+                        outside = Path(directory) / "outside-index"
+                        outside.write_bytes(index.read_bytes())
+                        index.unlink()
+                        os.symlink(outside, index)
+                    elif scenario == "linked-ref":
+                        reference = git_dir / "refs/tags/approved-tag"
+                        outside = Path(directory) / "outside-ref"
+                        reference.rename(outside)
+                        os.symlink(outside, reference)
+                    else:
+                        object_path = git_dir / "objects" / source[:2] / source[2:]
+                        if scenario == "linked-object":
+                            outside = Path(directory) / "outside-object"
+                            object_path.rename(outside)
+                            os.symlink(outside, object_path)
+                        else:
+                            object_path.chmod(0o644)
+                            raw = object_path.read_bytes()
+                            object_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"Git metadata boundary cannot be exercised: {error}")
+                with self.assertRaises(importer.SourcePackError):
+                    importer._bind_repository(
+                        repository,
+                        tag="approved-tag",
+                        source_commit=source,
+                        inventory_commit=inventory,
+                    )
+
+    def test_importer_requires_explicit_identity_and_never_imports_on_module_load(self) -> None:
+        importer = self._load_importer()
+        with mock.patch.object(importer, "generate_source_pack") as generate:
+            self.assertEqual(importer.main(()), 2)
+        generate.assert_not_called()
+
+    def test_source_pack_writer_creates_only_the_owned_parent_directories(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            destination = root / "migration/macwin/source"
+            parent = importer._prepare_parent(destination)
+            self.assertEqual(parent, root / "migration/macwin")
+            self.assertTrue(parent.is_dir())
+            self.assertFalse(destination.exists())
+
+    def test_repository_validator_allows_only_the_validated_sealed_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        validator.ROOT = ROOT
+        self.assertEqual(validator.validate_no_developer_paths(), [])
+
+    def test_repository_validator_does_not_exempt_ordinary_or_unreferenced_files(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        source_root = ROOT / "migration/macwin/source"
+        for case in ("ordinary", "unreferenced", "extra-object"):
+            with self.subTest(case=case), self._temporary_directory() as directory:
+                temporary_root = Path(directory)
+                copied = temporary_root / "migration/macwin/source"
+                copied.parent.mkdir(parents=True)
+                shutil.copytree(source_root, copied)
+                if case == "ordinary":
+                    hostile = temporary_root / "ordinary.txt"
+                elif case == "unreferenced":
+                    hostile = copied / "unreferenced.txt"
+                else:
+                    hostile = copied / "objects/sha256/00" / ("0" * 62)
+                    hostile.parent.mkdir(exist_ok=True)
+                hostile.write_text(
+                    "/Users/" + "a1-6/not-exempt\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                validator.ROOT = temporary_root
+                errors = validator.validate_no_developer_paths()
+                self.assertTrue(
+                    any(
+                        "contains developer path /Users/" + "a1-6/" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+                self.assertTrue(
+                    any(hostile.name in error for error in errors),
+                    errors,
+                )
+                if case != "ordinary":
+                    self.assertIn("Mac-Win source pack validation failed", errors)
+
+    def test_repository_validator_grants_no_exemption_after_pack_mutation(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        source_root = ROOT / "migration/macwin/source"
+        for case in ("index", "object"):
+            with self.subTest(case=case), self._temporary_directory() as directory:
+                temporary_root = Path(directory)
+                copied = temporary_root / "migration/macwin/source"
+                copied.parent.mkdir(parents=True)
+                shutil.copytree(source_root, copied)
+                target = copied / "index.json" if case == "index" else self._first_object(copied)
+                raw = target.read_bytes()
+                target.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                validator.ROOT = temporary_root
+                errors = validator.validate_no_developer_paths()
+                self.assertIn("Mac-Win source pack validation failed", errors)
+                self.assertTrue(
+                    any("source\\index.json" in error for error in errors), errors
+                )
+
+    def test_repository_validator_fails_when_the_source_pack_is_missing(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with self._temporary_directory() as directory:
+            validator.ROOT = Path(directory)
+            self.assertEqual(
+                validator.validate_no_developer_paths(),
+                ["Mac-Win source pack validation failed"],
+            )
+
+    def test_repository_source_pack_validation_is_offline_and_neighbor_free(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        validator.ROOT = ROOT
+        with mock.patch.object(
+            subprocess, "run", side_effect=AssertionError("subprocess invoked")
+        ), mock.patch("socket.create_connection", side_effect=AssertionError("network invoked")):
+            self.assertEqual(validator.validate_no_developer_paths(), [])
+
+    @staticmethod
+    def _load_importer():
+        path = ROOT / "tools/import_macwin_source_pack.py"
+        if not path.is_file():
+            raise AssertionError("Mac-Win source-pack importer is missing")
+        spec = importlib.util.spec_from_file_location("macwin_source_pack_importer", path)
+        if spec is None or spec.loader is None:
+            raise AssertionError("could not load Mac-Win source-pack importer")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(spec.name, None)
+        return module
+
+    @staticmethod
+    def _copy_pack(source_root: Path, temporary_root: Path) -> Path:
+        copied = temporary_root / "source"
+        shutil.copytree(source_root, copied)
+        return copied
+
+    @staticmethod
+    def _first_object(source_root: Path) -> Path:
+        return sorted((source_root / "objects/sha256").glob("*/*"))[0]
+
+    def _make_binding_repository(
+        self, root: Path, scenario: str
+    ) -> tuple[Path, str, str]:
+        repository = root / "repository"
+        repository.mkdir()
+        self._git(repository, "init", "--quiet")
+        self._git(repository, "config", "user.name", "Migration Test")
+        self._git(repository, "config", "user.email", "migration@example.invalid")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("source\n", encoding="utf-8", newline="\n")
+        self._git(repository, "add", "tracked.txt")
+        self._git(repository, "commit", "--quiet", "-m", "source")
+        source = self._git(repository, "rev-parse", "HEAD")
+        tracked.write_text("inventory\n", encoding="utf-8", newline="\n")
+        self._git(repository, "add", "tracked.txt")
+        self._git(repository, "commit", "--quiet", "-m", "inventory")
+        inventory = self._git(repository, "rev-parse", "HEAD")
+
+        if scenario == "lightweight":
+            self._git(repository, "tag", "approved-tag", source)
+        elif scenario == "symbolic":
+            self._git(
+                repository,
+                "symbolic-ref",
+                "refs/tags/approved-tag",
+                "refs/heads/main",
+            )
+        elif scenario == "case-variant":
+            self._git(repository, "tag", "-a", "Approved-Tag", "-m", "tag", source)
+        elif scenario == "wrong-target":
+            self._git(repository, "tag", "-a", "approved-tag", "-m", "tag", inventory)
+        elif scenario == "non-ancestor":
+            self._git(repository, "tag", "-a", "approved-tag", "-m", "tag", inventory)
+            source, inventory = inventory, source
+        elif scenario != "missing":
+            self._git(repository, "tag", "-a", "approved-tag", "-m", "tag", source)
+        return repository, source, inventory
+
+    @classmethod
+    def _git(cls, repository: Path, *arguments: str) -> str:
+        return MigrationLayoutTests._git(repository, *arguments)
+
+    def _autocrlf_roundtrip(
+        self, attributes: bytes, samples: list[tuple[str, bytes]]
+    ) -> tuple[dict[str, bytes], dict[str, bytes], dict[str, str]]:
+        with self._temporary_directory() as directory:
+            repository = Path(directory) / "repository"
+            repository.mkdir()
+            (repository / ".gitattributes").write_bytes(attributes)
+            self._git(repository, "init", "--quiet")
+            self._git(repository, "config", "user.name", "Migration Test")
+            self._git(repository, "config", "user.email", "migration@example.invalid")
+            self._git(repository, "config", "core.autocrlf", "true")
+            self._git(repository, "config", "core.eol", "crlf")
+            paths = [relative for relative, _raw in samples]
+            for relative, raw in samples:
+                path = repository / PurePosixPath(relative)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            self._git(repository, "add", ".gitattributes", *paths)
+            staged = {
+                relative: MigrationLayoutTests._git_bytes(repository, "show", f":{relative}")
+                for relative in paths
+            }
+            outside = "migration/macwin/generated/not-a-source-object"
+            outside_attributes = self._git(
+                repository,
+                "check-attr",
+                "binary",
+                "diff",
+                "merge",
+                "text",
+                "--",
+                outside,
+            ).splitlines()
+            self.assertTrue(
+                all(line.endswith(": unspecified") for line in outside_attributes),
+                outside_attributes,
+            )
+            source_attributes = self._git(
+                repository,
+                "check-attr",
+                "binary",
+                "diff",
+                "merge",
+                "text",
+                "--",
+                paths[0],
+            ).splitlines()
+            semantics = {
+                line.split(": ", 2)[1]: line.rsplit(": ", 1)[1]
+                for line in source_attributes
+            }
+            self._git(repository, "commit", "--quiet", "-m", "source objects")
+            for relative in paths:
+                (repository / PurePosixPath(relative)).unlink()
+            self._git(repository, "checkout", "HEAD", "--", *paths)
+            checked = {
+                relative: (repository / PurePosixPath(relative)).read_bytes()
+                for relative in paths
+            }
+            return staged, checked, semantics
 
 
 if __name__ == "__main__":

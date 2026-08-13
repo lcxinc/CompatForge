@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>MacWin LibreOffice compatibility probe</title>
+</head>
+<body>
+  <h1>MacWin 办公兼容性测试</h1>
+  <p>Chinese text: 中文字体与 PDF 导出。</p>
+  <p>Latin text: LibreOffice Writer conversion passed.</p>
+  <table border="1">
+    <tr><th>项目</th><th>状态</th></tr>
+    <tr><td>字体</td><td>正常</td></tr>
+    <tr><td>PDF</td><td>已生成</td></tr>
+  </table>
+</body>
+</html>

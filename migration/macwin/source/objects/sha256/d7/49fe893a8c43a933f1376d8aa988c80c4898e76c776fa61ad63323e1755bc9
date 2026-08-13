@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MacWin Compatibility Probe <dev.local.macwin@local>
+Date: Fri, 17 Jul 2026 12:50:00 +0000
+Subject: [PATCH] Avoid nested resets in dataset proxy models
+
+QAbstractProxyModel::setSourceModel performs its own model reset. The dataset
+package also replaces subnodes while its source-model reset is active, so
+notifying downstream proxies immediately creates another nested reset. Keep the
+proxy attached to the package and defer node-change notifications until the
+source reset has completed.
+
+diff --git a/Desktop/data/datasetpackagesubnodemodel.cpp b/Desktop/data/datasetpackagesubnodemodel.cpp
+--- a/Desktop/data/datasetpackagesubnodemodel.cpp
++++ b/Desktop/data/datasetpackagesubnodemodel.cpp
+@@ -5,10 +5,9 @@
+ DataSetPackageSubNodeModel::DataSetPackageSubNodeModel(const QString & whatAmI, DataSetBaseNode * node)
+ 	: QIdentityProxyModel(DataSetPackage::pkg()), _node(node), _whatAmI(whatAmI)
+ {
+-	beginResetModel();
+ 	setSourceModel(DataSetPackage::pkg());
+-	endResetModel();
+ 
++	connect(DataSetPackage::pkg(),	&DataSetPackage::modelAboutToBeReset,	this,	[this]() { _sourceModelResetting = true; });
+ 	connect(DataSetPackage::pkg(),	&DataSetPackage::modelReset,			this,	&DataSetPackageSubNodeModel::modelWasReset);
+ }
+ 
+@@ -68,10 +67,20 @@ QString DataSetPackageSubNodeModel::appendColumnSpecial(const QMap<QString, QVar
+ 
+ void DataSetPackageSubNodeModel::modelWasReset()
+ {
++	_sourceModelResetting = false;
++
+ 	//The model was reset, which means _node might no longer exist!
+-	if(!DataSetPackage::pkg()->dataSetBaseNodeStillExists(_node))
+-		selectNode(nullptr);
+-	
++	if(_node && !DataSetPackage::pkg()->dataSetBaseNodeStillExists(_node))
++	{
++		_node = nullptr;
++		_nodeChangedDuringSourceReset = true;
++	}
++
++	if(_nodeChangedDuringSourceReset)
++	{
++		_nodeChangedDuringSourceReset = false;
++		emit nodeChanged();
++	}
+ }
+ 
+ void DataSetPackageSubNodeModel::selectNode(DataSetBaseNode * node)
+@@ -79,10 +88,15 @@ void DataSetPackageSubNodeModel::selectNode(DataSetBaseNode * node)
+ 	if (_node == node)
+ 		return;
+ 
++	if(_sourceModelResetting)
++	{
++		_node = node;
++		_nodeChangedDuringSourceReset = true;
++		return;
++	}
++
+ 	beginResetModel();
+ 	_node = node;
+-	if(!_node)	setSourceModel(nullptr);
+-	else		setSourceModel(DataSetPackage::pkg());
+ 	emit nodeChanged();
+ 	endResetModel();
+ }
+diff --git a/Desktop/data/datasetpackagesubnodemodel.h b/Desktop/data/datasetpackagesubnodemodel.h
+--- a/Desktop/data/datasetpackagesubnodemodel.h
++++ b/Desktop/data/datasetpackagesubnodemodel.h
+@@ -33,6 +33,8 @@ public slots:
+ private:
+ 	DataSetBaseNode		*	_node		= nullptr;
+ 	const QString			_whatAmI	= "?";
++	bool					_sourceModelResetting			= false;
++	bool					_nodeChangedDuringSourceReset	= false;
+ };
+ 
+ #endif // DATASETPACKAGESUBNODEMODEL_H

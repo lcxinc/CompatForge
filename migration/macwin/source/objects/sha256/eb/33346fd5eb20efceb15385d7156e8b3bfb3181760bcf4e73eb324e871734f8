@@ -1,0 +1,185 @@
+diff --git a/dlls/windowscodecs/scaler.c b/dlls/windowscodecs/scaler.c
+index 3710944c400..a8f10c30bda 100644
+--- a/dlls/windowscodecs/scaler.c
++++ b/dlls/windowscodecs/scaler.c
+@@ -203,6 +203,79 @@ static void NearestNeighbor_CopyScanline(BitmapScaler *This,
+     }
+ }
+ 
++static void Bilinear_GetPosition(UINT dst_pos, UINT src_size, UINT dst_size,
++    UINT *first, UINT *second, UINT *weight)
++{
++    LONGLONG position;
++
++    position = (((LONGLONG)dst_pos * 2 + 1) * src_size * 32768 / dst_size) - 32768;
++    if (position <= 0)
++    {
++        *first = *second = 0;
++        *weight = 0;
++    }
++    else if (position >= ((LONGLONG)src_size - 1) * 65536)
++    {
++        *first = *second = src_size - 1;
++        *weight = 0;
++    }
++    else
++    {
++        *first = position >> 16;
++        *second = *first + 1;
++        *weight = position & 0xffff;
++    }
++}
++
++static void Bilinear_GetRequiredSourceRect(BitmapScaler *This,
++    UINT x, UINT y, WICRect *src_rect)
++{
++    UINT x0, x1, y0, y1, weight;
++
++    Bilinear_GetPosition(x, This->src_width, This->width,
++        &x0, &x1, &weight);
++    Bilinear_GetPosition(y, This->src_height, This->height,
++        &y0, &y1, &weight);
++    src_rect->X = x0;
++    src_rect->Y = y0;
++    src_rect->Width = x1 - x0 + 1;
++    src_rect->Height = y1 - y0 + 1;
++}
++
++static void Bilinear_CopyScanline(BitmapScaler *This,
++    UINT dst_x, UINT dst_y, UINT dst_width,
++    BYTE **src_data, UINT src_data_x, UINT src_data_y, BYTE *pbBuffer)
++{
++    UINT bytesperpixel = This->bpp / 8;
++    UINT y0, y1, y_weight, x0, x1, x_weight;
++    UINT i, channel;
++
++    Bilinear_GetPosition(dst_y, This->src_height, This->height, &y0, &y1, &y_weight);
++    y0 -= src_data_y;
++    y1 -= src_data_y;
++    for (i = 0; i < dst_width; i++)
++    {
++        ULONGLONG inverse_x, inverse_y;
++
++        Bilinear_GetPosition(dst_x + i, This->src_width, This->width, &x0, &x1, &x_weight);
++        x0 -= src_data_x;
++        x1 -= src_data_x;
++        inverse_x = 65536 - x_weight;
++        inverse_y = 65536 - y_weight;
++        for (channel = 0; channel < bytesperpixel; channel++)
++        {
++            ULONGLONG top, bottom, value;
++
++            top = src_data[y0][x0 * bytesperpixel + channel] * inverse_x
++                + src_data[y0][x1 * bytesperpixel + channel] * x_weight;
++            bottom = src_data[y1][x0 * bytesperpixel + channel] * inverse_x
++                + src_data[y1][x1 * bytesperpixel + channel] * x_weight;
++            value = top * inverse_y + bottom * y_weight + ((ULONGLONG)1 << 31);
++            pbBuffer[i * bytesperpixel + channel] = value >> 32;
++        }
++    }
++}
++
+ static HRESULT WINAPI BitmapScaler_CopyPixels(IWICBitmapScaler *iface,
+     const WICRect *prc, UINT cbStride, UINT cbBufferSize, BYTE *pbBuffer)
+ {
+@@ -351,9 +424,6 @@ static HRESULT WINAPI BitmapScaler_Initialize(IWICBitmapScaler *iface,
+     {
+         switch (mode)
+         {
+-        default:
+-            FIXME("unsupported mode %i\n", mode);
+-            /* fall-through */
+         case WICBitmapInterpolationModeNearestNeighbor:
+             if ((This->bpp % 8) == 0)
+             {
+@@ -369,6 +439,26 @@ static HRESULT WINAPI BitmapScaler_Initialize(IWICBitmapScaler *iface,
+             This->fn_get_required_source_rect = NearestNeighbor_GetRequiredSourceRect;
+             This->fn_copy_scanline = NearestNeighbor_CopyScanline;
+             break;
++        case WICBitmapInterpolationModeLinear:
++        case WICBitmapInterpolationModeCubic:
++        case WICBitmapInterpolationModeFant:
++            if (This->bpp == 24 || This->bpp == 32)
++            {
++                IWICBitmapSource_AddRef(pISource);
++                This->source = pISource;
++            }
++            else
++            {
++                hr = WICConvertBitmapSource(&GUID_WICPixelFormat32bppBGRA,
++                    pISource, &This->source);
++                This->bpp = 32;
++            }
++            This->fn_get_required_source_rect = Bilinear_GetRequiredSourceRect;
++            This->fn_copy_scanline = Bilinear_CopyScanline;
++            break;
++        default:
++            hr = E_INVALIDARG;
++            break;
+         }
+     }
+ 
+diff --git a/dlls/windowscodecs/tests/bitmap.c b/dlls/windowscodecs/tests/bitmap.c
+index b73c0bc740c..e0f1485b965 100644
+--- a/dlls/windowscodecs/tests/bitmap.c
++++ b/dlls/windowscodecs/tests/bitmap.c
+@@ -1318,6 +1318,51 @@ static void test_bitmap_scaler(void)
+     IWICBitmap_Release(bitmap);
+ }
+ 
++static void test_bitmap_scaler_interpolation(void)
++{
++    static const BYTE source[] =
++    {
++          0,   0, 0, 255, 100,   0, 0, 255,
++          0, 100, 0, 255, 100, 100, 0, 255,
++    };
++    static const WICBitmapInterpolationMode modes[] =
++    {
++        WICBitmapInterpolationModeLinear,
++        WICBitmapInterpolationModeCubic,
++        WICBitmapInterpolationModeFant,
++    };
++    IWICBitmap *bitmap;
++    IWICBitmapScaler *scaler;
++    BYTE output[3 * 3 * 4];
++    HRESULT hr;
++    unsigned int i;
++
++    hr = IWICImagingFactory_CreateBitmapFromMemory(factory, 2, 2,
++        &GUID_WICPixelFormat32bppBGRA, 8, sizeof(source), (BYTE *)source, &bitmap);
++    ok(hr == S_OK, "Failed to create source bitmap, hr %#lx.\n", hr);
++
++    for (i = 0; i < ARRAY_SIZE(modes); i++)
++    {
++        hr = IWICImagingFactory_CreateBitmapScaler(factory, &scaler);
++        ok(hr == S_OK, "Failed to create bitmap scaler, hr %#lx.\n", hr);
++        hr = IWICBitmapScaler_Initialize(scaler, (IWICBitmapSource *)bitmap, 3, 3, modes[i]);
++        ok(hr == S_OK, "Failed to initialize mode %u, hr %#lx.\n", modes[i], hr);
++        memset(output, 0xcc, sizeof(output));
++        hr = IWICBitmapScaler_CopyPixels(scaler, NULL, 12, sizeof(output), output);
++        ok(hr == S_OK, "Failed to copy mode %u pixels, hr %#lx.\n", modes[i], hr);
++        ok(output[16] == 50 && output[17] == 50 && output[18] == 0 && output[19] == 255,
++            "Mode %u center pixel is %u,%u,%u,%u.\n", modes[i],
++            output[16], output[17], output[18], output[19]);
++        ok(output[0] == 0 && output[1] == 0 && output[3] == 255,
++            "Mode %u changed the top-left pixel.\n", modes[i]);
++        ok(output[32] == 100 && output[33] == 100 && output[35] == 255,
++            "Mode %u changed the bottom-right pixel.\n", modes[i]);
++        IWICBitmapScaler_Release(scaler);
++    }
++
++    IWICBitmap_Release(bitmap);
++}
++
+ static LONG obj_refcount(void *obj)
+ {
+     IUnknown_AddRef((IUnknown *)obj);
+@@ -1606,6 +1651,7 @@ START_TEST(bitmap)
+     test_CreateBitmapFromHBITMAP();
+     test_clipper();
+     test_bitmap_scaler();
++    test_bitmap_scaler_interpolation();
+     test_FlipRotator();
+ 
+     IWICImagingFactory_Release(factory);

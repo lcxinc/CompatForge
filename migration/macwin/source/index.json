@@ -1,0 +1,2240 @@
+{
+  "assetCount": 90,
+  "assets": [
+    {
+      "byteSize": 159404,
+      "category": "bottle-schema",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "2e407d86a9f1002fa4d6f8d25eaa0179ed5a4429",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "kind": "bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/5f/79745e5262c57b8482b5a35b8a65985a87bb357d35e679a93ee0a6924aad56",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "5f79745e5262c57b8482b5a35b8a65985a87bb357d35e679a93ee0a6924aad56",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/BottleService.swift"
+    },
+    {
+      "byteSize": 1977,
+      "category": "bottle-schema",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "07d504af98ce0b23864677bdb9180d68f6b282bb",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "kind": "bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/af/72b14b83029129e85a94d4686fd04efab04575cedc6ae281a5877275b585a2",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "af72b14b83029129e85a94d4686fd04efab04575cedc6ae281a5877275b585a2",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/JSONStore.swift"
+    },
+    {
+      "byteSize": 2293,
+      "category": "bottle-schema",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "6f9c981674dd7573b18252710a99f24ee787f8e2",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "kind": "bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2f/87cd2508537b4f8d128ea118b0fdbaf880613832645713e89756c8003b9615",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2f87cd2508537b4f8d128ea118b0fdbaf880613832645713e89756c8003b9615",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/MacWinPaths.swift"
+    },
+    {
+      "byteSize": 13866,
+      "category": "bottle-schema",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "79ab686ff80b393c119ede72d071c5aa74183721",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "kind": "bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/8c/0cb0cdacaa83f99e6c5f41af3da3596f7a578edfcec052c2976ba75e9f4b6e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "8c0cb0cdacaa83f99e6c5f41af3da3596f7a578edfcec052c2976ba75e9f4b6e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/Models.swift"
+    },
+    {
+      "byteSize": 3549,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "b511a1a3db1956452acbd8da9cae56be118fbc82",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2c/8bb75c7b294f6e75f45e08fb4b1e2050df0aa6260d96ccca50790e7229aa5c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2c8bb75c7b294f6e75f45e08fb4b1e2050df0aa6260d96ccca50790e7229aa5c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.index.json"
+    },
+    {
+      "byteSize": 194,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "c324caa1f0774cb4fc8827bb25360c6b06c7d66f",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/8e/34669b99d0c09b610ad79f0ed763699115fa57769f691e641ef6812c46e966",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "8e34669b99d0c09b610ad79f0ed763699115fa57769f691e641ef6812c46e966",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.signature.json"
+    },
+    {
+      "byteSize": 1037,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://www.7-zip.org/a/7z2601-x64.exe"
+      ],
+      "gitBlobOid": "a7d1bf1233c4aeb558465d6441da85ebd25f7b7b",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/fb/320ed41e101182af879de445fca01f035a5aebea910683fe27a5b56805d55e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "fb320ed41e101182af879de445fca01f035a5aebea910683fe27a5b56805d55e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json"
+    },
+    {
+      "byteSize": 1425,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=zh-CN"
+      ],
+      "gitBlobOid": "d39cdc9244ac066b1eaddcc3212b5329eafcd7bf",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/50/17cecb5c77738b1866016659a0357e2fa2e8efa093f6aeeae62a63c6e2c119",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "5017cecb5c77738b1866016659a0357e2fa2e8efa093f6aeeae62a63c6e2c119",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json"
+    },
+    {
+      "byteSize": 1176,
+      "category": "catalog",
+      "developmentDependencies": [
+        "/Users/a1-6/project/Mac-Win/refs/prefixes/hoyoplay-x86_64/drive_c/Program Files/miHoYo Launcher/1.16.1.364/HYP.exe"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "603395aaa53f7123def947e09254c6d074b2b220",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2c/66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2c66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json"
+    },
+    {
+      "byteSize": 2275,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://github.com/jasp-stats/jasp-desktop/releases/download/v0.97.1/JASP-0.97.1-Windows-Community.msi"
+      ],
+      "gitBlobOid": "3eab746e4ced6d3ba952448d3bb60b525bd8a0ed",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/eb/af01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "ebaf01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json"
+    },
+    {
+      "byteSize": 1351,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "ecea4ef85c95c60e1e555ac37a536fa4d6f7b742",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/37/c2abfd4fe1fd1d6e0ee85a79592112c0f85a7d1eb452375617b8bee874b10e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "37c2abfd4fe1fd1d6e0ee85a79592112c0f85a7d1eb452375617b8bee874b10e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json"
+    },
+    {
+      "byteSize": 2109,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi"
+      ],
+      "gitBlobOid": "29b30b7c1bfb24602987d461ecd086063a644662",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/60/b8de3c52df0380b039ae07e608c494a63f69d0483195bc4471afcb5384ff12",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "60b8de3c52df0380b039ae07e608c494a63f69d0483195bc4471afcb5384ff12",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json"
+    },
+    {
+      "byteSize": 1349,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://ltspice.analog.com/software/LTspice64.msi"
+      ],
+      "gitBlobOid": "819b69e013e222d33c6e23865400466bbcf97546",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/03/157bcc29c24fbd555c485bd14fab9f1a102a57b880086ee0aa25181eeacf0b",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "03157bcc29c24fbd555c485bd14fab9f1a102a57b880086ee0aa25181eeacf0b",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json"
+    },
+    {
+      "byteSize": 4572,
+      "category": "catalog",
+      "developmentDependencies": [
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/00_console_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/15_iphlpapi_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/30_d3d11_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/45_d3d9_legacy_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/15_iphlpapi_probe.exe"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "a9b5a276ad23c5a3b0381e81159f37e63941ce9d",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/cb/571265bfc4d8bfa98d7cbd83e375b0a70a3ca3cb1a087b44341003fd365788",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "cb571265bfc4d8bfa98d7cbd83e375b0a70a3ca3cb1a087b44341003fd365788",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json"
+    },
+    {
+      "byteSize": 3320,
+      "category": "catalog",
+      "developmentDependencies": [
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/wine",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "832a002de0c30cf57f4f46011a050493b8a8753a",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/42/22d93460b38f09bcf956f63ef32d886e5a1a76aee0b9af02c8443a237b0027",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "4222d93460b38f09bcf956f63ef32d886e5a1a76aee0b9af02c8443a237b0027",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json"
+    },
+    {
+      "byteSize": 1496,
+      "category": "catalog",
+      "developmentDependencies": [
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/90_ipc_file_mapping_probe.exe"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "d882d70eb3827053cde995a7b7bf42cc08002e3c",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/ca/882ab37ceea4276f460ac8af76870b747b390de4c8b5abb1e3d6f85bda1d5a",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "ca882ab37ceea4276f460ac8af76870b747b390de4c8b5abb1e3d6f85bda1d5a",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json"
+    },
+    {
+      "byteSize": 1265,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.2/npp.8.9.6.2.Installer.x64.msi"
+      ],
+      "gitBlobOid": "1b48aa4e86d277358cbb2c10ac5000b14603fa2e",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/11/2981ee22936ab78d6511ff7672cf75c1b2a4bd179a4b7b0e0659f8c05ab1ce",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "112981ee22936ab78d6511ff7672cf75c1b2a4bd179a4b7b0e0659f8c05ab1ce",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json"
+    },
+    {
+      "byteSize": 1924,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "e303e92890091e2647cb622a8d157e65d7036b1a",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/f8/1ea7243ecd916d20e48e08d259cd24a152a444704b7f7c9332e96c0f62661a",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "f81ea7243ecd916d20e48e08d259cd24a152a444704b7f7c9332e96c0f62661a",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json"
+    },
+    {
+      "byteSize": 1529,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe"
+      ],
+      "gitBlobOid": "a3e5a8122c5c913d20569d4d169b81a79ec70a9d",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/a2/01c20e5ea4a92831d76a57ee49ae138ebef719f61812ee6a7190800e161ba6",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "a201c20e5ea4a92831d76a57ee49ae138ebef719f61812ee6a7190800e161ba6",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json"
+    },
+    {
+      "byteSize": 3550,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
+      ],
+      "gitBlobOid": "29c0e080755290e0960ac3d8f2f3d4418e510c25",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/5b/405e719271aed976042c46763ec494405fd580215ad65e2da6efba32488565",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "5b405e719271aed976042c46763ec494405fd580215ad65e2da6efba32488565",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json"
+    },
+    {
+      "byteSize": 1692,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe"
+      ],
+      "gitBlobOid": "3de3757dae480868034bb85e307f7d4a820d43e2",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/44/705ba78b94ce1bee8709c45f4d385c9141f87e40a89ad133e969ec0894c0c3",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "44705ba78b94ce1bee8709c45f4d385c9141f87e40a89ad133e969ec0894c0c3",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json"
+    },
+    {
+      "byteSize": 1318,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/Texstudio-4.9.5-win-qt6-signed.exe"
+      ],
+      "gitBlobOid": "1e6cd18e24412afc9171036c37e2d365f6b53cbf",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/95/ffa27ad03cadd6cd38f90883fa7fedbd2e77f0f874ec5d2eaac24017f9383d",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "95ffa27ad03cadd6cd38f90883fa7fedbd2e77f0f874ec5d2eaac24017f9383d",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json"
+    },
+    {
+      "byteSize": 1276,
+      "category": "catalog",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "https://get.videolan.org/vlc/3.0.23/win64/vlc-3.0.23-win64.exe"
+      ],
+      "gitBlobOid": "1ed5465e7933addce9295b83aadf977dfc0e5579",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/catalog",
+      "kind": "catalog-record",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/35/eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "35eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json"
+    },
+    {
+      "byteSize": 1175,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "f02367f7f589340aabd746e5b436e2576e4c4b8f",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/56/eff0a25defb887f16c017d96cb0a70a67c1ebfacd7da31bd4835c764977acc",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "56eff0a25defb887f16c017d96cb0a70a67c1ebfacd7da31bd4835c764977acc",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/build-native-ui-probe.sh"
+    },
+    {
+      "byteSize": 11910,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "58263c0dec5049d0b2cbc6955bf845c68d4ae84d",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/1a/772a44e1d35808e972d8a091bd8f7447c2957d691967423b34c76e8f6b7987",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "1a772a44e1d35808e972d8a091bd8f7447c2957d691967423b34c76e8f6b7987",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.c"
+    },
+    {
+      "byteSize": 551,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "d813b4650799de43d2ccd1eafd39939597be3eb8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/1d/9924dbd257c74ba1505e089afe79215f80372dbd3fac4c856b69ebfd71c85f",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "1d9924dbd257c74ba1505e089afe79215f80372dbd3fac4c856b69ebfd71c85f",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.manifest"
+    },
+    {
+      "byteSize": 55,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "44e587e9e7a2f33290cef177e0188b992b3fb46a",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/32/8256afd5718d643d8f00a5d36b6241b301d0183bc4f2ba7a5dffb547bd6058",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "328256afd5718d643d8f00a5d36b6241b301d0183bc4f2ba7a5dffb547bd6058",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.rc"
+    },
+    {
+      "byteSize": 3150,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "d857ab8951738192873ebd328af7ff298685dc7b",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/c4/01642d2c4ba3a5a9994b596351f02ab077544c784c6fc33080b5caba66ccd3",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "c401642d2c4ba3a5a9994b596351f02ab077544c784c6fc33080b5caba66ccd3",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch"
+    },
+    {
+      "byteSize": 2818,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "15b1f3265d99dfd1c755f4599e007a84a6bd942e",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/d7/49fe893a8c43a933f1376d8aa988c80c4898e76c776fa61ad63323e1755bc9",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "d749fe893a8c43a933f1376d8aa988c80c4898e76c776fa61ad63323e1755bc9",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-fix-proxy-model-reset.patch"
+    },
+    {
+      "byteSize": 1564,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "410baebe054d53769e695b524d8ac05c7f8b39c5",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/be/720e3e37b63e996c8971fc86d9eff407dbedf56ee569292f055fa167d3e5cd",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "be720e3e37b63e996c8971fc86d9eff407dbedf56ee569292f055fa167d3e5cd",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch"
+    },
+    {
+      "byteSize": 6232,
+      "category": "patches",
+      "developmentDependencies": [
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_RENV_PACKAGE"
+      ],
+      "externalRefs": [
+        "https://packagemanager.posit.co/cran/latest"
+      ],
+      "gitBlobOid": "34859d87080d72400b31c8362b86bfb27c18f682",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/bd/2f4f8a2376775ba8274027b1c3ee0563bef94cbd726faff486a49ef56266e1",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "bd2f4f8a2376775ba8274027b1c3ee0563bef94cbd726faff486a49ef56266e1",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-local-macos-build-configure.patch"
+    },
+    {
+      "byteSize": 252039,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "9eee08ae4986a426e306867d0d29376a9caa43f1",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/16/ee92f121822f065fc04dc5fff5bde0ba5db6011be8d1ad14651274a7c48155",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "16ee92f121822f065fc04dc5fff5bde0ba5db6011be8d1ad14651274a7c48155",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-dcomp-winui-host-composition.patch"
+    },
+    {
+      "byteSize": 56127,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "f2b1b9c2aa3500fc7a990ea1ca6f76e81918c643",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/6f/637c94de14fccce36d0ef2c0a5d8f9c199b86b4fc96b6267a5e5508c285193",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "6f637c94de14fccce36d0ef2c0a5d8f9c199b86b4fc96b6267a5e5508c285193",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-macos-native-ui-integration.patch"
+    },
+    {
+      "byteSize": 7601,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "2a08ba06f6355b7ca947ea86c4d3a17b727466f1",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/aa/5c8821a49fe0ef5d9c5bf29ee4061049f8c0457c466f75b134eed287f415fc",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "aa5c8821a49fe0ef5d9c5bf29ee4061049f8c0457c466f75b134eed287f415fc",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-shell32-virtual-desktop-manager.patch"
+    },
+    {
+      "byteSize": 38643,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "8c4bde813e0edfe37f0e66df54590f5deb527fc8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/4e/92cacc906195d0d36b769cce6f0c14297ee6e745151d26fdc1803cc307349f",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "4e92cacc906195d0d36b769cce6f0c14297ee6e745151d26fdc1803cc307349f",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windows-data-json-modern-apps.patch"
+    },
+    {
+      "byteSize": 84027,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "edbae962c02e6b9adbf16078c9cf8304745878db",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/df/6dfeb4a5f6ccb276958243e82bb9ee99afc34bd1e2a2c67897d6cd4d7351c9",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "df6dfeb4a5f6ccb276958243e82bb9ee99afc34bd1e2a2c67897d6cd4d7351c9",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windows-graphics-imaging.patch"
+    },
+    {
+      "byteSize": 6696,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "3578a77a8a6a51fb88ad9674914907e01b2b9e02",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/eb/33346fd5eb20efceb15385d7156e8b3bfb3181760bcf4e73eb324e871734f8",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "eb33346fd5eb20efceb15385d7156e8b3bfb3181760bcf4e73eb324e871734f8",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windowscodecs-bilinear-scaler.patch"
+    },
+    {
+      "byteSize": 46781,
+      "category": "patches",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "e800f7d3600455aba870119697e184f212a6610b",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/patches",
+      "kind": "source-patch",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/cd/9cb5da0fddace39c52e5d2d365e4d1366364284b334e58f11067e80e396b70",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "cd9cb5da0fddace39c52e5d2d365e4d1366364284b334e58f11067e80e396b70",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-winui-pointer-input.patch"
+    },
+    {
+      "byteSize": 6251,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "60f69d3fed147b73c6029e89664e014ccda41b3d",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/cf/1625202400f71a87e84b8bd5dceeb4735b7f29b8c913ce0908d840e765786d",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "cf1625202400f71a87e84b8bd5dceeb4735b7f29b8c913ce0908d840e765786d",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/analyze-window-image.py"
+    },
+    {
+      "byteSize": 1087,
+      "category": "probes",
+      "developmentDependencies": [
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_CONAN_VENV"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "3507afe1e001026d51f70c86afb6f2ca6b54e77c",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/b7/d47d891e4f1d8805f104c620e753409d2aafcfc27402952b293976cfe16ee9",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "b7d47d891e4f1d8805f104c620e753409d2aafcfc27402952b293976cfe16ee9",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/bootstrap-jasp-conan.sh"
+    },
+    {
+      "byteSize": 6394,
+      "category": "probes",
+      "developmentDependencies": [
+        "$ROOT_DIR/refs/Whisky-wow64-game-build",
+        "MACWIN_WINE_BUILD_DIR"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "4df74dc8c0feea1524294ef609e126948dfe9565",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/37/d9e078efc8fcdf0b21910d76ca488b74bf62d21dcf709a0137031029979816",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "37d9e078efc8fcdf0b21910d76ca488b74bf62d21dcf709a0137031029979816",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-game-dll-coverage.sh"
+    },
+    {
+      "byteSize": 872,
+      "category": "probes",
+      "developmentDependencies": [
+        "$ROOT/refs/Whisky-wow64-game-build/loader/wine",
+        "$ROOT/refs/rosettax87",
+        "MACWIN_ROSETTA_X87_BUILD",
+        "MACWIN_ROSETTA_X87_SOURCE",
+        "MACWIN_WINE_LOADER"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "5862fd7be9331f95da114c0206701c4db9a936ba",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/46/7b86085224fd0334872e118c2942e878a595919d066ecdc0b4873e4372c34c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "467b86085224fd0334872e118c2942e878a595919d066ecdc0b4873e4372c34c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-rosettax87.sh"
+    },
+    {
+      "byteSize": 1753,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "00a22c929df6485a3d2194164701daf146443d20",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/43/84c5d92f65833533e18c244790651e3079058e7ca29d9309619314de59d26f",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "4384c5d92f65833533e18c244790651e3079058e7ca29d9309619314de59d26f",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-region.swift"
+    },
+    {
+      "byteSize": 1510,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "8d4a3eec035557ad27d3f4aaf32d99e06f11e7da",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2d/10afa6b54b95f78ca1f8d6f1a40c1ab8b146af26dac771f1976fe414674096",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2d10afa6b54b95f78ca1f8d6f1a40c1ab8b146af26dac771f1976fe414674096",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-window.swift"
+    },
+    {
+      "byteSize": 4978,
+      "category": "probes",
+      "developmentDependencies": [
+        "MACWIN_JASP_CONAN_BIN",
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_PATCHED_BUILD_DIR",
+        "MACWIN_JASP_PATCHED_CONFIGURE_LOG",
+        "MACWIN_JASP_PATCHED_SOURCE_DIR",
+        "MACWIN_JASP_RENV_PACKAGE",
+        "MACWIN_JASP_RENV_PACKAGE_URL"
+      ],
+      "externalRefs": [
+        "https://packagemanager.posit.co/cran/latest/bin/macosx/big-sur-arm64/contrib/4.5/renv_1.2.3.tgz",
+        "https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz"
+      ],
+      "gitBlobOid": "243d28d4a381882a0002abf2dcc9091c01834c6a",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/c0/bb1d776e4e484c3f2d4f6f10cb3555a53d47a1a565e5570f394a2d0baa821a",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "c0bb1d776e4e484c3f2d4f6f10cb3555a53d47a1a565e5570f394a2d0baa821a",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/configure-jasp-compat-build.sh"
+    },
+    {
+      "byteSize": 60341,
+      "category": "probes",
+      "developmentDependencies": [
+        "$HOME/Library/Application Support/MacWin",
+        "MACWIN_ROOT"
+      ],
+      "externalRefs": [
+        "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk",
+        "https://archive.apache.org/dist/netbeans/netbeans-installers/25/Apache-NetBeans-25-bin-windows-x64.exe",
+        "https://archive.seamonkey-project.org/releases/2.53.21/win32/zh-CN/seamonkey-2.53.21.zh-CN.win32.installer.exe",
+        "https://archive.seamonkey-project.org/releases/2.53.23/win64/zh-CN/seamonkey-2.53.23.zh-CN.win64.installer.exe",
+        "https://build.openmodelica.org/omc/builds/windows/releases/1.26/9/64bit/OpenModelica-v1.26.9-64bit.exe",
+        "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.9/dotnet-runtime-10.0.9-win-x64.zip",
+        "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.9/windowsdesktop-runtime-10.0.9-win-x64.zip",
+        "https://cdn.mysql.com/Downloads/MySQLGUITools/mysql-workbench-community-8.0.44-winx64.msi",
+        "https://cdn.waterfox.com/waterfox/releases/6.6.15/WINNT_x86_64/Waterfox%20Setup%206.6.15.exe",
+        "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive",
+        "https://cran.r-project.org/bin/windows/base/R-4.6.0-win.exe",
+        "https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl-installer.exe",
+        "https://dbeaver.io/files/dbeaver-ce-latest-win32.win32.x86_64.zip",
+        "https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise64.msi",
+        "https://dl.librewolf.net/librewolf/152.0.1-2/librewolf-152.0.1-2-windows-x86_64-portable.zip",
+        "https://dl.librewolf.net/librewolf/152.0.1-2/librewolf-152.0.1-2-windows-x86_64-setup.exe",
+        "https://dl.pstmn.io/download/latest/win64",
+        "https://download-installer.cdn.mozilla.net/pub/firefox/releases/152.0.1/win64/zh-CN/Firefox%20Setup%20152.0.1.msi",
+        "https://download.biolab.si/download/files/Orange3-3.40.0-x86_64.exe",
+        "https://download.blender.org/release/Blender4.1/blender-4.1.0-windows-x64.msi",
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi",
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64_helppack_zh-CN.msi",
+        "https://download.geogebra.org/package/win",
+        "https://download.geogebra.org/package/win-autoupdate",
+        "https://download.gimp.org/gimp/v2.10/windows/gimp-2.10.38-setup-1.exe",
+        "https://download.gimp.org/gimp/v2.10/windows/gimp-2.10.38-setup.exe",
+        "https://download.kde.org/stable/krita/5.2.9/krita-x64-5.2.9-setup.exe",
+        "https://download.kde.org/stable/labplot/labplot-2.12.1-x86_64-setup.exe",
+        "https://download.librepcb.org/releases/2.1.1/librepcb-installer-2.1.1-windows-x86_64.exe",
+        "https://download.mozilla.org/?product=firefox-devedition-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=firefox-esr-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.onlyoffice.com/install/desktop/editors/windows/distrib/onlyoffice/DesktopEditors_x64.exe",
+        "https://download.osgeo.org/osgeo4w/v2/osgeo4w-setup.exe",
+        "https://download.pdf24.org/pdf24-creator.exe",
+        "https://download.qgis.org/downloads/QGIS-OSGeo4W-3.44.11-1.msi",
+        "https://download.typora.io/windows/typora-setup-x64.exe",
+        "https://download1.rstudio.org/electron/windows/RStudio-2025.09.0-387.exe",
+        "https://download3.operacdn.com/pub/opera/desktop/132.0.5905.73/win/Opera_132.0.5905.73_Setup_x64.exe",
+        "https://downloads.pdf-xchange.com/EditorV11.x64.msi",
+        "https://downloads.sourceforge.net/project/codeblocks/Binaries/20.03/Windows/codeblocks-20.03mingw-setup.exe",
+        "https://downloads.vivaldi.com/stable/Vivaldi.7.9.3970.47.x64.exe",
+        "https://epa.gov/system/files/other-files/2023-08/swmm524%28x64%29_setup.exe",
+        "https://files.openscad.org/OpenSCAD-2021.01-x86-64-Installer.exe",
+        "https://ftp.postgresql.org/pub/pgadmin/pgadmin4/v9.16/windows/pgadmin4-9.16-x64.exe",
+        "https://ftpmirror.gnu.org/octave/windows/octave-11.3.0-w64-installer.exe",
+        "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.26/AutoHotkey_2.0.26_setup.exe",
+        "https://github.com/Autonomy-Logic/openplc-editor/releases/download/v4.2.7/OpenPLC.Editor_4.2.7.exe",
+        "https://github.com/BRL-CAD/brlcad/releases/download/rel-7-42-2/BRL-CAD_7.42.2_win64.msi",
+        "https://github.com/Floorp-Projects/Floorp/releases/download/v12.15.2/floorp-windows-x86_64.installer.exe",
+        "https://github.com/FreeCAD/FreeCAD/releases/download/1.1.1/FreeCAD_1.1.1-Windows-x86_64-py311-installer.exe",
+        "https://github.com/HeidiSQL/HeidiSQL/releases/download/v12.19/HeidiSQL_12.19.0.7314_Setup.exe",
+        "https://github.com/HeidiSQL/HeidiSQL/releases/download/v12.19/HeidiSQL_12.19_64_Portable.zip",
+        "https://github.com/JabRef/jabref/releases/download/v5.15/JabRef-5.15-portable_windows.zip",
+        "https://github.com/JabRef/jabref/releases/download/v5.15/JabRef-5.15.msi",
+        "https://github.com/KiCad/kicad-source-mirror/releases/download/10.0.3/kicad-10.0.3-x86_64.exe",
+        "https://github.com/KiCad/kicad-source-mirror/releases/download/10.0.4/kicad-10.0.4-x86_64.exe",
+        "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.msi",
+        "https://github.com/LibreCAD/LibreCAD/releases/download/v2.2.1.5/LibreCAD-v2.2.1.5-win64-msvc.exe",
+        "https://github.com/NatLabRockies/EnergyPlus/releases/download/v26.1.0/EnergyPlus-26.1.0-6f2e40d102-Windows-x86_64.exe",
+        "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.4.2_build/ghidra_11.4.2_PUBLIC_20250826.zip",
+        "https://github.com/OpenBoard-org/OpenBoard/releases/download/v1.7.3/OpenBoard_Installer_1.7.3.exe",
+        "https://github.com/OpenCPN/OpenCPN/releases/download/Release_5.14.0/opencpn_5.14.0-0%2B4418.91f3b67_setup.exe",
+        "https://github.com/OpenShot/openshot-qt/releases/download/v3.3.0/OpenShot-v3.3.0-x86_64.exe",
+        "https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.4.0/OrcaSlicer_Windows_Installer_V2.4.0.exe",
+        "https://github.com/Sigil-Ebook/Sigil/releases/download/2.8.0/Sigil-2.8.0-Windows-x64-Setup.exe",
+        "https://github.com/Stellarium/stellarium/releases/download/v26.1/stellarium-26.1-qt6-win64.exe",
+        "https://github.com/TeXworks/texworks/releases/download/release-0.6.11/TeXworks-win7-setup-0.6.11-202602100855-git_7951fd8.exe",
+        "https://github.com/USEPA/EPANET2.2/releases/download/2.2.0/epanet2.2_setup.exe",
+        "https://github.com/Ultimaker/Cura/releases/download/5.13.0/UltiMaker-Cura-5.13.0-win64-X64.exe",
+        "https://github.com/Ultimaker/Cura/releases/download/5.13.0/UltiMaker-Cura-5.13.0-win64-X64.msi",
+        "https://github.com/WinMerge/winmerge/releases/download/v2.16.50/WinMerge-2.16.50-x64-Setup.exe",
+        "https://github.com/Zettlr/Zettlr/releases/download/v4.6.0/Zettlr-4.6.0-x64.exe",
+        "https://github.com/arduino/arduino-ide/releases/download/2.3.10/arduino-ide_2.3.10_Windows_64bit.exe",
+        "https://github.com/arkypita/LaserGRBL/releases/download/v7.14.1/install.exe",
+        "https://github.com/audacity/audacity/releases/download/Audacity-3.7.8/audacity-win-3.7.8-64bit.exe",
+        "https://github.com/bambulab/BambuStudio/releases/download/v02.07.01.62/Bambu_Studio_win-v02.07.01.62-20260616174358.exe",
+        "https://github.com/bambulab/BambuStudio/releases/download/v02.07.01.62/Bambu_Studio_win-v02.07.01.62-20260616174358.zip",
+        "https://github.com/bardsoftware/ganttproject/releases/download/ganttproject-3.3.3316/ganttproject-3.3.3316.exe",
+        "https://github.com/beekeeper-studio/beekeeper-studio/releases/download/v5.8.1/Beekeeper-Studio-Setup-5.8.1.exe",
+        "https://github.com/brave/brave-browser/releases/download/v1.91.175/BraveBrowserStandaloneSetup.exe",
+        "https://github.com/brave/brave-browser/releases/download/v1.91.175/BraveBrowserStandaloneSetup32.exe",
+        "https://github.com/cncjs/cncjs/releases/download/v1.11.1/cncjs-app-1.11.1-windows-x64.exe",
+        "https://github.com/cnr-isti-vclab/meshlab/releases/download/MeshLab-2025.07/MeshLab2025.07-windows_x86_64.exe",
+        "https://github.com/cyanfish/naps2/releases/download/v8.2.1/naps2-8.2.1-win-x64.exe",
+        "https://github.com/espanso/espanso/releases/download/v2.3.0/Espanso-Win-Installer-x86_64.exe",
+        "https://github.com/esphome/esphome-flasher/releases/download/1.4.0/ESPHome-Flasher-1.4.0-Windows-x64.exe",
+        "https://github.com/esphome/esphome-flasher/releases/download/1.4.0/ESPHome-Flasher-1.4.0-Windows-x86.exe",
+        "https://github.com/flameshot-org/flameshot/releases/download/v14.0.0/Flameshot-14.0.0-win64.msi",
+        "https://github.com/freeplane/freeplane/releases/download/release-1.13.2/Freeplane-Setup-1.13.2.exe",
+        "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe",
+        "https://github.com/gitextensions/gitextensions/releases/download/v7.0.1/GitExtensions-x64-7.0.1.86-c119a52.msi",
+        "https://github.com/giuspen/cherrytree/releases/download/v1.7.0/cherrytree_1.7.0.0_win64_setup.exe",
+        "https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_win32.exe.zip",
+        "https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_win64.exe.zip",
+        "https://github.com/jasp-stats/jasp-desktop/releases/download/v0.97.1/JASP-0.97.1-Windows-Community.msi",
+        "https://github.com/jgm/pandoc/releases/download/3.10/pandoc-3.10-windows-x86_64.msi",
+        "https://github.com/jgraph/drawio-desktop/releases/download/v30.2.4/draw.io-30.2.4.msi",
+        "https://github.com/keepassxreboot/keepassxc/releases/download/2.7.12/KeePassXC-2.7.12-Win64.msi",
+        "https://github.com/kovidgoyal/calibre/releases/download/v9.9.0/calibre-64bit-9.9.0.msi",
+        "https://github.com/laurent22/joplin/releases/download/v3.6.15/Joplin-Setup-3.6.15.exe",
+        "https://github.com/lmms/lmms/releases/download/v1.2.2/lmms-1.2.2-win64.exe",
+        "https://github.com/logisim-evolution/logisim-evolution/releases/download/v4.1.0/logisim-evolution-4.1.0-amd64.msi",
+        "https://github.com/mRemoteNG/mRemoteNG/releases/download/20260222-v1.78.2-NB-%283405%29/mRemoteNG-20260222-v1.78.2-NB-3405-x64.rar",
+        "https://github.com/mRemoteNG/mRemoteNG/releases/download/v1.76.20/mRemoteNG-Installer-1.76.20.24615.msi",
+        "https://github.com/mapeditor/tiled/releases/download/v1.12.2/Tiled-1.12.2_Windows-10%2B_x86_64.msi",
+        "https://github.com/marktext/marktext/releases/download/v0.19.1/marktext-win-x64-0.19.1-setup.exe",
+        "https://github.com/microsoft/PowerToys/releases/download/v0.100.0/PowerToysUserSetup-0.100.0-x64.exe",
+        "https://github.com/minbrowser/min/releases/download/v1.35.5/Min-v1.35.5-windows.zip",
+        "https://github.com/minbrowser/min/releases/download/v1.35.5/min-1.35.5-setup.exe",
+        "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightSetup-6.1.0.exe",
+        "https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-x86_64-latest.exe",
+        "https://github.com/mullvad/mullvad-browser/releases/download/15.0.16/mullvad-browser-windows-x86_64-15.0.16.exe",
+        "https://github.com/musescore/MuseScore/releases/download/v4.7.3/MuseScore-Studio-4.7.3.260608135-x86_64.msi",
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.4/npp.8.9.6.4.Installer.exe",
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.4/npp.8.9.6.4.Installer.x64.exe",
+        "https://github.com/npackd/npackd-cpp/releases/download/version_1.26.9/Npackd64-1.26.9.zip",
+        "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.12.7/Obsidian-1.12.7.exe",
+        "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-Installer.exe",
+        "https://github.com/openrocket/openrocket/releases/download/release-24.12/OpenRocket-24.12-installer-Windows-x86_64.exe",
+        "https://github.com/pal1000/mesa-dist-win/releases/download/26.1.2/mesa3d-26.1.2-release-msvc.7z",
+        "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe",
+        "https://github.com/pbatard/rufus/releases/download/v4.11/rufus-4.11.exe",
+        "https://github.com/pbek/QOwnNotes/releases/download/v26.6.7/QOwnNotes.zip",
+        "https://github.com/pdfarranger/pdfarranger/releases/download/1.14.0/pdfarranger-1.14.0-windows-installer.msi",
+        "https://github.com/pdfarranger/pdfarranger/releases/download/1.14.0/pdfarranger-1.14.0-windows-portable.zip",
+        "https://github.com/portapps/brave-portable/releases/download/1.89.132-99/brave-portable-win64-1.89.132-99.7z",
+        "https://github.com/processing/processing4/releases/download/processing-1313-4.5.2/processing-4.5.2-windows-x64.msi",
+        "https://github.com/prusa3d/PrusaSlicer/releases/download/version_2.9.5/PrusaSlicer-2.9.5-setup.exe",
+        "https://github.com/qbittorrent/qBittorrent/releases/download/release-5.2.2/qbittorrent_5.2.2_x64_setup.exe",
+        "https://github.com/qelectrotech/qelectrotech-source-mirror/releases/download/0.100/Installer_QElectroTech-0.100.0_x86_64-win64%2Bgit8590-1.exe",
+        "https://github.com/quarto-dev/quarto-cli/releases/download/v1.9.38/quarto-1.9.38-win.msi",
+        "https://github.com/qutebrowser/qutebrowser/releases/download/v3.7.0/qutebrowser-3.7.0-amd64.exe",
+        "https://github.com/qutebrowser/qutebrowser/releases/download/v3.7.0/qutebrowser-3.7.0-windows-standalone.zip",
+        "https://github.com/ra3xdh/qucs_s/releases/download/26.1.1/Qucs-S-26.1.1-win64-setup.exe",
+        "https://github.com/ra3xdh/qucs_s/releases/download/26.1.1/Qucs-S-26.1.1-win64.zip",
+        "https://github.com/slic3r/Slic3r/releases/download/1.3.0/Slic3r-1.3.0.32bit.zip",
+        "https://github.com/slic3r/Slic3r/releases/download/1.3.0/Slic3r-1.3.0.64bit.zip",
+        "https://github.com/solvespace/solvespace/releases/download/v3.2/solvespace_x64.exe",
+        "https://github.com/sqlitebrowser/sqlitebrowser/releases/download/v3.13.1/DB.Browser.for.SQLite-v3.13.1-win64.msi",
+        "https://github.com/standardnotes/app/releases/download/%40standardnotes/desktop%403.201.21/standard-notes-3.201.21-win-x64.exe",
+        "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/texstudio-4.9.5-win-qt6-signed.exe",
+        "https://github.com/thomasnordquist/MQTT-Explorer/releases/download/v0.4.0-beta.6/MQTT-Explorer-Setup-0.4.0-beta.6.exe",
+        "https://github.com/thonny/thonny/releases/download/v5.0.0/thonny-5.0.0-windows-portable-x64.zip",
+        "https://github.com/thonny/thonny/releases/download/v5.0.0/thonny-5.0.0-x64.exe",
+        "https://github.com/torakiki/pdfsam/releases/download/v6.0.1/pdfsam-basic-6.0.1-windows-x64.msi",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_installer_x64.exe",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_installer_x86.exe",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_windows_x64.zip",
+        "https://github.com/win32ss/supermium/releases/download/v144-r4_01/supermium_144_32_setup.exe",
+        "https://github.com/win32ss/supermium/releases/download/v144-r4_01/supermium_144_64_setup_win10_11.exe",
+        "https://github.com/winder/Universal-G-Code-Sender/releases/download/v2.1.23/ugs-2.1.23-x64.msi",
+        "https://github.com/wixtoolset/wix/releases/download/v7.0.0/wix-cli-x64.msi",
+        "https://github.com/wxMaxima-developers/wxmaxima/releases/download/Version-26.06.2/wxMaxima-26.06.2-win64.exe",
+        "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/snapshot_2026-05-27_12-11.zip",
+        "https://github.com/xournalpp/xournalpp/releases/download/v1.3.5/xournalpp-1.3.5-windows-setup-AMD64.exe",
+        "https://github.com/zen-browser/desktop/releases/download/1.21.3b/zen.installer.exe",
+        "https://gitlab.com/api/v4/projects/4207231/packages/generic/graphviz-releases/15.0.0/windows_10_cmake_Release_graphviz-install-15.0.0-win64.exe",
+        "https://gmsh.info/bin/Windows/gmsh-4.14.1-Windows64.zip",
+        "https://go.microsoft.com/fwlink/?LinkID=2093437",
+        "https://gottcode.org/focuswriter/download/?os=windows",
+        "https://gottcode.org/focuswriter/download/?os=windowsportable",
+        "https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.2-win64.exe",
+        "https://ltspice.analog.com/software/LTspice64.msi",
+        "https://lyx.mirror.garr.it/bin/2.5.1/LyX-251-Installer-1-x64.exe",
+        "https://miktex.org/download/win/basic-miktex-x64.exe",
+        "https://mirror.ctan.org/systems/texlive/tlnet/install-tl-windows.exe",
+        "https://net.geo.opera.com/opera/stable/windows",
+        "https://net.geo.opera.com/opera_gx/stable/windows",
+        "https://nodejs.org/dist/v26.3.1/node-v26.3.1-x64.msi",
+        "https://portableapps.com/redirect/?a=K-MeleonPortable&s=s&p=&d=pa&f=K-MeleonPortable_76.5.5-2024-12-21.paf.exe",
+        "https://smath.com/en-US/files/Download/kTH2c/SMathStudioDesktop.1_4_0_9654.Setup.msi",
+        "https://sourceforge.net/projects/dia-installer/files/dia-win32-installer/0.97.2/dia-setup-0.97.2-2-unsigned.exe/download",
+        "https://sourceforge.net/projects/dwsim/files/DWSIM/DWSIM%209.0/9.0.5/DWSIM_v905_win64_setup.exe/download",
+        "https://sourceforge.net/projects/electricdss/files/OpenDSS/OpenDSSInstaller_1100_1.exe/download",
+        "https://sourceforge.net/projects/freemind/files/freemind/1.0.1/FreeMind-Windows-Installer-1.0.1-max.exe/download",
+        "https://sourceforge.net/projects/gnuplot/files/gnuplot/6.0.4/gp604-win64-clang.exe/download",
+        "https://sourceforge.net/projects/inkscape/files/inkscape-1.4.2_2025-05-13_f4327f4-x64.msi/download",
+        "https://sourceforge.net/projects/jump-pilot/files/OpenJUMP/2.4.0/OpenJUMP-Portable-2.4.0-r5303%5B6c9a02d%5D-PLUS.zip/download",
+        "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.59/KeePass-2.59-Setup.exe/download",
+        "https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2032%20bits/Lazarus%204.8/lazarus-4.8-fpc-3.2.2-win32.exe/download",
+        "https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2064%20bits/Lazarus%204.8/lazarus-4.8-fpc-3.2.2-win64.exe/download",
+        "https://sourceforge.net/projects/maxima/files/Maxima-Windows/5.49.0-Windows/maxima-5.49.0-win64.exe/download",
+        "https://sourceforge.net/projects/openofficeorg.mirror/files/4.1.16/binaries/zh-CN/Apache_OpenOffice_4.1.16_Win_x86_install_zh-CN.exe/download",
+        "https://sourceforge.net/projects/otter-browser/files/otter-browser-weekly120/otter-browser-win64-weekly120.zip/download",
+        "https://sourceforge.net/projects/portableapps/files/PortableApps.com%20Platform/PortableApps.com_Platform_Setup_30.4.1.paf.exe/download",
+        "https://sourceforge.net/projects/projectlibre/files/ProjectLibre/1.9.8/ProjectLibre-1.9.8.msi/download",
+        "https://sourceforge.net/projects/qcadbin-win/files/qcadbin-win-2.0.5.0-1_rel-0.3/QCad%202.0.5.0%20Installer.exe/download",
+        "https://sourceforge.net/projects/qmodmaster/files/qModMaster-Win32-exe-0.5.2-3.zip/download",
+        "https://sourceforge.net/projects/qmodmaster/files/qModMaster-Win64-exe-0.5.3-beta.zip/download",
+        "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%209/SAGA%20-%209.9.1/saga-9.9.1_x64_setup.exe/download",
+        "https://sourceforge.net/projects/scribus/files/scribus/1.4.8/scribus-1.4.8-windows-x64.exe/download",
+        "https://sourceforge.net/projects/sweethome3d/files/SweetHome3D/SweetHome3D-7.5/SweetHome3D-7.5-windows.exe/download",
+        "https://sourceforge.net/projects/tor-browser.mirror/files/15.0.16/tor-browser-windows-x86_64-portable-15.0.16.exe/download",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/ComPorts.ini",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/DSSProgress.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/DSSView.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/IndMach012a.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/KLUSolve.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/License.txt",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSS.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSS.rsm",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSDirect.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSDirect.h",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSScmd.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSScmd.rsm",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSengine.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/kmetis.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/pmetis.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/readme.txt",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/testcommandline.bat",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/testcommandline.dss",
+        "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-installer.msi",
+        "https://update.code.visualstudio.com/latest/win32-x64-user/stable",
+        "https://wdl1.pcfg.cache.wpscdn.com/wpsdl/wpsoffice/onlinesetup/distsrc/601.1042/wpsinst/wps_office_inst.exe",
+        "https://winscp.net/download/WinSCP-6.5.6-Setup.exe/download",
+        "https://winscp.net/download/WinSCP-6.6.2.RC-Portable-x64-Experimental.zip/download",
+        "https://www.7-zip.org/a/7z2601-x64.exe",
+        "https://www.cloudcompare.org/release/CloudCompare_v2.13.2_setup_x64.exe",
+        "https://www.cloudcompare.org/release/CloudCompare_v2.6.2_setup_x86.exe",
+        "https://www.eclipse.org/downloads/download.php?file=/oomph/epp/2026-03/R/eclipse-inst-jre-win64.exe&r=1",
+        "https://www.palemoon.org/download.php?bits=32&mirror=us&type=installer",
+        "https://www.palemoon.org/download.php?bits=64&mirror=us&type=installer",
+        "https://www.paraview.org/paraview-downloads/download.php?submit=Download&version=v6.1&type=binary&os=Windows&downloadFile=ParaView-6.1.0-Windows-Python3.12-msvc2017-AMD64.msi",
+        "https://www.python.org/ftp/python/3.14.2/python-3.14.2-amd64.exe",
+        "https://www.scilab.org/download/2026.1.0/scilab-2026.1.0.bin.x64.exe",
+        "https://www.softmaker.net/down/freeoffice2024.msi",
+        "https://www.softmaker.net/down/softmaker-office-2024-64.msi",
+        "https://www.softwareok.com/Download/Q-Dir_Installer_x64.zip",
+        "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe",
+        "https://www.voidtools.com/Everything-1.4.1.1028.x64-Setup.exe",
+        "https://www.wireshark.org/download/win64/Wireshark-latest-x64.exe",
+        "https://www.zotero.org/download/client/dl?channel=release&platform=win32"
+      ],
+      "gitBlobOid": "ca234573e63cdd188822c76b1a17beaebb4b63cf",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/d9/5f4ae744145cb3ebc4478e5b3f3c493e06f2f891ee90b85c73e916f45dd58c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "d95f4ae744145cb3ebc4478e5b3f3c493e06f2f891ee90b85c73e916f45dd58c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/download-software-samples.sh"
+    },
+    {
+      "byteSize": 1333,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "93f46c847d5c0c5f20aa06cdbb7612ffbb285de7",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/25/80e090ad1ab9b797e2aaf4724853348e7d6c41f73c35448c3d5bd6319a2974",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2580e090ad1ab9b797e2aaf4724853348e7d6c41f73c35448c3d5bd6319a2974",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/drag-pointer.swift"
+    },
+    {
+      "byteSize": 3182,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "783c8bf4e9e29c5613608b5e8525864aaa98c895",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/db/443f3cbfd379d02777595bac62092a757777baaffc5b361a4a07e1927dc01e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "db443f3cbfd379d02777595bac62092a757777baaffc5b361a4a07e1927dc01e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/dwsim-gdiplus-image-probe.cs"
+    },
+    {
+      "byteSize": 3693,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "9483471a54d4c6170104d95a9e238169c797e5ca",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/a5/9ffd5ac37cd4209485941c0a7f3dc54565b2191e17a18e6a456c1fd0e101e3",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "a59ffd5ac37cd4209485941c0a7f3dc54565b2191e17a18e6a456c1fd0e101e3",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/find-macos-window.swift"
+    },
+    {
+      "byteSize": 3109,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "f30dd77a9c510d3e6afd79299d1a7744e395ff6f",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/f7/fbf8f875bf27bd8ca708e754e171d02f73a8a9820a61c89c21bf7fd69ea933",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "f7fbf8f875bf27bd8ca708e754e171d02f73a8a9820a61c89c21bf7fd69ea933",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/SwingFontProbe.java"
+    },
+    {
+      "byteSize": 1448,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "b7d95ad50ffe890a24679fa1a8feb77e1033faba",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/a9/88d68ed33be49550375af51644f883b6d3a40935402c14a71ac2aa89fc3b86",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "a988d68ed33be49550375af51644f883b6d3a40935402c14a71ac2aa89fc3b86",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/beekeeper-sqlite-smoke.js"
+    },
+    {
+      "byteSize": 2756,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "ae3a9f06b2edc366c941c65ea868a71e87e866c4",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/15/81709a916b579b36280a1ea77351a5bcf388319369fe3b9010b6b8727bfe55",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "1581709a916b579b36280a1ea77351a5bcf388319369fe3b9010b6b8727bfe55",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/brave-browser-smoke.html"
+    },
+    {
+      "byteSize": 3484,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "642694b550eec2ad514be9effa0b6a2837b0cea3",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/36/64b5f7183ba7896208b8a173398d3fb68f91722a4453b6f8f74168a8839f0d",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "3664b5f7183ba7896208b8a173398d3fb68f91722a4453b6f8f74168a8839f0d",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/dbeaver-jdbc-smoke.java"
+    },
+    {
+      "byteSize": 5123,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "c90cec029462e6690ba56b4661236df5905d1f37",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/81/8f9aeba35071a88302f15c20389e80486bc0aeef57e0aeb8da40df265aa0d8",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "818f9aeba35071a88302f15c20389e80486bc0aeef57e0aeb8da40df265aa0d8",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/firefox-browser-smoke.py"
+    },
+    {
+      "byteSize": 19782,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "7fa360a9601d9abc3a67b2e9ffa3d9b0070388c2",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/e2/2d1399fc0d48597e443c015b4120a68ff399e1c4798400c6e867679b446d0b",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "e22d1399fc0d48597e443c015b4120a68ff399e1c4798400c6e867679b446d0b",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-automation-probe.c"
+    },
+    {
+      "byteSize": 15128,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "d621ce66a343c54f317194b4ce8aaacb5d00d313",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2e/6795bf4a47c51a9191f6d4ecbfcf23407381f2c458d2f4d36fcd3a3f477d78",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2e6795bf4a47c51a9191f6d4ecbfcf23407381f2c458d2f4d36fcd3a3f477d78",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-bootstrap.c"
+    },
+    {
+      "byteSize": 4565,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "b6ce337d4b723a5ac6f425754b04fde2bf1f8ec3",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/ec/e4259bce39b26dd0216d130ef1e14575173f9d6532bf59729ec32a12d6735b",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "ece4259bce39b26dd0216d130ef1e14575173f9d6532bf59729ec32a12d6735b",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-typeinfo-probe.c"
+    },
+    {
+      "byteSize": 22147,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "02730dfe769d9e2b235f7ea7f9bc052d15932f3c",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/66/2ae50e5e88783712e0008b37d3a12214520fe7a5870987bd9fd1c64a21df36",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "662ae50e5e88783712e0008b37d3a12214520fe7a5870987bd9fd1c64a21df36",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-ui-probe.c"
+    },
+    {
+      "byteSize": 1114,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "92c4b2e17d24a8761fba9d4786a42df0608e8846",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/73/58542c9358d7e3a8cb88c12f91619c06c414569faa3d6b8fc4241ad8ca85e0",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "7358542c9358d7e3a8cb88c12f91619c06c414569faa3d6b8fc4241ad8ca85e0",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.gd"
+    },
+    {
+      "byteSize": 1682,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "757da9dae6b513361ae9d458fae99900c9f9f0b8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/fc/63a5292fe558d8827916e59226387e1afc40c7e4d5f1286fca2b0e102b1dbb",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "fc63a5292fe558d8827916e59226387e1afc40c7e4d5f1286fca2b0e102b1dbb",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.tscn"
+    },
+    {
+      "byteSize": 454,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "064e3d30dac5a473a429510824b76211b6530af9",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/25/96de6cf2968cc32d489e95de21dea1a44083a21f12fc468184dfe2fed9367f",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2596de6cf2968cc32d489e95de21dea1a44083a21f12fc468184dfe2fed9367f",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/project.godot"
+    },
+    {
+      "byteSize": 1156,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "http://www.w3.org/2000/svg"
+      ],
+      "gitBlobOid": "1bd3533827e7466c6bc474f34b7320ad93e06989",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/05/835a44e6d4a758c67dfb852570e04768dc41db6adccc7e6cc2351ebda9c353",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "05835a44e6d4a758c67dfb852570e04768dc41db6adccc7e6cc2351ebda9c353",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/inkscape-smoke.svg"
+    },
+    {
+      "byteSize": 432,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "24f9788e8feebe791541e7599ce00c09e3e6bbc8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/a6/078de66c705a3bba94bc59871ec16de0d82f1c41a4fb2a2f3d28b8fabb8797",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "a6078de66c705a3bba94bc59871ec16de0d82f1c41a4fb2a2f3d28b8fabb8797",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/jabref-smoke.bib"
+    },
+    {
+      "byteSize": 471,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "d8a5eb0ed5b32b79cfc2a3ea8a365d6e1805b102",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/b0/1a9b4aa59d79aa20a5f7487e2fb6313b88c6563005af25bb4f209886095e7c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "b01a9b4aa59d79aa20a5f7487e2fb6313b88c6563005af25bb4f209886095e7c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/libreoffice-smoke.html"
+    },
+    {
+      "byteSize": 293,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "ecd95136ebbc26788e5387170afe47790e22188f",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/3d/2130de327358b8089671b0f16f51c0013ae2ddf8c04c2be6d29f27e8165aaf",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "3d2130de327358b8089671b0f16f51c0013ae2ddf8c04c2be6d29f27e8165aaf",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/meshlab-cube.obj"
+    },
+    {
+      "byteSize": 839,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "1d696d98864c88355391464698ccc3a1d08251cb",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/d9/ed2a6fd6c139bc3033674fb158d1b6f15fb0a9ad90aaa98a1652e62fe7aab4",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "d9ed2a6fd6c139bc3033674fb158d1b6f15fb0a9ad90aaa98a1652e62fe7aab4",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke-main.cpp"
+    },
+    {
+      "byteSize": 1952,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "http://www.plcopen.org/xml/tc6_0201",
+        "http://www.w3.org/1999/xhtml",
+        "http://www.w3.org/2001/XMLSchema-instance"
+      ],
+      "gitBlobOid": "3b2bbffff5d7067b0767e0d29fd9c7ea586ea160",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/08/c936c8d0b54fdea9b9a45c823185183f00594b69655f4a572fe09cf2b1db47",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "08c936c8d0b54fdea9b9a45c823185183f00594b69655f4a572fe09cf2b1db47",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke.xml"
+    },
+    {
+      "byteSize": 68,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "9592c70e42e03f48543fd4ec61d2c79c638205f3",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/08/f044fb5cb6767db2d3a4184a33a14a4a21174d1d2c84d82973d1cbec5ab523",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "08f044fb5cb6767db2d3a4184a33a14a4a21174d1d2c84d82973d1cbec5ab523",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-one.txt"
+    },
+    {
+      "byteSize": 68,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "9555c66769c167fa632d1e49298d1a944658d945",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/ab/402e8be5f8ed8756e1f3106d64c1d2a2000f51cd2a49fdb5b82ef31906154d",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "ab402e8be5f8ed8756e1f3106d64c1d2a2000f51cd2a49fdb5b82ef31906154d",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-two.txt"
+    },
+    {
+      "byteSize": 7357,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "341c59a9b2ac2e119d9a12827f16668bce940232",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/bc/9ef0ce2c14361453edd863913757cf53d9ccb8c1e8b634267d5ef214996cf5",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "bc9ef0ce2c14361453edd863913757cf53d9ccb8c1e8b634267d5ef214996cf5",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-qpdf-probe.c"
+    },
+    {
+      "byteSize": 2979,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "bc7bb65f9bff68f8db7b2461c2d6c0903925f543",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/0b/1506acda7edffc073b2c09e78ffdae02c168522e5f230706f834767454971e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "0b1506acda7edffc073b2c09e78ffdae02c168522e5f230706f834767454971e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pgadmin-backend-smoke.py"
+    },
+    {
+      "byteSize": 3256,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "87b657de331820e22e79438cc9a0bf2f3836caeb",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/4f/5bd5a85ddc3fcd91c20792134378ea0ccea1e50cdff4f200f14cc8517339a5",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "4f5bd5a85ddc3fcd91c20792134378ea0ccea1e50cdff4f200f14cc8517339a5",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/projectlibre-mpxj-smoke.java"
+    },
+    {
+      "byteSize": 2120,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "0d17c67dbecbde0d15713b18d90939d6f673c21f",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/85/7201f1ebd305febb075688c2f4d2d9848a0acf05961303400eff39d590a35c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "857201f1ebd305febb075688c2f4d2d9848a0acf05961303400eff39d590a35c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/qelectrotech-smoke.qet"
+    },
+    {
+      "byteSize": 591,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "78941930543b052c660166020360c0b6a93aa89c",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/38/a8961d578f5530cca8d25a6d628eeab008ffd258fe20b4d444924accdeea6e",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "38a8961d578f5530cca8d25a6d628eeab008ffd258fe20b4d444924accdeea6e",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/r-statistics-smoke.R"
+    },
+    {
+      "byteSize": 1335,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "5aa7ec4e7a81e9ba97e38a236c3fbc6e0aa617f8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/da/8d6f6ff447e5c3a3231079177ed4d4d59e2c4be3ee15f8ebcdca01def2e389",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "da8d6f6ff447e5c3a3231079177ed4d4d59e2c4be3ee15f8ebcdca01def2e389",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/special-folder-probe.c"
+    },
+    {
+      "byteSize": 4223,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "9d818cf14c964fa7761236e92382fdccefffff35",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/1d/3914f98ea2876b427630c829d703782d022905b219262f27d5020ac48de554",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "1d3914f98ea2876b427630c829d703782d022905b219262f27d5020ac48de554",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/sqlitebrowser-probe.c"
+    },
+    {
+      "byteSize": 9494,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "f5ac9f66f176d3591bb07ddb32277a0e034b6313",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/27/e761c2e1ff71f0ec9f63d5f0ef0246428ed587a971384c0a470f4b0556cc4f",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "27e761c2e1ff71f0ec9f63d5f0ef0246428ed587a971384c0a470f4b0556cc4f",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-debug-exception.c"
+    },
+    {
+      "byteSize": 1453,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "c88da5dae13cbb960a09af87695319dae98bdbbd",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/22/83a901b0a719cce30c40ad22cee1f143dbdd974946d925ae5b8bfbca19ee20",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2283a901b0a719cce30c40ad22cee1f143dbdd974946d925ae5b8bfbca19ee20",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-read-memory.c"
+    },
+    {
+      "byteSize": 190,
+      "category": "fixtures",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "24d9d1c58203e4c85d4442eccc2f52cc8c2c6931",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "test-fixture",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/4d/d86eb7c10a2fde695edb0c420a51a9aae1d0ac07bc3ff919bbd1ac734140f3",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "4dd86eb7c10a2fde695edb0c420a51a9aae1d0ac07bc3ff919bbd1ac734140f3",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wps-smoke.rtf"
+    },
+    {
+      "byteSize": 11696,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "http://127.0.0.1:",
+        "http://127.0.0.1:\\(port)/json/list"
+      ],
+      "gitBlobOid": "c7c36211c9ed39b9f697ffbcde2f7287e4ace03a",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/2b/06065d1cdec8316f4b7b1576aa53862c8a43301d9a41f4bdd6b4b69878af6b",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "2b06065d1cdec8316f4b7b1576aa53862c8a43301d9a41f4bdd6b4b69878af6b",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/inspect-chromium-page.swift"
+    },
+    {
+      "byteSize": 345,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "d7462abb948a972e4dc08e671312f4419bcd996a",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/a9/5f6ab519edb51fede9740917e5135e8cccbbcc8c18635f72278a14afaa66c6",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "a95f6ab519edb51fede9740917e5135e8cccbbcc8c18635f72278a14afaa66c6",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/macos-session-state.swift"
+    },
+    {
+      "byteSize": 8297,
+      "category": "probes",
+      "developmentDependencies": [
+        "$PROJECT_ROOT/refs/jasp-desktop-v0.97.1",
+        "MACWIN_JASP_CONAN_BIN",
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_WINDOWS_QT_PREFIX",
+        "MACWIN_JASP_WINDOWS_R_HOME"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "62c0287c4a9d2a94266011b3505ca54481056f18",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/60/184629596f9ab50bb4285d61da9eb0e5f5f9bba6d98de460fd8d7aa30d86d9",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "60184629596f9ab50bb4285d61da9eb0e5f5f9bba6d98de460fd8d7aa30d86d9",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/prepare-jasp-compat-source.sh"
+    },
+    {
+      "byteSize": 818,
+      "category": "probes",
+      "developmentDependencies": [
+        "MACWIN_JASP_CONAN_HOME"
+      ],
+      "externalRefs": [
+        "https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz",
+        "https://zlib.net/fossils/zlib-1.2.13.tar.gz"
+      ],
+      "gitBlobOid": "0ede0227a59def44cf4306a90bfe7b091ba11b98",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/d7/c41c2963c75cf366984bf3ed2e9e8fb45395f602788ddf5d610c7e1a0cdc06",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "d7c41c2963c75cf366984bf3ed2e9e8fb45395f602788ddf5d610c7e1a0cdc06",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-jasp-conan-cache.sh"
+    },
+    {
+      "byteSize": 5795,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [
+        "http://127.0.0.1:\\(port)/json/list"
+      ],
+      "gitBlobOid": "9b7fb46212e21f58fb09f022a9d5889ea9a80cf6",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/7d/e42c42c85e1d5ed91311e88e5b7ef4dcbf6e93720e808c801258df7400e0da",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "7de42c42c85e1d5ed91311e88e5b7ef4dcbf6e93720e808c801258df7400e0da",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-lenovo-app-store-page.swift"
+    },
+    {
+      "byteSize": 7798,
+      "category": "probes",
+      "developmentDependencies": [
+        "$HOME/Library/Application Support/MacWin",
+        "$PROJECT_ROOT/refs/exe-tests/bin/101_named_event_signal_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/103_window_inventory_probe.exe",
+        "MACWIN_POWETOYS_EVENT_PROBE",
+        "MACWIN_POWETOYS_EXE",
+        "MACWIN_POWETOYS_PREFIX",
+        "MACWIN_POWETOYS_WINDOW_PROBE",
+        "MACWIN_ROOT"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "9bd77c805a5ccd2c10186d2d78e4607d9d1a68ce",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/b8/0390dc217c5a5641d56f46c0a011719d73ddfbb72ec23b66ee3d74a7b84d4c",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "b80390dc217c5a5641d56f46c0a011719d73ddfbb72ec23b66ee3d74a7b84d4c",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-powertoys-quick-access-probe.sh"
+    },
+    {
+      "byteSize": 720556,
+      "category": "probes",
+      "developmentDependencies": [
+        "$HOME/.cache/wine/wine-mono-11.1.0-x86.msi",
+        "$HOME/Library/Application Support/MacWin",
+        "$HOME/Library/Fonts",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/mscoree/i386-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/odbc32/i386-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/x86_64-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/programs/${tool%.exe}/x86_64-windows/$tool",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/x86_64-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/programs/${tool%.exe}/x86_64-windows/$tool",
+        "$PROJECT_ROOT/refs/dxvk-macos-full-build/install/x64",
+        "$PROJECT_ROOT/refs/exe-tests/bin/94_opendss_com_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/97_jasp_createprocess_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/98_window_capture_probe.exe",
+        "$PROJECT_ROOT/refs/jasp-desktop-v0.97.1",
+        "$PROJECT_ROOT/refs/rosettax87/build/rosettax87",
+        "$PROJECT_ROOT/refs/testdata/ltspice/rc-transient.cir",
+        "MACWIN_DXVK_MACOS_DIR",
+        "MACWIN_JASP_DESKTOP_EXE_OVERRIDE",
+        "MACWIN_LENOVO_APPSTORE_SOURCE_DIR",
+        "MACWIN_ONLYOFFICE_ALLFONTS_SOURCE",
+        "MACWIN_PDFINFO_BIN",
+        "MACWIN_QET_FIXTURE_PATH",
+        "MACWIN_ROOT",
+        "MACWIN_ROSETTA_X87_PATH",
+        "MACWIN_SMOKE_PREFIX",
+        "MACWIN_VISUAL_PROBE",
+        "MACWIN_WINE_MONO_MSI",
+        "refs/exe-tests/build.sh"
+      ],
+      "externalRefs": [
+        "http://127.0.0.1:$port/",
+        "http://127.0.0.1:$port/health",
+        "http://127.0.0.1:$port/misc/ping?key=$key",
+        "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+        "http://schemas.openxmlformats.org/package/2006/content-types",
+        "http://schemas.openxmlformats.org/package/2006/relationships",
+        "http://schemas.openxmlformats.org/presentationml/2006/main",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "https://doi.org/10.1234/macwin.2026.17",
+        "https://example.com/",
+        "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.46.0/ecj-3.46.0.jar",
+        "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.13/postgresql-42.7.13.jar"
+      ],
+      "gitBlobOid": "1d1623a3f5f74bd7fff7b8b8268380561bfb79f5",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/5d/0f2ba9eeef78acd447bcbc1ea886eb1ca6cd970aeb2b12ed53ca76a05fc340",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "5d0f2ba9eeef78acd447bcbc1ea886eb1ca6cd970aeb2b12ed53ca76a05fc340",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-software-smoke.sh"
+    },
+    {
+      "byteSize": 3639,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "34cba79d1104e35a34b2f1f65dfd702a5c300ad8",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/0e/483aede37c39f02f8ad489984ac88f56a207a4e2ca2b525ca9a6c85bfff19d",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "0e483aede37c39f02f8ad489984ac88f56a207a4e2ca2b525ca9a6c85bfff19d",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-chromium-page-report.py"
+    },
+    {
+      "byteSize": 2895,
+      "category": "probes",
+      "developmentDependencies": [
+        "MACWIN_PGADMIN_RESOURCES"
+      ],
+      "externalRefs": [
+        "http://127.0.0.1:"
+      ],
+      "gitBlobOid": "2ed0a03aeb6276eea56c565fc25f7456c3994754",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/6f/c2e1b7dbe5b936bcaf20d55b0b581986c60c8b41316cd566163dd130b321f4",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "6fc2e1b7dbe5b936bcaf20d55b0b581986c60c8b41316cd566163dd130b321f4",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-pgadmin-page-report.py"
+    },
+    {
+      "byteSize": 9852,
+      "category": "probes",
+      "developmentDependencies": [
+        "$HOME/Desktop/MacWinVisualAcceptance",
+        "/Users/a1-6/project/Mac-Win/MacWinManager/.build/arm64-apple-macosx/debug/MacWinManagerApp",
+        "MACWIN_APP_PATH",
+        "MACWIN_VISUAL_ANALYSIS_JSON",
+        "MACWIN_VISUAL_OUTPUT_DIR",
+        "MACWIN_VISUAL_RESULT_JSON",
+        "MACWIN_VISUAL_SCREENSHOT"
+      ],
+      "externalRefs": [],
+      "gitBlobOid": "3bde3e7a344c30c3b73aad9e3a466ad7e3a36781",
+      "gitMode": "100755",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/e5/61ec745a5739769b02e3b3ceef759b68417f1914f99069b0bc297dfd17efd7",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "e561ec745a5739769b02e3b3ceef759b68417f1914f99069b0bc297dfd17efd7",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/visual-acceptance-macwin.sh"
+    },
+    {
+      "byteSize": 26323,
+      "category": "probes",
+      "developmentDependencies": [],
+      "externalRefs": [],
+      "gitBlobOid": "ec7e6332e16e23cb7ba154e1708689be59a88dc1",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/probes",
+      "kind": "probe",
+      "license": {
+        "status": "unresolved"
+      },
+      "objectPath": "objects/sha256/99/5611128bc4a3833e273590f678cfa32e3fbb06fec8d2eff7b54e05aee42381",
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sha256": "995611128bc4a3833e273590f678cfa32e3fbb06fec8d2eff7b54e05aee42381",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/wic-codecs-minimal.reg"
+    }
+  ],
+  "categoryCounts": {
+    "bottleSchema": 4,
+    "catalog": 19,
+    "fixtures": 30,
+    "patches": 11,
+    "probes": 26
+  },
+  "digestAlgorithm": "sha256",
+  "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+  "repository": "a1112/Mac-Win",
+  "schemaVersion": "1",
+  "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+  "sourceTag": "mw-migration-baseline-db12d5e"
+}

@@ -1,0 +1,59 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Browser",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "firefox",
+  "installer" : {
+    "arguments" : [
+      "/i",
+      "$installer",
+      "/qn",
+      "/norestart"
+    ],
+    "command" : "msiexec",
+    "fileName" : "Firefox_Setup_152.0.1.msi",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "58a6d4a491fd9b9e54205c7f684ff808741a4ac9c4a866e5a562e7ad8e89a5b0",
+    "url" : "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=zh-CN"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Mozilla Firefox",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+      "id" : "firefox",
+      "showInHome" : true
+    }
+  ],
+  "name" : "Mozilla Firefox",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Mozilla",
+  "warnings" : [
+    "Gecko browser sample used to exercise non-Chromium rendering, TLS, CJK text, file pickers, and profile creation.",
+    "The launcher uses an isolated MacWin Firefox profile with WebRender/GPU subprocess paths disabled for the first compatibility pass."
+  ]
+}

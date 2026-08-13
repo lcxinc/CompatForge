@@ -1,0 +1,55 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Developer Tools",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "texstudio",
+  "installer" : {
+    "arguments" : [
+      "/S"
+    ],
+    "fileName" : "Texstudio-4.9.5-win-qt6-signed.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "618c633e1ad6d9aba90ff8c4498d265b2cbfb6d02173d4577ca8ba3c989cc1e4",
+    "url" : "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/Texstudio-4.9.5-win-qt6-signed.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "TeXstudio",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\TeXstudio\\texstudio.exe",
+      "id" : "texstudio",
+      "showInHome" : true
+    }
+  ],
+  "name" : "TeXstudio",
+  "postInstall" : [
+
+  ],
+  "publisher" : "TeXstudio Team",
+  "warnings" : [
+    "Qt6 editor sample used to exercise widget rendering, font fallback, file dialogs, and high-DPI behavior.",
+    "The launcher is automatically assigned the texstudio-qt6 compatibility profile."
+  ]
+}

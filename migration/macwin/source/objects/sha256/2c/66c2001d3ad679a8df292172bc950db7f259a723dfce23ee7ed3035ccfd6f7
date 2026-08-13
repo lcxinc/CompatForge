@@ -1,0 +1,47 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Game Launcher",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+  },
+  "id" : "hoyoplay-cn",
+  "installer" : {
+    "hints" : [
+      "/Users/a1-6/project/Mac-Win/refs/prefixes/hoyoplay-x86_64/drive_c/Program Files/miHoYo Launcher/1.16.1.364/HYP.exe"
+    ],
+    "mode" : "alreadyInstalled"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "HoYoPlay",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "$existing",
+      "id" : "hoyoplay",
+      "showInHome" : true
+    }
+  ],
+  "name" : "HoYoPlay",
+  "postInstall" : [
+
+  ],
+  "publisher" : "COGNOSPHERE / miHoYo",
+  "warnings" : [
+    "This recipe only launches an already installed HoYoPlay binary. It does not bypass login, DRM, anti-cheat, or game service limits.",
+    "D3D paths default to WineD3D Vulkan because OpenGL failed local D3D11 probes on this Mac."
+  ]
+}

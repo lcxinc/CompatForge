@@ -1,0 +1,1412 @@
+diff --git a/dlls/comctl32_v6/taskdialog.c b/dlls/comctl32_v6/taskdialog.c
+index 5018eb01ed4..c5421ae06c3 100644
+--- a/dlls/comctl32_v6/taskdialog.c
++++ b/dlls/comctl32_v6/taskdialog.c
+@@ -31,6 +31,7 @@
+ #include "commctrl.h"
+ #include "winerror.h"
+ #include "comctl32.h"
++#include "ntuser.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -1376,11 +1377,74 @@ static INT_PTR CALLBACK taskdialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
+ /***********************************************************************
+  * TaskDialogIndirect [COMCTL32.@]
+  */
++static BOOL native_task_dialog_component_enabled(void)
++{
++    char environment[256], token[64];
++    DWORD length, token_length;
++    const char *cursor, *end;
++
++    length = GetEnvironmentVariableA("MACWIN_NATIVE_UI", environment, ARRAY_SIZE(environment));
++    if (!length || length >= ARRAY_SIZE(environment)) return FALSE;
++    cursor = environment;
++    while (*cursor)
++    {
++        while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') cursor++;
++        end = cursor;
++        while (*end && *end != ',') end++;
++        token_length = min((DWORD)(end - cursor), (DWORD)ARRAY_SIZE(token) - 1);
++        memcpy(token, cursor, token_length);
++        token[token_length] = 0;
++        while (token_length && (token[token_length - 1] == ' ' || token[token_length - 1] == '\t'))
++            token[--token_length] = 0;
++        if (!lstrcmpiA(token, "task-dialogs")) return TRUE;
++        cursor = end;
++    }
++    return FALSE;
++}
++
++static BOOL native_task_dialog_supported(const TASKDIALOGCONFIG *taskconfig)
++{
++    const TASKDIALOG_BUTTON *button;
++    UINT i;
++
++    if (!native_task_dialog_component_enabled() || !taskconfig || taskconfig->pfCallback)
++        return FALSE;
++    if (taskconfig->dwFlags & (TDF_ENABLE_HYPERLINKS | TDF_USE_HICON_MAIN | TDF_USE_HICON_FOOTER |
++                               TDF_USE_COMMAND_LINKS | TDF_USE_COMMAND_LINKS_NO_ICON |
++                               TDF_EXPAND_FOOTER_AREA | TDF_SHOW_PROGRESS_BAR |
++                               TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_RTL_LAYOUT |
++                               TDF_CAN_BE_MINIMIZED))
++        return FALSE;
++    if (taskconfig->cRadioButtons || taskconfig->pRadioButtons || taskconfig->cButtons > 32)
++        return FALSE;
++    if (taskconfig->cButtons && !taskconfig->pButtons)
++        return FALSE;
++    if ((taskconfig->pszWindowTitle && IS_INTRESOURCE(taskconfig->pszWindowTitle)) ||
++        (taskconfig->pszMainInstruction && IS_INTRESOURCE(taskconfig->pszMainInstruction)) ||
++        (taskconfig->pszContent && IS_INTRESOURCE(taskconfig->pszContent)) ||
++        (taskconfig->pszFooter && IS_INTRESOURCE(taskconfig->pszFooter)) ||
++        (taskconfig->pszVerificationText && IS_INTRESOURCE(taskconfig->pszVerificationText)) ||
++        (taskconfig->pszExpandedInformation && IS_INTRESOURCE(taskconfig->pszExpandedInformation)) ||
++        (taskconfig->pszExpandedControlText && IS_INTRESOURCE(taskconfig->pszExpandedControlText)) ||
++        (taskconfig->pszCollapsedControlText && IS_INTRESOURCE(taskconfig->pszCollapsedControlText)))
++        return FALSE;
++
++    button = taskconfig->pButtons;
++    for (i = 0; i < taskconfig->cButtons; i++)
++        if (!button[i].pszButtonText || IS_INTRESOURCE(button[i].pszButtonText)) return FALSE;
++
++    if (!taskconfig->dwCommonButtons && !taskconfig->cButtons) return FALSE;
++    return TRUE;
++}
++
+ HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG *taskconfig, int *button,
+                                   int *radio_button, BOOL *verification_flag_checked)
+ {
+     struct taskdialog_info dialog_info;
++    struct wine_native_task_dialog_params native_params;
++    struct wine_native_task_dialog_button *native_buttons = NULL;
+     DLGTEMPLATE *template;
++    UINT native_button_count, native_index = 0, i;
+     INT ret;
+ 
+     TRACE("%p, %p, %p, %p\n", taskconfig, button, radio_button, verification_flag_checked);
+@@ -1388,6 +1452,61 @@ HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG *taskconfig, int *butto
+     if (!taskconfig || taskconfig->cbSize != sizeof(TASKDIALOGCONFIG))
+         return E_INVALIDARG;
+ 
++    if (native_task_dialog_supported(taskconfig))
++    {
++        native_button_count = taskconfig->cButtons;
++        if (taskconfig->dwCommonButtons & TDCBF_OK_BUTTON) native_button_count++;
++        if (taskconfig->dwCommonButtons & TDCBF_YES_BUTTON) native_button_count++;
++        if (taskconfig->dwCommonButtons & TDCBF_NO_BUTTON) native_button_count++;
++        if (taskconfig->dwCommonButtons & TDCBF_CANCEL_BUTTON) native_button_count++;
++        if (taskconfig->dwCommonButtons & TDCBF_RETRY_BUTTON) native_button_count++;
++        if (taskconfig->dwCommonButtons & TDCBF_CLOSE_BUTTON) native_button_count++;
++        native_buttons = calloc(native_button_count, sizeof(*native_buttons));
++        if (native_buttons)
++        {
++            if (taskconfig->dwCommonButtons & TDCBF_OK_BUTTON)
++                native_buttons[native_index++].id = IDOK;
++            if (taskconfig->dwCommonButtons & TDCBF_YES_BUTTON)
++                native_buttons[native_index++].id = IDYES;
++            if (taskconfig->dwCommonButtons & TDCBF_NO_BUTTON)
++                native_buttons[native_index++].id = IDNO;
++            if (taskconfig->dwCommonButtons & TDCBF_RETRY_BUTTON)
++                native_buttons[native_index++].id = IDRETRY;
++            if (taskconfig->dwCommonButtons & TDCBF_CANCEL_BUTTON)
++                native_buttons[native_index++].id = IDCANCEL;
++            if (taskconfig->dwCommonButtons & TDCBF_CLOSE_BUTTON)
++                native_buttons[native_index++].id = IDCLOSE;
++            for (i = 0; i < taskconfig->cButtons; i++)
++            {
++                native_buttons[native_index].id = taskconfig->pButtons[i].nButtonID;
++                native_buttons[native_index++].text = (UINT64)(UINT_PTR)taskconfig->pButtons[i].pszButtonText;
++            }
++
++            memset(&native_params, 0, sizeof(native_params));
++            native_params.hwnd = (UINT64)(UINT_PTR)taskconfig->hwndParent;
++            native_params.title = (UINT64)(UINT_PTR)taskconfig->pszWindowTitle;
++            native_params.main_instruction = (UINT64)(UINT_PTR)taskconfig->pszMainInstruction;
++            native_params.content = (UINT64)(UINT_PTR)taskconfig->pszContent;
++            native_params.footer = (UINT64)(UINT_PTR)taskconfig->pszFooter;
++            native_params.verification_text = (UINT64)(UINT_PTR)taskconfig->pszVerificationText;
++            native_params.main_icon = (UINT64)(UINT_PTR)taskconfig->pszMainIcon;
++            native_params.buttons = (UINT64)(UINT_PTR)native_buttons;
++            native_params.button_count = native_button_count;
++            native_params.default_button = taskconfig->nDefaultButton;
++            native_params.flags = taskconfig->dwFlags;
++            native_params.verification_checked = !!(taskconfig->dwFlags & TDF_VERIFICATION_FLAG_CHECKED);
++            if (SystemParametersInfoW(SPI_WINE_NATIVE_TASK_DIALOG, 0, &native_params, 0) && native_params.result)
++            {
++                if (button) *button = native_params.result;
++                if (radio_button) *radio_button = 0;
++                if (verification_flag_checked) *verification_flag_checked = native_params.verification_checked;
++                free(native_buttons);
++                return S_OK;
++            }
++            free(native_buttons);
++        }
++    }
++
+     dialog_info.taskconfig = taskconfig;
+ 
+     template = create_taskdialog_template(taskconfig);
+diff --git a/dlls/comdlg32/filedlg.c b/dlls/comdlg32/filedlg.c
+index 9d573759445..54bc0711621 100644
+--- a/dlls/comdlg32/filedlg.c
++++ b/dlls/comdlg32/filedlg.c
+@@ -59,6 +59,7 @@
+ #include "wingdi.h"
+ #include "winreg.h"
+ #include "winuser.h"
++#include "ntuser.h"
+ #include "commdlg.h"
+ #include "dlgs.h"
+ #include "cdlg.h"
+@@ -4117,6 +4118,96 @@ static inline BOOL is_win16_looks(DWORD flags)
+             !(flags & OFN_EXPLORER));
+ }
+ 
++static BOOL native_ui_component_enabled(const char *component)
++{
++    char environment[256], token[64], *cursor, *end;
++    DWORD length = GetEnvironmentVariableA("MACWIN_NATIVE_UI", environment, ARRAY_SIZE(environment));
++
++    if (!length || length >= ARRAY_SIZE(environment)) return FALSE;
++    cursor = environment;
++    while (*cursor)
++    {
++        while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') cursor++;
++        end = cursor;
++        while (*end && *end != ',') end++;
++        length = min((DWORD)(end - cursor), (DWORD)ARRAY_SIZE(token) - 1);
++        memcpy(token, cursor, length);
++        token[length] = 0;
++        while (length && (token[length - 1] == ' ' || token[length - 1] == '\t')) token[--length] = 0;
++        if (!lstrcmpiA(token, component)) return TRUE;
++        cursor = end;
++    }
++    return FALSE;
++}
++
++static INT try_native_file_dialogW(OPENFILENAMEW *ofn, BOOL save)
++{
++    static const DWORD unsupported_flags = OFN_ALLOWMULTISELECT | OFN_ENABLEHOOK |
++                                            OFN_ENABLETEMPLATE | OFN_ENABLETEMPLATEHANDLE;
++    char selected_path[4096];
++    char *initial_directory = NULL;
++    WCHAR *dos_path;
++    const WCHAR *name = NULL;
++    struct wine_native_file_dialog_params params;
++    INT result;
++    UINT length;
++    WCHAR *file_part, *extension;
++
++    if (!native_ui_component_enabled("file-dialogs") || !ofn->lpstrFile || !ofn->nMaxFile ||
++        ofn->lpstrCustomFilter ||
++        (ofn->Flags & unsupported_flags) || IS_INTRESOURCE(ofn->lpstrTitle))
++        return WINE_NATIVE_DIALOG_UNAVAILABLE;
++
++    if (ofn->lpstrInitialDir && *ofn->lpstrInitialDir)
++        initial_directory = wine_get_unix_file_name(ofn->lpstrInitialDir);
++    if (*ofn->lpstrFile) name = PathFindFileNameW(ofn->lpstrFile);
++
++    params.hwnd = (UINT_PTR)ofn->hwndOwner;
++    params.title = (UINT_PTR)ofn->lpstrTitle;
++    params.directory = (UINT_PTR)initial_directory;
++    params.name = (UINT_PTR)name;
++    params.filter = (UINT_PTR)ofn->lpstrFilter;
++    params.default_ext = (UINT_PTR)ofn->lpstrDefExt;
++    params.path = (UINT_PTR)selected_path;
++    params.path_size = ARRAY_SIZE(selected_path);
++    params.flags = ofn->Flags;
++    params.save = save;
++    params.filter_index = ofn->nFilterIndex ? ofn->nFilterIndex : 1;
++    params.result = WINE_NATIVE_DIALOG_UNAVAILABLE;
++    if (!SystemParametersInfoW(SPI_WINE_NATIVE_FILE_DIALOG, 0, &params, 0))
++        result = WINE_NATIVE_DIALOG_UNAVAILABLE;
++    else
++        result = params.result;
++    HeapFree(GetProcessHeap(), 0, initial_directory);
++    if (result == WINE_NATIVE_DIALOG_CANCELLED)
++        COMDLG32_SetCommDlgExtendedError(0);
++    if (result != WINE_NATIVE_DIALOG_SUCCESS) return result;
++
++    if (params.filter_index) ofn->nFilterIndex = params.filter_index;
++
++    if (!(dos_path = wine_get_dos_file_name(selected_path)))
++        return WINE_NATIVE_DIALOG_UNAVAILABLE;
++    length = lstrlenW(dos_path) + 1;
++    if (length > ofn->nMaxFile)
++    {
++        if (ofn->nMaxFile) *(WORD *)ofn->lpstrFile = length;
++        HeapFree(GetProcessHeap(), 0, dos_path);
++        COMDLG32_SetCommDlgExtendedError(FNERR_BUFFERTOOSMALL);
++        return WINE_NATIVE_DIALOG_BUFFER_TOO_SMALL;
++    }
++
++    lstrcpyW(ofn->lpstrFile, dos_path);
++    file_part = PathFindFileNameW(ofn->lpstrFile);
++    ofn->nFileOffset = file_part - ofn->lpstrFile;
++    extension = PathFindExtensionW(file_part);
++    ofn->nFileExtension = *extension ? extension - ofn->lpstrFile + 1 : 0;
++    if (ofn->lpstrFileTitle && ofn->nMaxFileTitle)
++        lstrcpynW(ofn->lpstrFileTitle, file_part, ofn->nMaxFileTitle);
++    HeapFree(GetProcessHeap(), 0, dos_path);
++    COMDLG32_SetCommDlgExtendedError(0);
++    return WINE_NATIVE_DIALOG_SUCCESS;
++}
++
+ /* ------------------ APIs ---------------------- */
+ 
+ /***********************************************************************
+@@ -4166,6 +4257,7 @@ BOOL WINAPI GetOpenFileNameA(OPENFILENAMEA *ofn)
+  */
+ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+ {
++    INT native_result;
+     TRACE("flags 0x%08lx\n", ofn->Flags);
+ 
+     if (!valid_struct_size( ofn->lStructSize ))
+@@ -4178,6 +4270,10 @@ BOOL WINAPI GetOpenFileNameW(OPENFILENAMEW *ofn)
+     if (ofn->Flags & OFN_FILEMUSTEXIST)
+         ofn->Flags |= OFN_PATHMUSTEXIST;
+ 
++    native_result = try_native_file_dialogW(ofn, FALSE);
++    if (native_result != WINE_NATIVE_DIALOG_UNAVAILABLE)
++        return native_result == WINE_NATIVE_DIALOG_SUCCESS;
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, OPEN_DIALOG);
+     else
+@@ -4232,12 +4328,17 @@ BOOL WINAPI GetSaveFileNameA(OPENFILENAMEA *ofn)
+ BOOL WINAPI GetSaveFileNameW(
+ 	LPOPENFILENAMEW ofn) /* [in/out] address of init structure */
+ {
++    INT native_result;
+     if (!valid_struct_size( ofn->lStructSize ))
+     {
+         COMDLG32_SetCommDlgExtendedError( CDERR_STRUCTSIZE );
+         return FALSE;
+     }
+ 
++    native_result = try_native_file_dialogW(ofn, TRUE);
++    if (native_result != WINE_NATIVE_DIALOG_UNAVAILABLE)
++        return native_result == WINE_NATIVE_DIALOG_SUCCESS;
++
+     if (is_win16_looks(ofn->Flags))
+         return GetFileName31W(ofn, SAVE_DIALOG);
+     else
+diff --git a/dlls/comdlg32/itemdlg.c b/dlls/comdlg32/itemdlg.c
+index 6e47cb12ca5..e55e17f63d6 100644
+--- a/dlls/comdlg32/itemdlg.c
++++ b/dlls/comdlg32/itemdlg.c
+@@ -19,6 +19,7 @@
+  */
+ 
+ #include <stdarg.h>
++#include <string.h>
+ 
+ #define COBJMACROS
+ #include "windef.h"
+@@ -31,6 +32,7 @@
+ #include "commdlg.h"
+ #include "cdlg.h"
+ #include "filedlgbrowser.h"
++#include "ntuser.h"
+ 
+ #include "wine/debug.h"
+ #include "wine/list.h"
+@@ -2364,6 +2366,230 @@ static INT_PTR CALLBACK itemdlg_dlgproc(HWND hwnd, UINT umessage, WPARAM wparam,
+     return FALSE;
+ }
+ 
++static BOOL native_itemdlg_component_enabled(void)
++{
++    char environment[256], token[64];
++    DWORD length, token_length;
++    const char *cursor, *end;
++
++    length = GetEnvironmentVariableA("MACWIN_NATIVE_UI", environment, ARRAY_SIZE(environment));
++    if (!length || length >= ARRAY_SIZE(environment)) return FALSE;
++    cursor = environment;
++    while (*cursor)
++    {
++        while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') cursor++;
++        end = cursor;
++        while (*end && *end != ',') end++;
++        token_length = min((DWORD)(end - cursor), (DWORD)ARRAY_SIZE(token) - 1);
++        memcpy(token, cursor, token_length);
++        token[token_length] = 0;
++        while (token_length && (token[token_length - 1] == ' ' || token[token_length - 1] == '\t'))
++            token[--token_length] = 0;
++        if (!lstrcmpiA(token, "modern-file-dialogs")) return TRUE;
++        cursor = end;
++    }
++    return FALSE;
++}
++
++static WCHAR *native_itemdlg_filter(FileDialogImpl *This)
++{
++    WCHAR *filter, *cursor;
++    UINT i, length = 1;
++
++    if (!This->filterspec_count) return NULL;
++    for (i = 0; i < This->filterspec_count; i++)
++        length += lstrlenW(This->filterspecs[i].pszName) + 1
++                + lstrlenW(This->filterspecs[i].pszSpec) + 1;
++    filter = malloc(length * sizeof(*filter));
++    if (!filter) return NULL;
++    cursor = filter;
++    for (i = 0; i < This->filterspec_count; i++)
++    {
++        UINT name_len = lstrlenW(This->filterspecs[i].pszName);
++        UINT spec_len = lstrlenW(This->filterspecs[i].pszSpec);
++        memcpy(cursor, This->filterspecs[i].pszName, (name_len + 1) * sizeof(*cursor));
++        cursor += name_len + 1;
++        memcpy(cursor, This->filterspecs[i].pszSpec, (spec_len + 1) * sizeof(*cursor));
++        cursor += spec_len + 1;
++    }
++    *cursor = 0;
++    return filter;
++}
++
++static HRESULT native_itemdlg_set_results(FileDialogImpl *This, const char *paths,
++                                           UINT path_count, UINT paths_size, BOOL pick_folders)
++{
++    LPITEMIDLIST *pidla = NULL;
++    WCHAR *folder_path = NULL;
++    const char *cursor = paths;
++    IShellFolder *desktop = NULL;
++    IShellItemArray *results = NULL;
++    HRESULT hr = E_FAIL;
++    UINT i;
++
++    if (!path_count || !paths) return E_FAIL;
++    pidla = calloc(path_count, sizeof(*pidla));
++    if (!pidla) return E_OUTOFMEMORY;
++
++    for (i = 0; i < path_count; i++)
++    {
++        const char *end;
++        WCHAR *dos_path;
++        UINT length;
++
++        if (cursor < paths || (UINT_PTR)(cursor - paths) >= paths_size)
++        {
++            hr = E_FAIL;
++            goto done;
++        }
++        end = memchr(cursor, 0, paths_size - (UINT_PTR)(cursor - paths));
++
++        if (!end || end == cursor)
++        {
++            hr = E_FAIL;
++            goto done;
++        }
++        dos_path = wine_get_dos_file_name(cursor);
++        if (!dos_path)
++        {
++            hr = E_FAIL;
++            goto done;
++        }
++        if (!i)
++        {
++            length = lstrlenW(dos_path) + 1;
++            folder_path = malloc(length * sizeof(*folder_path));
++            if (!folder_path)
++            {
++                HeapFree(GetProcessHeap(), 0, dos_path);
++                hr = E_OUTOFMEMORY;
++                goto done;
++            }
++            lstrcpyW(folder_path, dos_path);
++            if (!pick_folders) PathRemoveFileSpecW(folder_path);
++        }
++        pidla[i] = SHSimpleIDListFromPath(dos_path);
++        HeapFree(GetProcessHeap(), 0, dos_path);
++        if (!pidla[i])
++        {
++            hr = E_FAIL;
++            goto done;
++        }
++        cursor = end + 1;
++    }
++
++    hr = SHGetDesktopFolder(&desktop);
++    if (SUCCEEDED(hr))
++        hr = SHCreateShellItemArray(NULL, desktop, path_count,
++                                    (PCUITEMID_CHILD_ARRAY)pidla, &results);
++    if (desktop) IShellFolder_Release(desktop);
++    if (FAILED(hr)) goto done;
++
++    if (This->psia_results) IShellItemArray_Release(This->psia_results);
++    This->psia_results = results;
++    if (This->psia_selection) IShellItemArray_Release(This->psia_selection);
++    This->psia_selection = results;
++    IShellItemArray_AddRef(This->psia_selection);
++
++    if (folder_path)
++    {
++        IShellItem *folder = NULL;
++        if (SUCCEEDED(SHCreateItemFromParsingName(folder_path, NULL, &IID_IShellItem,
++                                                  (void **)&folder)))
++        {
++            if (This->psi_folder) IShellItem_Release(This->psi_folder);
++            This->psi_folder = folder;
++        }
++    }
++    hr = S_OK;
++
++done:
++    if (pidla)
++    {
++        for (i = 0; i < path_count; i++) ILFree(pidla[i]);
++        free(pidla);
++    }
++    free(folder_path);
++    return hr;
++}
++
++static HRESULT try_native_itemdlg(FileDialogImpl *This, HWND parent)
++{
++    static const FILEOPENDIALOGOPTIONS supported_options =
++        FOS_OVERWRITEPROMPT | FOS_STRICTFILETYPES | FOS_NOCHANGEDIR | FOS_PICKFOLDERS |
++        FOS_FORCEFILESYSTEM | FOS_NOVALIDATE | FOS_ALLOWMULTISELECT | FOS_PATHMUSTEXIST |
++        FOS_FILEMUSTEXIST | FOS_NOREADONLYRETURN | FOS_NODEREFERENCELINKS | FOS_DONTADDTORECENT;
++    char *directory = NULL, native_paths[32768];
++    WCHAR *filter = NULL;
++    IShellItem *folder;
++    LPWSTR folder_name = NULL;
++    struct wine_native_file_dialog_params params;
++    HRESULT hr;
++    BOOL pick_folders = !!(This->options & FOS_PICKFOLDERS);
++
++    if (!native_itemdlg_component_enabled() || !list_empty(&This->events_clients) ||
++        !list_empty(&This->cctrls) || This->hmenu_opendropdown ||
++        (This->options & ~supported_options) || This->psia_selection ||
++        This->custom_cancelbutton)
++        return E_NOTIMPL;
++
++    filter = native_itemdlg_filter(This);
++    if (This->filterspec_count && !filter) return E_OUTOFMEMORY;
++
++    folder = This->psi_setfolder ? This->psi_setfolder : This->psi_defaultfolder;
++    if (folder && SUCCEEDED(IShellItem_GetDisplayName(folder, SIGDN_FILESYSPATH, &folder_name)))
++    {
++        directory = wine_get_unix_file_name(folder_name);
++        CoTaskMemFree(folder_name);
++    }
++
++    memset(native_paths, 0, sizeof(native_paths));
++    memset(&params, 0, sizeof(params));
++    params.hwnd = (UINT64)(UINT_PTR)parent;
++    params.title = (UINT64)(UINT_PTR)This->custom_title;
++    params.directory = (UINT64)(UINT_PTR)directory;
++    params.name = (UINT64)(UINT_PTR)This->set_filename;
++    params.filter = (UINT64)(UINT_PTR)filter;
++    params.default_ext = (UINT64)(UINT_PTR)This->default_ext;
++    params.path = (UINT64)(UINT_PTR)native_paths;
++    params.path_size = sizeof(native_paths);
++    params.flags = 0;
++    params.save = This->dlg_type == ITEMDLG_TYPE_SAVE;
++    params.filter_index = This->filterspec_count ? This->filetypeindex + 1 : 0;
++    params.ok_label = (UINT64)(UINT_PTR)This->custom_okbutton;
++    params.cancel_label = (UINT64)(UINT_PTR)This->custom_cancelbutton;
++    params.file_name_label = (UINT64)(UINT_PTR)This->custom_filenamelabel;
++    params.paths = (UINT64)(UINT_PTR)native_paths;
++    params.paths_size = sizeof(native_paths);
++    params.options = WINE_NATIVE_FILE_DIALOG_MODERN;
++    if (pick_folders) params.options |= WINE_NATIVE_FILE_DIALOG_PICK_FOLDERS;
++    if (This->options & FOS_ALLOWMULTISELECT) params.options |= WINE_NATIVE_FILE_DIALOG_MULTI_SELECT;
++    if (This->options & FOS_OVERWRITEPROMPT) params.options |= WINE_NATIVE_FILE_DIALOG_OVERWRITE;
++    if (This->options & FOS_NODEREFERENCELINKS) params.options |= WINE_NATIVE_FILE_DIALOG_NO_ALIASES;
++    params.mode = 1;
++    params.result = WINE_NATIVE_DIALOG_UNAVAILABLE;
++
++    if (!SystemParametersInfoW(SPI_WINE_NATIVE_FILE_DIALOG, 0, &params, 0))
++        hr = E_NOTIMPL;
++    else if (params.result == WINE_NATIVE_DIALOG_CANCELLED)
++        hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
++    else if (params.result == WINE_NATIVE_DIALOG_BUFFER_TOO_SMALL)
++        hr = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
++    else if (params.result != WINE_NATIVE_DIALOG_SUCCESS)
++        hr = E_NOTIMPL;
++    else
++    {
++        hr = native_itemdlg_set_results(This, native_paths, params.path_count,
++                                         sizeof(native_paths), pick_folders);
++        if (SUCCEEDED(hr) && params.filter_index && This->filterspec_count)
++            This->filetypeindex = min(params.filter_index - 1, This->filterspec_count - 1);
++    }
++
++    HeapFree(GetProcessHeap(), 0, directory);
++    free(filter);
++    return hr;
++}
++
+ static HRESULT create_dialog(FileDialogImpl *This, HWND parent)
+ {
+     ULONG_PTR ctx_cookie = 0;
+@@ -2372,6 +2598,12 @@ static HRESULT create_dialog(FileDialogImpl *This, HWND parent)
+     if (This->dlg_hwnd)
+         return E_UNEXPECTED;
+ 
++    {
++        HRESULT native_result = try_native_itemdlg(This, parent);
++        if (native_result != E_NOTIMPL)
++            return native_result;
++    }
++
+     if (!GetCurrentActCtx(&This->user_actctx))
+         This->user_actctx = INVALID_HANDLE_VALUE;
+ 
+diff --git a/dlls/user32/msgbox.c b/dlls/user32/msgbox.c
+index 009f3858c60..b036b2285bb 100644
+--- a/dlls/user32/msgbox.c
++++ b/dlls/user32/msgbox.c
+@@ -41,6 +41,38 @@ struct ThreadWindows
+     HWND *handles;
+ };
+ 
++static BOOL native_ui_component_enabled(const char *component)
++{
++    char environment[256], token[64], *cursor, *end;
++    DWORD length = GetEnvironmentVariableA("MACWIN_NATIVE_UI", environment, ARRAY_SIZE(environment));
++
++    if (!length || length >= ARRAY_SIZE(environment)) return FALSE;
++    cursor = environment;
++    while (*cursor)
++    {
++        while (*cursor == ',' || *cursor == ' ' || *cursor == '\t') cursor++;
++        end = cursor;
++        while (*end && *end != ',') end++;
++        length = min((DWORD)(end - cursor), (DWORD)ARRAY_SIZE(token) - 1);
++        memcpy(token, cursor, length);
++        token[length] = 0;
++        while (length && (token[length - 1] == ' ' || token[length - 1] == '\t')) token[--length] = 0;
++        if (!lstrcmpiA(token, component)) return TRUE;
++        cursor = end;
++    }
++    return FALSE;
++}
++
++static BOOL native_message_box_supported(const MSGBOXPARAMSW *msgbox)
++{
++    UINT unsupported = MB_HELP | MB_USERICON | MB_SERVICE_NOTIFICATION | MB_DEFAULT_DESKTOP_ONLY |
++                       MB_SYSTEMMODAL | MB_TASKMODAL | MB_TOPMOST | MB_RIGHT | MB_RTLREADING;
++
++    return native_ui_component_enabled("alerts") &&
++           !(msgbox->dwStyle & unsupported) && !msgbox->lpfnMsgBoxCallback &&
++           !IS_INTRESOURCE(msgbox->lpszText) && !IS_INTRESOURCE(msgbox->lpszCaption);
++}
++
+ static BOOL CALLBACK MSGBOX_EnumProc(HWND hwnd, LPARAM lParam)
+ {
+     struct ThreadWindows *threadWindows = (struct ThreadWindows *)lParam;
+@@ -523,6 +555,20 @@ INT WINAPI MessageBoxIndirectW( LPMSGBOXPARAMSW msgbox )
+     UINT i;
+     struct ThreadWindows threadWindows;
+ 
++    if (native_message_box_supported(msgbox))
++    {
++        struct wine_native_message_box_params params =
++        {
++            .hwnd = (UINT_PTR)msgbox->hwndOwner,
++            .text = (UINT_PTR)msgbox->lpszText,
++            .title = (UINT_PTR)msgbox->lpszCaption,
++            .type = msgbox->dwStyle,
++        };
++        if (NtUserSystemParametersInfo(SPI_WINE_NATIVE_MESSAGE_BOX, 0, &params, 0) &&
++            params.result != WINE_NATIVE_DIALOG_UNAVAILABLE)
++            return params.result;
++    }
++
+     if (!(hRes = FindResourceExW(user32_module, (LPWSTR)RT_DIALOG, L"MSGBOX", msgbox->dwLanguageId)))
+     {
+         if (!msgbox->dwLanguageId ||
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 2b38ea732ac..c64c1749c19 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -6096,9 +6096,14 @@ BOOL WINAPI NtUserSystemParametersInfo( UINT action, UINT val, void *ptr, UINT w
+         ret = TRUE; \
+         break
+ 
+-    BOOL ret = user_driver->pSystemParametersInfo( action, val, ptr, winini );
++    BOOL ret;
+     unsigned spi_idx = 0;
+ 
++    if (action == SPI_WINE_NATIVE_MESSAGE_BOX || action == SPI_WINE_NATIVE_FILE_DIALOG ||
++        action == SPI_WINE_NATIVE_TASK_DIALOG)
++        init_display_driver();
++    ret = user_driver->pSystemParametersInfo( action, val, ptr, winini );
++
+     if (!ret) switch (action)
+     {
+     case SPI_GETBEEP:
+diff --git a/dlls/winemac.drv/Makefile.in b/dlls/winemac.drv/Makefile.in
+index 576a2fbd0c5..4a049a93bab 100644
+--- a/dlls/winemac.drv/Makefile.in
++++ b/dlls/winemac.drv/Makefile.in
+@@ -13,6 +13,7 @@ UNIX_LIBS    = \
+ 	-framework OpenGL \
+ 	-framework QuartzCore \
+ 	-framework Security \
++	-framework UniformTypeIdentifiers \
+ 
+ VER_FILEDESCRIPTION_STR = "Wine Mac driver"
+ 
+@@ -24,6 +25,7 @@ SOURCES = \
+ 	cocoa_display.m \
+ 	cocoa_event.m \
+ 	cocoa_main.m \
++	cocoa_native_ui.m \
+ 	cocoa_opengl.m \
+ 	cocoa_status_item.m \
+ 	cocoa_window.m \
+diff --git a/dlls/winemac.drv/gdi.c b/dlls/winemac.drv/gdi.c
+index a0f314234b9..1cbecf3fadd 100644
+--- a/dlls/winemac.drv/gdi.c
++++ b/dlls/winemac.drv/gdi.c
+@@ -289,7 +289,6 @@ static const struct user_driver_funcs macdrv_funcs =
+     .pOpenGLInit = macdrv_OpenGLInit,
+ };
+ 
+-
+ void init_user_driver(void)
+ {
+     __wine_set_user_driver( &macdrv_funcs, WINE_GDI_DRIVER_VERSION );
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index 9a91edbe8e3..42b6a16358f 100644
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -64,6 +64,7 @@
+ #endif
+ 
+ #include <pthread.h>
++#include <stdint.h>
+ #include <stdbool.h>
+ 
+ #include "macdrv_res.h"
+@@ -111,6 +112,39 @@
+ struct macdrv_event;
+ struct macdrv_query;
+ 
++#ifndef WINE_NATIVE_FILE_DIALOG_PICK_FOLDERS
++#define WINE_NATIVE_FILE_DIALOG_PICK_FOLDERS  0x00000002
++#define WINE_NATIVE_FILE_DIALOG_MULTI_SELECT  0x00000004
++#define WINE_NATIVE_FILE_DIALOG_OVERWRITE     0x00000008
++#define WINE_NATIVE_FILE_DIALOG_NO_ALIASES    0x00000010
++#endif
++
++#ifndef WINE_NATIVE_TASK_DIALOG_BUTTON_DEFINED
++#define WINE_NATIVE_TASK_DIALOG_BUTTON_DEFINED
++struct wine_native_task_dialog_button
++{
++    uint32_t id;
++    uint32_t reserved;
++    uint64_t text;
++};
++#endif
++
++int macdrv_run_native_message_box(const uint16_t *text, const uint16_t *title, uint32_t type);
++int macdrv_run_native_file_dialog(bool save, const uint16_t *title, const char *directory,
++                                  const uint16_t *name, const uint16_t *filter,
++                                  const uint16_t *default_ext, char *path, uint32_t path_size,
++                                  uint32_t flags, uint32_t options,
++                                  const uint16_t *ok_label, const uint16_t *cancel_label,
++                                  const uint16_t *file_name_label, char *paths,
++                                  uint32_t paths_size, uint32_t *filter_index,
++                                  uint32_t *path_count);
++int macdrv_run_native_task_dialog(const uint16_t *title, const uint16_t *main_instruction,
++                                  const uint16_t *content, const uint16_t *footer,
++                                  const uint16_t *verification_text, uint64_t main_icon,
++                                  const struct wine_native_task_dialog_button *buttons,
++                                  uint32_t button_count, uint32_t default_button, uint32_t flags,
++                                  uint32_t *verification_checked);
++
+ 
+ /* main */
+ extern bool macdrv_err_on;
+diff --git a/dlls/winemac.drv/macdrv_main.c b/dlls/winemac.drv/macdrv_main.c
+index 96168242cc2..b1470f03d90 100644
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -545,6 +545,58 @@ BOOL macdrv_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param,
+ {
+     switch (action)
+     {
++    case SPI_WINE_NATIVE_MESSAGE_BOX:
++        if (ptr_param)
++        {
++            struct wine_native_message_box_params *params = ptr_param;
++            params->result = macdrv_run_native_message_box((const uint16_t *)(UINT_PTR)params->text,
++                                                            (const uint16_t *)(UINT_PTR)params->title,
++                                                            params->type);
++            return TRUE;
++        }
++        break;
++
++    case SPI_WINE_NATIVE_FILE_DIALOG:
++        if (ptr_param)
++        {
++            struct wine_native_file_dialog_params *params = ptr_param;
++            params->result = macdrv_run_native_file_dialog(params->save,
++                                                            (const uint16_t *)(UINT_PTR)params->title,
++                                                            (const char *)(UINT_PTR)params->directory,
++                                                            (const uint16_t *)(UINT_PTR)params->name,
++                                                            (const uint16_t *)(UINT_PTR)params->filter,
++                                                            (const uint16_t *)(UINT_PTR)params->default_ext,
++                                                            (char *)(UINT_PTR)params->path,
++                                                            params->path_size, params->flags,
++                                                            params->options,
++                                                            (const uint16_t *)(UINT_PTR)params->ok_label,
++                                                            (const uint16_t *)(UINT_PTR)params->cancel_label,
++                                                            (const uint16_t *)(UINT_PTR)params->file_name_label,
++                                                            (char *)(UINT_PTR)(params->paths ? params->paths : params->path),
++                                                            params->paths ? params->paths_size : params->path_size,
++                                                            &params->filter_index, &params->path_count);
++            return TRUE;
++        }
++        break;
++
++    case SPI_WINE_NATIVE_TASK_DIALOG:
++        if (ptr_param)
++        {
++            struct wine_native_task_dialog_params *params = ptr_param;
++            params->result = macdrv_run_native_task_dialog(
++                    (const uint16_t *)(UINT_PTR)params->title,
++                    (const uint16_t *)(UINT_PTR)params->main_instruction,
++                    (const uint16_t *)(UINT_PTR)params->content,
++                    (const uint16_t *)(UINT_PTR)params->footer,
++                    (const uint16_t *)(UINT_PTR)params->verification_text,
++                    params->main_icon,
++                    (const struct wine_native_task_dialog_button *)(UINT_PTR)params->buttons,
++                    params->button_count, params->default_button, params->flags,
++                    &params->verification_checked);
++            return TRUE;
++        }
++        break;
++
+     case SPI_GETSCREENSAVEACTIVE:
+         if (ptr_param)
+         {
+diff --git a/include/ntuser.h b/include/ntuser.h
+index d09ddfaaa63..5a5a1c49a94 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -46,6 +46,84 @@ typedef enum MONITOR_DPI_TYPE
+ typedef NTSTATUS (WINAPI *ntuser_callback)( void *args, ULONG len );
+ NTSYSAPI NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len );
+ 
++enum wine_native_dialog_result
++{
++    WINE_NATIVE_DIALOG_UNAVAILABLE,
++    WINE_NATIVE_DIALOG_SUCCESS,
++    WINE_NATIVE_DIALOG_CANCELLED,
++    WINE_NATIVE_DIALOG_BUFFER_TOO_SMALL,
++};
++
++#define SPI_WINE_NATIVE_MESSAGE_BOX 0x10000
++#define SPI_WINE_NATIVE_FILE_DIALOG 0x10001
++#define SPI_WINE_NATIVE_TASK_DIALOG 0x10002
++
++#define WINE_NATIVE_FILE_DIALOG_MODERN        0x00000001
++#define WINE_NATIVE_FILE_DIALOG_PICK_FOLDERS  0x00000002
++#define WINE_NATIVE_FILE_DIALOG_MULTI_SELECT  0x00000004
++#define WINE_NATIVE_FILE_DIALOG_OVERWRITE     0x00000008
++#define WINE_NATIVE_FILE_DIALOG_NO_ALIASES    0x00000010
++
++struct wine_native_message_box_params
++{
++    UINT64 hwnd;
++    UINT64 text;
++    UINT64 title;
++    UINT32 type;
++    INT32 result;
++};
++
++struct wine_native_file_dialog_params
++{
++    UINT64 hwnd;
++    UINT64 title;
++    UINT64 directory;
++    UINT64 name;
++    UINT64 filter;
++    UINT64 default_ext;
++    UINT64 path;
++    UINT32 path_size;
++    UINT32 flags;
++    UINT32 save;
++    UINT32 filter_index;
++    INT32 result;
++    UINT64 ok_label;
++    UINT64 cancel_label;
++    UINT64 file_name_label;
++    UINT64 paths;
++    UINT32 paths_size;
++    UINT32 path_count;
++    UINT32 options;
++    UINT32 mode;
++};
++
++#ifndef WINE_NATIVE_TASK_DIALOG_BUTTON_DEFINED
++#define WINE_NATIVE_TASK_DIALOG_BUTTON_DEFINED
++struct wine_native_task_dialog_button
++{
++    UINT32 id;
++    UINT32 reserved;
++    UINT64 text;
++};
++#endif
++
++struct wine_native_task_dialog_params
++{
++    UINT64 hwnd;
++    UINT64 title;
++    UINT64 main_instruction;
++    UINT64 content;
++    UINT64 footer;
++    UINT64 verification_text;
++    UINT64 main_icon;
++    UINT64 buttons;
++    UINT32 button_count;
++    UINT32 default_button;
++    UINT32 flags;
++    UINT32 verification_checked;
++    INT32 result;
++};
++
+ struct user_entry
+ {
+     ULONG64 offset;   /* shared user object offset */
+diff --git a/dlls/winemac.drv/cocoa_native_ui.m b/dlls/winemac.drv/cocoa_native_ui.m
+new file mode 100644
+index 00000000000..9441a3bd1a8
+--- /dev/null
++++ b/dlls/winemac.drv/cocoa_native_ui.m
+@@ -0,0 +1,527 @@
++/*
++ * Native macOS dialogs for the Mac driver
++ *
++ * Copyright 2026 MacWin contributors
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#import <Cocoa/Cocoa.h>
++#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
++#include "macdrv_cocoa.h"
++#import "cocoa_app.h"
++#import "cocoa_event.h"
++
++#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
++
++enum
++{
++    MACWIN_IDOK = 1,
++    MACWIN_IDCANCEL = 2,
++    MACWIN_IDABORT = 3,
++    MACWIN_IDRETRY = 4,
++    MACWIN_IDIGNORE = 5,
++    MACWIN_IDYES = 6,
++    MACWIN_IDNO = 7,
++    MACWIN_IDTRYAGAIN = 10,
++    MACWIN_IDCONTINUE = 11,
++    MACWIN_MB_TYPEMASK = 0x0f,
++    MACWIN_MB_OKCANCEL = 0x01,
++    MACWIN_MB_ABORTRETRYIGNORE = 0x02,
++    MACWIN_MB_YESNOCANCEL = 0x03,
++    MACWIN_MB_YESNO = 0x04,
++    MACWIN_MB_RETRYCANCEL = 0x05,
++    MACWIN_MB_CANCELTRYCONTINUE = 0x06,
++    MACWIN_MB_ICONMASK = 0xf0,
++    MACWIN_MB_ICONERROR = 0x10,
++    MACWIN_MB_ICONWARNING = 0x30,
++    MACWIN_MB_DEFMASK = 0x300,
++    MACWIN_NATIVE_DIALOG_UNAVAILABLE = 0,
++    MACWIN_NATIVE_DIALOG_SUCCESS = 1,
++    MACWIN_NATIVE_DIALOG_CANCELLED = 2,
++    MACWIN_NATIVE_DIALOG_BUFFER_TOO_SMALL = 3,
++    MACWIN_TDCBF_OK_BUTTON = 0x0001,
++    MACWIN_TDCBF_YES_BUTTON = 0x0002,
++    MACWIN_TDCBF_NO_BUTTON = 0x0004,
++    MACWIN_TDCBF_CANCEL_BUTTON = 0x0008,
++    MACWIN_TDCBF_RETRY_BUTTON = 0x0010,
++    MACWIN_TDCBF_CLOSE_BUTTON = 0x0020,
++    MACWIN_TDF_ALLOW_DIALOG_CANCELLATION = 0x0008,
++};
++
++struct native_button
++{
++    int id;
++    const char *english;
++    const char *chinese;
++};
++
++static NSUInteger utf16_length(const uint16_t *string)
++{
++    const uint16_t *cursor = string;
++    while (*cursor) cursor++;
++    return cursor - string;
++}
++
++static BOOL macwin_is_intresource(const void *value)
++{
++    return (uintptr_t)value <= UINT16_MAX;
++}
++
++static BOOL uses_chinese(void)
++{
++    NSString *language = [[NSLocale preferredLanguages] firstObject];
++    return [language hasPrefix:@"zh"];
++}
++
++static void prepare_native_dialog_window(NSWindow *window)
++{
++    WineApplicationController *controller = [(WineApplication *)NSApp wineController];
++
++    if (!controller) controller = [WineApplicationController sharedController];
++    [controller transformProcessToForeground:YES];
++    [controller tryToActivateIgnoringOtherApps:YES];
++    window.level = NSModalPanelWindowLevel;
++    [window orderFrontRegardless];
++}
++
++static NSString *localized_button_title(const struct native_button *button)
++{
++    return [NSString stringWithUTF8String:uses_chinese() ? button->chinese : button->english];
++}
++
++@interface MacWinFileTypeSelector : NSObject
++{
++    NSSavePanel *panel;
++    NSArray *types;
++    NSUInteger selectedIndex;
++}
++- (id)initWithPanel:(NSSavePanel *)panel types:(NSArray *)types index:(NSUInteger)index;
++- (void)applySelection;
++- (void)selectionChanged:(id)sender;
++- (NSUInteger)selectedIndex;
++@end
++
++@implementation MacWinFileTypeSelector
++
++- (id)initWithPanel:(NSSavePanel *)newPanel types:(NSArray *)newTypes index:(NSUInteger)index
++{
++    self = [super init];
++    if (self)
++    {
++        panel = [newPanel retain];
++        types = [newTypes retain];
++        selectedIndex = index < [types count] ? index : 0;
++        [self applySelection];
++    }
++    return self;
++}
++
++- (void)applySelection
++{
++    NSArray *extensions = [types objectAtIndex:selectedIndex];
++    NSMutableArray *contentTypes = [NSMutableArray array];
++    for (NSString *extension in extensions)
++    {
++        UTType *type = [UTType typeWithFilenameExtension:extension];
++        if (type) [contentTypes addObject:type];
++    }
++    panel.allowedContentTypes = contentTypes;
++    panel.allowsOtherFileTypes = ![contentTypes count];
++}
++
++- (void)selectionChanged:(id)sender
++{
++    NSInteger index = [sender indexOfSelectedItem];
++    if (index < 0 || (NSUInteger)index >= [types count]) return;
++    selectedIndex = index;
++    [self applySelection];
++}
++
++- (NSUInteger)selectedIndex
++{
++    return selectedIndex;
++}
++
++- (void)dealloc
++{
++    [panel release];
++    [types release];
++    [super dealloc];
++}
++
++@end
++
++static BOOL native_file_filter_list(const uint16_t *filter, NSMutableArray *titles,
++                                    NSMutableArray *types)
++{
++    const uint16_t *cursor = filter;
++
++    if (!cursor || !*cursor) return TRUE;
++    while (*cursor)
++    {
++        NSString *title = [NSString stringWithCharacters:cursor length:utf16_length(cursor)];
++        cursor += utf16_length(cursor) + 1;
++        if (!*cursor) return FALSE;
++
++        NSString *specification = [NSString stringWithCharacters:cursor length:utf16_length(cursor)];
++        NSMutableArray *extensions = [NSMutableArray array];
++        BOOL allowsAll = NO;
++        NSArray *patterns = [specification componentsSeparatedByString:@";"];
++        for (NSString *rawPattern in patterns)
++        {
++            NSString *pattern = [rawPattern stringByTrimmingCharactersInSet:
++                                 [NSCharacterSet whitespaceAndNewlineCharacterSet]];
++            if ([pattern isEqualToString:@"*"] || [pattern isEqualToString:@"*.*"])
++            {
++                allowsAll = YES;
++                continue;
++            }
++            if (![pattern hasPrefix:@"*."] || [pattern length] <= 2)
++                return FALSE;
++            NSString *extension = [pattern substringFromIndex:2];
++            if ([extension rangeOfString:@"*"].location != NSNotFound ||
++                [extension rangeOfString:@"?"].location != NSNotFound)
++                return FALSE;
++            [extensions addObject:[extension lowercaseString]];
++        }
++        if (!allowsAll && ![extensions count]) return FALSE;
++        [titles addObject:[title length] ? title : specification];
++        [types addObject:allowsAll ? @[] : extensions];
++        cursor += utf16_length(cursor) + 1;
++    }
++    return [titles count] != 0;
++}
++
++static NSString *native_default_extension(const uint16_t *default_ext)
++{
++    if (!default_ext || !*default_ext) return nil;
++    NSString *extension = [NSString stringWithCharacters:default_ext length:utf16_length(default_ext)];
++    if ([extension hasPrefix:@"."]) extension = [extension substringFromIndex:1];
++    if (![extension length] || [extension rangeOfString:@"*"].location != NSNotFound ||
++        [extension rangeOfString:@"?"].location != NSNotFound)
++        return nil;
++    return extension;
++}
++
++static NSUInteger message_box_buttons(uint32_t type, struct native_button *buttons)
++{
++    switch (type & MACWIN_MB_TYPEMASK)
++    {
++    case MACWIN_MB_OKCANCEL:
++        buttons[0] = (struct native_button){ MACWIN_IDOK, "OK", "确定" };
++        buttons[1] = (struct native_button){ MACWIN_IDCANCEL, "Cancel", "取消" };
++        return 2;
++    case MACWIN_MB_ABORTRETRYIGNORE:
++        buttons[0] = (struct native_button){ MACWIN_IDABORT, "Abort", "中止" };
++        buttons[1] = (struct native_button){ MACWIN_IDRETRY, "Retry", "重试" };
++        buttons[2] = (struct native_button){ MACWIN_IDIGNORE, "Ignore", "忽略" };
++        return 3;
++    case MACWIN_MB_YESNOCANCEL:
++        buttons[0] = (struct native_button){ MACWIN_IDYES, "Yes", "是" };
++        buttons[1] = (struct native_button){ MACWIN_IDNO, "No", "否" };
++        buttons[2] = (struct native_button){ MACWIN_IDCANCEL, "Cancel", "取消" };
++        return 3;
++    case MACWIN_MB_YESNO:
++        buttons[0] = (struct native_button){ MACWIN_IDYES, "Yes", "是" };
++        buttons[1] = (struct native_button){ MACWIN_IDNO, "No", "否" };
++        return 2;
++    case MACWIN_MB_RETRYCANCEL:
++        buttons[0] = (struct native_button){ MACWIN_IDRETRY, "Retry", "重试" };
++        buttons[1] = (struct native_button){ MACWIN_IDCANCEL, "Cancel", "取消" };
++        return 2;
++    case MACWIN_MB_CANCELTRYCONTINUE:
++        buttons[0] = (struct native_button){ MACWIN_IDCANCEL, "Cancel", "取消" };
++        buttons[1] = (struct native_button){ MACWIN_IDTRYAGAIN, "Try Again", "重试" };
++        buttons[2] = (struct native_button){ MACWIN_IDCONTINUE, "Continue", "继续" };
++        return 3;
++    default:
++        buttons[0] = (struct native_button){ MACWIN_IDOK, "OK", "确定" };
++        return 1;
++    }
++}
++
++int macdrv_run_native_message_box(const uint16_t *text, const uint16_t *title, uint32_t type)
++{
++    __block int result = MACWIN_NATIVE_DIALOG_UNAVAILABLE;
++
++    OnMainThread(^{
++        struct native_button native_buttons[3];
++        NSUInteger count = message_box_buttons(type, native_buttons);
++        NSUInteger default_index = (type & MACWIN_MB_DEFMASK) >> 8;
++        NSAlert *alert = [[NSAlert alloc] init];
++
++        alert.messageText = title && *title
++            ? [NSString stringWithCharacters:title length:utf16_length(title)]
++            : [[NSProcessInfo processInfo] processName];
++        alert.informativeText = text && *text
++            ? [NSString stringWithCharacters:text length:utf16_length(text)]
++            : @"";
++
++        switch (type & MACWIN_MB_ICONMASK)
++        {
++        case MACWIN_MB_ICONERROR:
++            alert.alertStyle = NSAlertStyleCritical;
++            break;
++        case MACWIN_MB_ICONWARNING:
++            alert.alertStyle = NSAlertStyleWarning;
++            break;
++        default:
++            alert.alertStyle = NSAlertStyleInformational;
++            break;
++        }
++
++        for (NSUInteger i = 0; i < count; i++)
++        {
++            NSButton *button = [alert addButtonWithTitle:localized_button_title(&native_buttons[i])];
++            button.keyEquivalent = @"";
++            if (native_buttons[i].id == MACWIN_IDCANCEL) button.keyEquivalent = @"\033";
++        }
++        if (default_index >= count) default_index = 0;
++        alert.buttons[default_index].keyEquivalent = @"\r";
++
++        prepare_native_dialog_window(alert.window);
++        NSInteger response = [alert runModal];
++        if (response >= NSAlertFirstButtonReturn &&
++            response < NSAlertFirstButtonReturn + (NSInteger)count)
++            result = native_buttons[response - NSAlertFirstButtonReturn].id;
++
++        [alert release];
++    });
++
++    return result;
++}
++
++int macdrv_run_native_file_dialog(bool save, const uint16_t *title, const char *directory,
++                                  const uint16_t *name, const uint16_t *filter,
++                                  const uint16_t *default_ext, char *path, uint32_t path_size,
++                                  uint32_t flags, uint32_t options,
++                                  const uint16_t *ok_label, const uint16_t *cancel_label,
++                                  const uint16_t *file_name_label, char *paths,
++                                  uint32_t paths_size, uint32_t *filter_index,
++                                  uint32_t *path_count)
++{
++    __block int result = MACWIN_NATIVE_DIALOG_UNAVAILABLE;
++
++    OnMainThread(^{
++        NSSavePanel *panel;
++        NSOpenPanel *open_panel = nil;
++        NSMutableArray *filter_titles = [NSMutableArray array];
++        NSMutableArray *filter_types = [NSMutableArray array];
++        MacWinFileTypeSelector *selector = nil;
++        NSPopUpButton *filter_menu = nil;
++        NSUInteger selected_filter;
++        NSString *extension;
++        BOOL pick_folders = options & WINE_NATIVE_FILE_DIALOG_PICK_FOLDERS;
++        BOOL multi_select = options & WINE_NATIVE_FILE_DIALOG_MULTI_SELECT;
++        NSMutableArray *selected_paths;
++
++        if (save)
++        {
++            if (pick_folders)
++            {
++                result = MACWIN_NATIVE_DIALOG_UNAVAILABLE;
++                return;
++            }
++            panel = [NSSavePanel savePanel];
++        }
++        else
++        {
++            open_panel = [NSOpenPanel openPanel];
++            open_panel.canChooseFiles = !pick_folders;
++            open_panel.canChooseDirectories = pick_folders;
++            open_panel.allowsMultipleSelection = multi_select;
++            open_panel.resolvesAliases = !(options & WINE_NATIVE_FILE_DIALOG_NO_ALIASES);
++            panel = open_panel;
++        }
++
++        panel.allowedContentTypes = @[];
++        panel.allowsOtherFileTypes = YES;
++        if (title && *title)
++            panel.title = [NSString stringWithCharacters:title length:utf16_length(title)];
++        if (ok_label && *ok_label)
++            panel.prompt = [NSString stringWithCharacters:ok_label length:utf16_length(ok_label)];
++        if (file_name_label && *file_name_label && !pick_folders)
++            panel.nameFieldLabel = [NSString stringWithCharacters:file_name_label length:utf16_length(file_name_label)];
++        if (!native_file_filter_list(filter, filter_titles, filter_types))
++        {
++            result = MACWIN_NATIVE_DIALOG_UNAVAILABLE;
++            return;
++        }
++        selected_filter = filter_index && *filter_index ? *filter_index - 1 : 0;
++        if ([filter_types count] && selected_filter >= [filter_types count]) selected_filter = 0;
++        if ([filter_types count])
++        {
++            selector = [[MacWinFileTypeSelector alloc] initWithPanel:panel types:filter_types index:selected_filter];
++            if ([filter_types count] > 1)
++            {
++                filter_menu = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 280, 26)
++                                                       pullsDown:NO];
++                [filter_menu addItemsWithTitles:filter_titles];
++                [filter_menu selectItemAtIndex:selected_filter];
++                [filter_menu setTarget:selector];
++                [filter_menu setAction:@selector(selectionChanged:)];
++                panel.accessoryView = filter_menu;
++                if (open_panel) open_panel.accessoryViewDisclosed = YES;
++            }
++        }
++        if (directory && *directory)
++        {
++            NSString *directory_string = [NSString stringWithUTF8String:directory];
++            if (directory_string) panel.directoryURL = [NSURL fileURLWithPath:directory_string isDirectory:YES];
++        }
++        if (name && *name)
++            panel.nameFieldStringValue = [NSString stringWithCharacters:name length:utf16_length(name)];
++        extension = native_default_extension(default_ext);
++        if (save && extension && panel.nameFieldStringValue.length &&
++            ![panel.nameFieldStringValue pathExtension].length)
++            panel.nameFieldStringValue = [panel.nameFieldStringValue stringByAppendingPathExtension:extension];
++
++        prepare_native_dialog_window(panel);
++        if ([panel runModal] != NSModalResponseOK)
++        {
++            result = MACWIN_NATIVE_DIALOG_CANCELLED;
++            [filter_menu release];
++            [selector release];
++            return;
++        }
++
++        selected_paths = [NSMutableArray array];
++        if (save)
++        {
++            NSString *selected = panel.URL.path;
++            if (selected)
++            {
++                if (extension && ![selected pathExtension].length)
++                    selected = [selected stringByAppendingPathExtension:extension];
++                [selected_paths addObject:selected];
++            }
++        }
++        else
++        {
++            for (NSURL *url in open_panel.URLs)
++                if (url.path) [selected_paths addObject:url.path];
++        }
++        if (![selected_paths count])
++        {
++            [filter_menu release];
++            [selector release];
++            return;
++        }
++
++        NSMutableData *path_data = [NSMutableData data];
++        for (NSString *selected in selected_paths)
++        {
++            const char *selected_path = selected.fileSystemRepresentation;
++            if (!selected_path || path_data.length + strlen(selected_path) + 1 > paths_size)
++            {
++                result = MACWIN_NATIVE_DIALOG_BUFFER_TOO_SMALL;
++                [filter_menu release];
++                [selector release];
++                return;
++            }
++            [path_data appendBytes:selected_path length:strlen(selected_path) + 1];
++        }
++
++        memcpy(paths, path_data.bytes, path_data.length);
++        if (filter_index && selector) *filter_index = (uint32_t)[selector selectedIndex] + 1;
++        if (path_count) *path_count = (uint32_t)[selected_paths count];
++        result = MACWIN_NATIVE_DIALOG_SUCCESS;
++        [filter_menu release];
++        [selector release];
++    });
++
++    return result;
++}
++
++static NSString *native_task_button_title(uint32_t id, const uint16_t *text)
++{
++    if (text && *text)
++        return [NSString stringWithCharacters:text length:utf16_length(text)];
++
++    switch (id)
++    {
++    case MACWIN_IDOK: return uses_chinese() ? @"确定" : @"OK";
++    case MACWIN_IDYES: return uses_chinese() ? @"是" : @"Yes";
++    case MACWIN_IDNO: return uses_chinese() ? @"否" : @"No";
++    case MACWIN_IDCANCEL: return uses_chinese() ? @"取消" : @"Cancel";
++    case MACWIN_IDRETRY: return uses_chinese() ? @"重试" : @"Retry";
++    case 8: return uses_chinese() ? @"关闭" : @"Close";
++    default: return [NSString stringWithFormat:@"%u", id];
++    }
++}
++
++int macdrv_run_native_task_dialog(const uint16_t *title, const uint16_t *main_instruction,
++                                  const uint16_t *content, const uint16_t *footer,
++                                  const uint16_t *verification_text, uint64_t main_icon,
++                                  const struct wine_native_task_dialog_button *buttons,
++                                  uint32_t button_count, uint32_t default_button, uint32_t flags,
++                                  uint32_t *verification_checked)
++{
++    __block int result = 0;
++    const uint16_t *safe_title = title && macwin_is_intresource(title) ? NULL : title;
++
++    OnMainThread(^{
++        NSAlert *alert;
++        NSButton *suppression;
++        int64_t icon = (int64_t)main_icon;
++        NSUInteger default_index = 0;
++
++        if (!buttons || !button_count || button_count > 32)
++            return;
++        alert = [[NSAlert alloc] init];
++        alert.messageText = main_instruction && *main_instruction
++            ? [NSString stringWithCharacters:main_instruction length:utf16_length(main_instruction)]
++            : (safe_title && *safe_title ? [NSString stringWithCharacters:safe_title length:utf16_length(safe_title)] : @"");
++        alert.informativeText = content && *content
++            ? [NSString stringWithCharacters:content length:utf16_length(content)] : @"";
++        if (footer && *footer)
++        {
++            NSString *footer_text = [NSString stringWithCharacters:footer length:utf16_length(footer)];
++            alert.informativeText = alert.informativeText.length
++                ? [alert.informativeText stringByAppendingFormat:@"\n\n%@", footer_text]
++                : footer_text;
++        }
++        if (safe_title && *safe_title) alert.window.title = [NSString stringWithCharacters:safe_title length:utf16_length(safe_title)];
++
++        if (icon == -2) alert.alertStyle = NSAlertStyleCritical;
++        else if (icon == -1) alert.alertStyle = NSAlertStyleWarning;
++        else alert.alertStyle = NSAlertStyleInformational;
++
++        for (NSUInteger i = 0; i < button_count; i++)
++        {
++            const uint16_t *text = buttons[i].text
++                ? (const uint16_t *)(uintptr_t)buttons[i].text : NULL;
++            NSButton *button = [alert addButtonWithTitle:native_task_button_title(buttons[i].id, text)];
++            button.keyEquivalent = @"";
++            if (buttons[i].id == default_button) default_index = i;
++            if (buttons[i].id == MACWIN_IDCANCEL) button.keyEquivalent = @"\033";
++        }
++        if (default_index < alert.buttons.count)
++            alert.buttons[default_index].keyEquivalent = @"\r";
++
++        if (verification_text && *verification_text)
++        {
++            alert.showsSuppressionButton = YES;
++            suppression = alert.suppressionButton;
++            suppression.title = [NSString stringWithCharacters:verification_text length:utf16_length(verification_text)];
++            suppression.state = (flags & 0x0100) ? NSControlStateValueOn : NSControlStateValueOff;
++        }
++
++        prepare_native_dialog_window(alert.window);
++        NSInteger response = [alert runModal];
++        if (response >= NSAlertFirstButtonReturn &&
++            response < NSAlertFirstButtonReturn + (NSInteger)button_count)
++            result = buttons[response - NSAlertFirstButtonReturn].id;
++        else if (flags & MACWIN_TDF_ALLOW_DIALOG_CANCELLATION)
++            result = MACWIN_IDCANCEL;
++        if (verification_checked && verification_text && *verification_text)
++            *verification_checked = alert.suppressionButton.state == NSControlStateValueOn;
++        [alert release];
++    });
++
++    return result;
++}

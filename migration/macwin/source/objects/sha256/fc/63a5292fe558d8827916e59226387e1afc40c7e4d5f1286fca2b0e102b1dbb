@@ -1,0 +1,56 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://main.gd" id="1_script"]
+
+[sub_resource type="Shader" id="Shader_vulkan"]
+code = "shader_type canvas_item;\n\nvoid fragment() {\n    vec2 uv = UV;\n    float band = 0.5 + 0.5 * sin((uv.x + uv.y) * 18.0);\n    vec3 cold = vec3(0.05, 0.32, 0.92);\n    vec3 warm = vec3(0.98, 0.24, 0.18);\n    COLOR = vec4(mix(cold, warm, uv.x) + band * 0.08, 1.0);\n}\n"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_vulkan"]
+shader = SubResource("Shader_vulkan")
+
+[node name="MacWinVulkanSmoke" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="ShaderSurface" type="ColorRect" parent="."]
+material = SubResource("ShaderMaterial_vulkan")
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Panel" type="ColorRect" parent="."]
+layout_mode = 0
+offset_left = 56.0
+offset_top = 54.0
+offset_right = 608.0
+offset_bottom = 238.0
+color = Color(0.025, 0.035, 0.055, 0.88)
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Panel"]
+layout_mode = 0
+offset_left = 28.0
+offset_top = 24.0
+offset_right = 520.0
+offset_bottom = 72.0
+theme_override_font_sizes/font_size = 32
+text = "MacWin Vulkan Forward+"
+
+[node name="Status" type="Label" parent="Panel"]
+layout_mode = 0
+offset_left = 30.0
+offset_top = 92.0
+offset_right = 520.0
+offset_bottom = 140.0
+theme_override_colors/font_color = Color(0.72, 0.88, 1, 1)
+theme_override_font_sizes/font_size = 20
+text = "Compiling shader and reading the frame buffer..."
