@@ -53,6 +53,8 @@ TASK5_CATALOG_INDEX = f"{TASK5_CATALOG_ROOT}/catalog.index.json"
 TASK5_CATALOG_SIGNATURE = f"{TASK5_CATALOG_ROOT}/catalog.signature.json"
 MAX_TASK5_DOCUMENT_BYTES = 1024 * 1024
 MAX_ORDINARY_SCAN_BYTES = 32 * 1024 * 1024
+MAX_ORDINARY_SCAN_ENTRIES = 100_000
+MAX_ORDINARY_SCAN_TOTAL_BYTES = 1024 * 1024 * 1024
 DEVELOPER_PATH_VALIDATION_ERROR = "Repository developer-path validation failed"
 
 
@@ -431,7 +433,11 @@ class _OrdinaryFileBinding:
             ],
         ] = {}
         self.leaves: dict[
-            Path, tuple[bytes, tuple[int, int, int, int, int, int]]
+            Path, tuple[tuple[int, int], tuple[int, int, int, int, int, int]]
+        ] = {}
+        self.contents: dict[
+            tuple[int, int],
+            tuple[bytes | None, bytes, tuple[int, int, int, int, int, int], Path],
         ] = {}
 
     def add_directory(
@@ -456,7 +462,34 @@ class _OrdinaryFileBinding:
         absolute = path.absolute()
         if absolute in self.leaves:
             raise _DeveloperPathScanError()
-        self.leaves[absolute] = (hashlib.sha256(raw).digest(), identity)
+        key = identity[:2]
+        existing = self.contents.get(key)
+        if existing is None:
+            self.contents[key] = (
+                raw if identity[3] > 1 else None,
+                hashlib.sha256(raw).digest(),
+                identity,
+                absolute,
+            )
+        elif existing[1:3] != (hashlib.sha256(raw).digest(), identity):
+            raise _DeveloperPathScanError()
+        self.leaves[absolute] = (key, identity)
+
+    def add_alias(
+        self,
+        path: Path,
+        identity: tuple[int, int, int, int, int, int],
+    ) -> bytes:
+        absolute = path.absolute()
+        key = identity[:2]
+        existing = self.contents.get(key)
+        if absolute in self.leaves or existing is None or existing[2] != identity:
+            raise _DeveloperPathScanError()
+        self.leaves[absolute] = (key, identity)
+        raw = existing[0]
+        if raw is None:
+            raise _DeveloperPathScanError()
+        return raw
 
     def _revalidate_directories(self) -> None:
         for path in sorted(
@@ -469,8 +502,8 @@ class _OrdinaryFileBinding:
 
     def revalidate(self) -> None:
         self._revalidate_directories()
-        for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
-            expected_digest, expected_identity = self.leaves[path]
+        for key in sorted(self.contents):
+            _raw, expected_digest, expected_identity, path = self.contents[key]
             try:
                 raw, identity = _read_bound_regular_file(
                     path,
@@ -482,6 +515,18 @@ class _OrdinaryFileBinding:
             if (
                 identity != expected_identity
                 or hashlib.sha256(raw).digest() != expected_digest
+            ):
+                raise _DeveloperPathScanError()
+        for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
+            _key, expected_identity = self.leaves[path]
+            try:
+                _validate_bound_path_chain(path)
+                metadata = path.lstat()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                raise _DeveloperPathScanError() from None
+            if (
+                _ordinary_entry_kind(metadata) != "regular"
+                or _filesystem_identity(metadata) != expected_identity
             ):
                 raise _DeveloperPathScanError()
         self._revalidate_directories()
@@ -731,25 +776,39 @@ def _scan_developer_paths(
     errors: list[str] = []
     ordinary_binding = _OrdinaryFileBinding()
     forbidden = ("/Users/a1-6/", "/home/a1-6/")
+    paths: list[Path] = []
     try:
-        paths = sorted(ROOT.rglob("*"))
+        for path in ROOT.rglob("*"):
+            if ".git" in path.parts:
+                continue
+            if len(paths) >= MAX_ORDINARY_SCAN_ENTRIES:
+                raise _DeveloperPathScanError()
+            paths.append(path)
+        paths.sort()
+    except _DeveloperPathScanError:
+        raise
     except OSError:
         raise _DeveloperPathScanError() from None
-    entries: list[tuple[Path, str]] = []
+    entries: list[tuple[Path, str, tuple[int, int, int, int, int, int] | None]] = []
     expected_children: dict[Path, list[tuple[str, str]]] = {
         ROOT.absolute(): []
     }
     for path in paths:
-        if ".git" in path.parts:
-            continue
         try:
-            kind = _ordinary_entry_kind(path.lstat())
+            metadata = path.lstat()
+            kind = _ordinary_entry_kind(metadata)
         except _DeveloperPathScanError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError):
             raise _DeveloperPathScanError() from None
         absolute = path.absolute()
-        entries.append((absolute, kind))
+        entries.append(
+            (
+                absolute,
+                kind,
+                _filesystem_identity(metadata) if kind == "regular" else None,
+            )
+        )
         expected_children.setdefault(absolute.parent, []).append(
             (absolute.name, kind)
         )
@@ -767,7 +826,8 @@ def _scan_developer_paths(
         )
         ordinary_binding.add_directory(directory, expected)
 
-    for path, kind in entries:
+    unique_bytes = 0
+    for path, kind, enumerated_identity in entries:
         if kind == "directory":
             continue
         if source_binding is not None and source_binding.contains(path):
@@ -778,15 +838,34 @@ def _scan_developer_paths(
             continue
         if path == Path(__file__).absolute():
             continue
-        try:
-            raw, identity = _read_bound_regular_file(
-                path,
-                MAX_ORDINARY_SCAN_BYTES,
-                require_single_link=False,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError):
-            raise _DeveloperPathScanError() from None
-        ordinary_binding.add(path, raw, identity)
+        if enumerated_identity is None:
+            raise _DeveloperPathScanError()
+        key = enumerated_identity[:2]
+        if key in ordinary_binding.contents:
+            try:
+                _validate_bound_path_chain(path)
+                current = path.lstat()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                raise _DeveloperPathScanError() from None
+            identity = _filesystem_identity(current)
+            if _ordinary_entry_kind(current) != "regular" or identity != enumerated_identity:
+                raise _DeveloperPathScanError()
+            raw = ordinary_binding.add_alias(path, identity)
+        else:
+            unique_bytes += enumerated_identity[2]
+            if unique_bytes > MAX_ORDINARY_SCAN_TOTAL_BYTES:
+                raise _DeveloperPathScanError()
+            try:
+                raw, identity = _read_bound_regular_file(
+                    path,
+                    MAX_ORDINARY_SCAN_BYTES,
+                    require_single_link=False,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                raise _DeveloperPathScanError() from None
+            if identity != enumerated_identity:
+                raise _DeveloperPathScanError()
+            ordinary_binding.add(path, raw, identity)
         try:
             content = raw.decode("utf-8")
         except UnicodeDecodeError:

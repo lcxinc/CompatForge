@@ -2732,6 +2732,60 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 self.skipTest(f"hardlink unavailable: {error}")
             self.assertEqual(validator.validate_no_developer_paths(), [])
 
+    def test_ordinary_scan_reads_each_unique_hardlink_inode_only_twice(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            source = temporary_root / "ordinary-hardlink-00.bin"
+            source.write_bytes(b"x" * (1024 * 1024))
+            try:
+                for index in range(1, 65):
+                    os.link(source, temporary_root / f"ordinary-hardlink-{index:02d}.bin")
+            except OSError as error:
+                self.skipTest(f"hardlink unavailable: {error}")
+            original_reader = validator._read_bound_regular_file
+            reads = 0
+
+            def count_reads(path: Path, maximum: int, *, require_single_link=True):
+                nonlocal reads
+                if path.name.startswith("ordinary-hardlink-"):
+                    reads += 1
+                return original_reader(
+                    path, maximum, require_single_link=require_single_link
+                )
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator, "_read_bound_regular_file", count_reads
+            ):
+                errors, binding = validator._scan_developer_paths(None, None)
+                binding.revalidate()
+            self.assertEqual(errors, [])
+            self.assertLessEqual(reads, 2)
+
+    def test_ordinary_scan_entry_and_unique_byte_limits_fail_closed(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        for case in ("entries", "bytes"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-task5-validator-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                if case == "entries":
+                    for index in range(3):
+                        (temporary_root / f"safe-{index}.txt").write_text(
+                            "x", encoding="utf-8", newline="\n"
+                        )
+                    patches = {"MAX_ORDINARY_SCAN_ENTRIES": 2}
+                else:
+                    (temporary_root / "safe.txt").write_bytes(b"12345")
+                    patches = {"MAX_ORDINARY_SCAN_TOTAL_BYTES": 4}
+                validator.ROOT = temporary_root
+                with mock.patch.multiple(validator, **patches):
+                    with self.assertRaises(validator._DeveloperPathScanError):
+                        validator._scan_developer_paths(None, None)
+
     def test_repository_validator_stably_accepts_complete_fixture_twenty_four_times(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(
@@ -2858,7 +2912,10 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                     result = original_reader(
                         path, maximum, require_single_link=False
                     )
-                if path.absolute() == target.absolute() and not injected:
+                if path.absolute() in {
+                    alias.absolute(),
+                    target.absolute(),
+                } and not injected:
                     alias.write_bytes(hostile)
                     os.utime(
                         alias,
