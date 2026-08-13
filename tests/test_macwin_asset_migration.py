@@ -8445,10 +8445,11 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         )
         self.assertEqual((pre_capture.returncode, pre_capture.stdout, pre_capture.stderr), (250, b"", b""))
 
-        for size, expected_code in ((1024 * 1024, 0), (1024 * 1024 + 1, 250)):
+        for excess, expected_code in ((0, 0), (1, 250)):
             prefix = (
                 "import os,runpy\n"
-                f"def bounded(*args,**kwargs):os.write(1,b'X'*{size})\n"
+                "def bounded(*args,**kwargs):"
+                f"os.write(1,b'X'*(1048576-len(str(os.getpid()))-1+{excess}))\n"
                 "runpy.run_path=bounded\n"
             )
             completed = subprocess.run(
@@ -8464,12 +8465,13 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 timeout=30,
                 close_fds=True,
             )
-            with self.subTest(output_size=size):
+            with self.subTest(excess=excess):
                 self.assertEqual(completed.returncode, expected_code)
                 if expected_code == 0:
                     _pid, separator, payload = completed.stdout.partition(b"\n")
                     self.assertEqual(separator, b"\n")
-                    self.assertEqual(payload, b"X" * size)
+                    self.assertEqual(len(completed.stdout), 1024 * 1024)
+                    self.assertEqual(payload, b"X" * len(payload))
                 else:
                     self.assertEqual((completed.stdout, completed.stderr), (b"", b""))
 
@@ -8497,6 +8499,44 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             (normalized.returncode, normalized.stdout, normalized.stderr),
             (1, b"", b"isolated process failed\n"),
         )
+
+        class BrokenStream:
+            def __init__(self, *, fail_read: bool) -> None:
+                self.fail_read = fail_read
+                self.reads = 0
+
+            def read(self, _size: int) -> bytes:
+                self.reads += 1
+                if self.reads == 1:
+                    return b"123\n" if self.fail_read else b""
+                raise OSError("HOSTILE-READ")
+
+            def close(self) -> None:
+                if not self.fail_read:
+                    raise OSError("HOSTILE-CLOSE")
+
+        class FakeProcess:
+            def __init__(self, broken: BrokenStream) -> None:
+                self.stdout = broken
+                self.stderr = io.BytesIO()
+                self.kills = 0
+
+            def kill(self) -> None:
+                self.kills += 1
+
+            def wait(self, timeout=None) -> int:
+                return 0
+
+        for fail_read in (True, False):
+            fake = FakeProcess(BrokenStream(fail_read=fail_read))
+            with mock.patch.object(subprocess, "Popen", return_value=fake):
+                normalized = self._run_audited(command, report_process_id=True)
+            with self.subTest(reader_failure="read" if fail_read else "close"):
+                self.assertGreaterEqual(fake.kills, 1)
+                self.assertEqual(
+                    (normalized.returncode, normalized.stdout, normalized.stderr),
+                    (1, b"", b"isolated process failed\n"),
+                )
 
         for expression, expected_code in (
             ("SystemExit(None)", 0),
@@ -9859,9 +9899,11 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 " os.close(saved_out);os.close(saved_err);saved_out=saved_err=None\n"
                 " out_thread.join();err_thread.join()\n"
                 " if overflow[0]:fixed=True\n"
+                " pid=(str(os.getpid())+'\\n').encode('ascii')\n"
+                " if len(pid)+sum(map(len,out_chunks))>LIMIT:fixed=True\n"
                 " if fixed:os._exit(FAIL)\n"
                 " if code==0:\n"
-                "  os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
+                "  os.write(1,pid)\n"
                 "  os.write(1,b''.join(out_chunks));os.write(2,b''.join(err_chunks))\n"
                 " os._exit(code)\n"
                 "except BaseException:\n"
@@ -9924,8 +9966,15 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                             process.kill()
                         elif not overflow.is_set():
                             chunks[index].append(raw)
+                except BaseException:
+                    overflow.set()
+                    process.kill()
                 finally:
-                    stream.close()
+                    try:
+                        stream.close()
+                    except BaseException:
+                        overflow.set()
+                        process.kill()
 
             readers = tuple(
                 threading.Thread(target=drain, args=(index,)) for index in (0, 1)
