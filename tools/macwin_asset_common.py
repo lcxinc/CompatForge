@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import NoReturn
 
 
@@ -122,11 +123,43 @@ def _validate_json_strings(value: object) -> None:
             pending.extend(current.values())
 
 
-def _encoded_json_string(value: str) -> bytes:
-    try:
-        return json.encoder.encode_basestring(value).encode("utf-8", errors="strict")
-    except (UnicodeEncodeError, ValueError, OverflowError):
-        _fail("canonical JSON contains a non-Unicode scalar")
+def _emit_json_string(value: str, emit: Callable[[bytes], None]) -> None:
+    """Emit one JSON string without allocating its complete encoded form."""
+
+    escapes = {
+        '"': b'\\"',
+        "\\": b"\\\\",
+        "\b": b"\\b",
+        "\f": b"\\f",
+        "\n": b"\\n",
+        "\r": b"\\r",
+        "\t": b"\\t",
+    }
+    chunk = bytearray(b'"')
+
+    def flush() -> None:
+        if chunk:
+            emit(bytes(chunk))
+            chunk.clear()
+
+    for character in value:
+        encoded = escapes.get(character)
+        if encoded is None:
+            codepoint = ord(character)
+            if codepoint < 0x20:
+                encoded = f"\\u{codepoint:04x}".encode("ascii")
+            else:
+                try:
+                    encoded = character.encode("utf-8", errors="strict")
+                except UnicodeEncodeError:
+                    _fail("canonical JSON contains a non-Unicode scalar")
+        if len(chunk) + len(encoded) > 4096:
+            flush()
+        chunk.extend(encoded)
+    if len(chunk) == 4096:
+        flush()
+    chunk.extend(b'"')
+    flush()
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -160,7 +193,7 @@ def canonical_json_bytes(value: object) -> bytes:
                     _fail("canonical JSON contains an out-of-range integer")
                 emit(str(current).encode("ascii"))
             elif current_type is str:
-                emit(_encoded_json_string(current))
+                _emit_json_string(current, emit)
             elif current_type in (list, dict):
                 identity = id(current)
                 if identity in active:
@@ -216,7 +249,9 @@ def canonical_json_bytes(value: object) -> bytes:
                 if index:
                     emit(b",\n")
                 key = keys[index]
-                emit((b" " * (2 * depth)) + _encoded_json_string(key) + b": ")
+                emit(b" " * (2 * depth))
+                _emit_json_string(key, emit)
+                emit(b": ")
                 stack.append(("object", current, keys, index + 1, depth))
                 stack.append(("value", current[key], depth))
 
@@ -244,15 +279,16 @@ def require_relative_posix_path(value: str) -> str:
         or any(character in '<>"|?*' for character in value)
     ):
         _fail("path is not a safe relative POSIX path")
-    reserved = {"CON", "PRN", "AUX", "NUL"}
-    reserved.update(f"COM{number}" for number in range(1, 10))
-    reserved.update(f"LPT{number}" for number in range(1, 10))
+    reserved = {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    reserved.update(f"com{number}" for number in range(1, 10))
+    reserved.update(f"lpt{number}" for number in range(1, 10))
     for part in value.split("/"):
+        device_stem = part.split(".", 1)[0].split(":", 1)[0].rstrip(" ").casefold()
         if (
             part in ("", ".", "..")
             or len(part.encode("utf-8")) > 255
             or part.endswith((".", " "))
-            or part.split(".", 1)[0].upper() in reserved
+            or device_stem in reserved
         ):
             _fail("path is not a safe relative POSIX path")
     return value

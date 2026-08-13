@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import copy
 import hashlib
@@ -7,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -172,6 +174,13 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
             "folder/PRN.log",
             "folder/aux",
             "folder/NUL.txt",
+            "CON .txt",
+            "folder/NUL .txt",
+            "COM1 .x",
+            "folder/LPT1 .x",
+            "CONIN$",
+            "conin$.txt",
+            "folder/CONOUT$ .log",
             "COM1/file",
             "folder/lpt9.bin",
             "folder/name.",
@@ -266,6 +275,68 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
         finally:
             tracemalloc.stop()
         self.assertLess(peak, 8 * common.MAX_METADATA_BYTES)
+
+    def test_canonical_json_streams_oversized_strings_with_bounded_memory(self) -> None:
+        common = _load_macwin_asset_common()
+        values = (
+            "a" * (8 * common.MAX_METADATA_BYTES),
+            "\n" * common.MAX_METADATA_BYTES,
+        )
+        for value in values:
+            with self.subTest(character=repr(value[0])), mock.patch.object(
+                common.json.encoder,
+                "encode_basestring",
+                side_effect=AssertionError("unbounded string encoder called"),
+            ):
+                tracemalloc.start()
+                try:
+                    with self.assertRaises(common.MigrationError):
+                        common.canonical_json_bytes(value)
+                    _current, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+                self.assertLess(peak, 4 * common.MAX_METADATA_BYTES)
+
+    def test_canonical_json_matches_stdlib_for_allowed_fuzz_values(self) -> None:
+        common = _load_macwin_asset_common()
+        generator = random.Random(20260813)
+        scalars: list[object] = [
+            None,
+            False,
+            True,
+            -7,
+            0,
+            42,
+            "",
+            "plain",
+            "quote\"slash\\controls\n\t\x00",
+            "".join(chr(codepoint) for codepoint in range(0x20))
+            + '"\\\x7f\u2028',
+            "雪😀",
+        ]
+        values: list[object] = [*scalars, [], {}, [1, "two", None]]
+        for _ in range(100):
+            keys = generator.sample(("a", "b", "é", "雪", "quote\""), 3)
+            values.append(
+                {
+                    keys[0]: generator.choice(scalars),
+                    keys[1]: [generator.choice(scalars), generator.choice(scalars)],
+                    keys[2]: {"nested": generator.choice(scalars)},
+                }
+            )
+        for value in values:
+            with self.subTest(value=repr(value)[:80]):
+                expected = (
+                    json.dumps(
+                        value,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+                self.assertEqual(common.canonical_json_bytes(value), expected)
 
     def test_errors_are_single_line_stable_and_do_not_reflect_input(self) -> None:
         common = _load_macwin_asset_common()
@@ -364,29 +435,23 @@ class MigrationSchemaTests(unittest.TestCase):
                 self.assertIsNone(pattern.fullmatch(value), (name, value))
 
     def test_schema_patterns_use_absolute_end_and_reject_hostile_tail(self) -> None:
-        from jsonschema import Draft202012Validator
-
         for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
             schema = self._schema(name)
-            Draft202012Validator.check_schema(schema)
             for location, node in self._walk_schema(schema):
                 pattern = node.get("pattern")
                 if pattern is None:
                     continue
                 with self.subTest(schema=name, location=location):
                     self.assertFalse(pattern.endswith("$"))
-                    validator = Draft202012Validator(node)
                     valid = self._valid_pattern_value(location, pattern)
-                    self.assertFalse(list(validator.iter_errors(valid)), (location, valid))
+                    self.assertIsNotNone(re.search(pattern, valid), (location, valid))
                     for suffix in ("\n", "\r", "\x00"):
-                        self.assertTrue(
-                            list(validator.iter_errors(valid + suffix)),
+                        self.assertIsNone(
+                            re.search(pattern, valid + suffix),
                             (location, repr(valid + suffix)),
                         )
 
     def test_complete_schema_instances_reject_pattern_tail_mutants(self) -> None:
-        from jsonschema import Draft202012Validator
-
         instances = self._complete_schema_instances()
         mutations = {
             "macwin-source-pack.schema.json": lambda value: value.__setitem__(
@@ -409,17 +474,16 @@ class MigrationSchemaTests(unittest.TestCase):
             ),
         }
         for name, value in instances.items():
-            validator = Draft202012Validator(self._schema(name))
+            schema = self._schema(name)
             with self.subTest(schema=name, case="valid"):
-                self.assertFalse(list(validator.iter_errors(value)))
+                self._assert_schema_instance_valid(value, schema, schema)
             mutant = copy.deepcopy(value)
             mutations[name](mutant)
             with self.subTest(schema=name, case="tail-mutant"):
-                self.assertTrue(list(validator.iter_errors(mutant)))
+                with self.assertRaises(AssertionError):
+                    self._assert_schema_instance_valid(mutant, schema, schema)
 
     def test_schema_paths_match_portable_windows_segment_rules(self) -> None:
-        from jsonschema import Draft202012Validator
-
         valid = ("safe/path.txt", ("a" * 255) + "/file")
         invalid = (
             "CON",
@@ -427,6 +491,13 @@ class MigrationSchemaTests(unittest.TestCase):
             "folder/PRN.log",
             "folder/aux",
             "folder/NUL.txt",
+            "CON .txt",
+            "folder/NUL .txt",
+            "COM1 .x",
+            "folder/LPT1 .x",
+            "CONIN$",
+            "conin$.txt",
+            "folder/CONOUT$ .log",
             "COM1/file",
             "folder/lpt9.bin",
             "folder/name.",
@@ -443,13 +514,23 @@ class MigrationSchemaTests(unittest.TestCase):
         for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
             schema = self._schema(name)
             contract = schema["$defs"]["relativePath"]
-            validator = Draft202012Validator(contract)
             for value in valid:
                 with self.subTest(schema=name, valid=value[:20]):
-                    self.assertFalse(list(validator.iter_errors(value)))
+                    self._assert_schema_instance_valid(value, contract, schema)
             for value in invalid:
                 with self.subTest(schema=name, invalid=value[:20]):
-                    self.assertTrue(list(validator.iter_errors(value)))
+                    with self.assertRaises(AssertionError):
+                        self._assert_schema_instance_valid(value, contract, schema)
+
+    def test_schema_boundary_oracle_uses_only_the_standard_library(self) -> None:
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".", 1)[0])
+        self.assertNotIn("jsonschema", imported)
 
     def test_source_pack_contract_captures_source_identities_and_dependencies(self) -> None:
         schema = self._schema("macwin-source-pack.schema.json")
@@ -674,6 +755,118 @@ class MigrationSchemaTests(unittest.TestCase):
         elif isinstance(node, list):
             for index, value in enumerate(node):
                 yield from cls._walk_schema(value, f"{location}/{index}")
+
+    @classmethod
+    def _assert_schema_instance_valid(
+        cls,
+        value: object,
+        schema: dict[str, object],
+        root: dict[str, object],
+    ) -> None:
+        reference = schema.get("$ref")
+        if reference is not None:
+            if not isinstance(reference, str) or not reference.startswith("#/"):
+                raise AssertionError("schema oracle only accepts local references")
+            target: object = root
+            for component in reference[2:].split("/"):
+                if not isinstance(target, dict) or component not in target:
+                    raise AssertionError("schema oracle reference does not resolve")
+                target = target[component]
+            if not isinstance(target, dict):
+                raise AssertionError("schema oracle reference target is not an object")
+            cls._assert_schema_instance_valid(value, target, root)
+            return
+
+        if "const" in schema and value != schema["const"]:
+            raise AssertionError("const mismatch")
+        if "enum" in schema and value not in schema["enum"]:
+            raise AssertionError("enum mismatch")
+
+        declared_type = schema.get("type")
+        if declared_type is not None:
+            allowed = declared_type if isinstance(declared_type, list) else [declared_type]
+            if not any(cls._matches_json_type(value, candidate) for candidate in allowed):
+                raise AssertionError("type mismatch")
+
+        if isinstance(value, str):
+            if len(value) < schema.get("minLength", 0):
+                raise AssertionError("string is too short")
+            if len(value) > schema.get("maxLength", len(value)):
+                raise AssertionError("string is too long")
+            pattern = schema.get("pattern")
+            if pattern is not None and re.search(pattern, value) is None:
+                raise AssertionError("pattern mismatch")
+        elif type(value) is int:
+            if value < schema.get("minimum", value):
+                raise AssertionError("integer is too small")
+            if value > schema.get("maximum", value):
+                raise AssertionError("integer is too large")
+        elif isinstance(value, list):
+            if len(value) < schema.get("minItems", 0):
+                raise AssertionError("array is too short")
+            if len(value) > schema.get("maxItems", len(value)):
+                raise AssertionError("array is too long")
+            if schema.get("uniqueItems"):
+                rendered = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in value]
+                if len(rendered) != len(set(rendered)):
+                    raise AssertionError("array items are not unique")
+            item_schema = schema.get("items")
+            if isinstance(item_schema, dict):
+                for item in value:
+                    cls._assert_schema_instance_valid(item, item_schema, root)
+        elif isinstance(value, dict):
+            required = schema.get("required", [])
+            if any(field not in value for field in required):
+                raise AssertionError("required property is absent")
+            properties = schema.get("properties", {})
+            if not isinstance(properties, dict):
+                raise AssertionError("properties contract is malformed")
+            for key, item in value.items():
+                property_schema = properties.get(key)
+                if isinstance(property_schema, dict):
+                    cls._assert_schema_instance_valid(item, property_schema, root)
+                elif schema.get("additionalProperties") is False:
+                    raise AssertionError("additional property is forbidden")
+                elif isinstance(schema.get("additionalProperties"), dict):
+                    cls._assert_schema_instance_valid(
+                        item, schema["additionalProperties"], root
+                    )
+            dependent = schema.get("dependentRequired", {})
+            for field, dependencies in dependent.items():
+                if field in value and any(dependency not in value for dependency in dependencies):
+                    raise AssertionError("dependent property is absent")
+
+        for conditional in schema.get("allOf", []):
+            condition = conditional.get("if")
+            if isinstance(condition, dict) and cls._schema_matches(value, condition, root):
+                consequence = conditional.get("then")
+                if isinstance(consequence, dict):
+                    cls._assert_schema_instance_valid(value, consequence, root)
+
+    @classmethod
+    def _schema_matches(
+        cls,
+        value: object,
+        schema: dict[str, object],
+        root: dict[str, object],
+    ) -> bool:
+        try:
+            cls._assert_schema_instance_valid(value, schema, root)
+        except AssertionError:
+            return False
+        return True
+
+    @staticmethod
+    def _matches_json_type(value: object, declared: object) -> bool:
+        return {
+            "null": value is None,
+            "boolean": type(value) is bool,
+            "integer": type(value) is int,
+            "number": type(value) in (int, float),
+            "string": type(value) is str,
+            "array": type(value) is list,
+            "object": type(value) is dict,
+        }.get(declared, False)
 
     @staticmethod
     def _valid_pattern_value(location: str, pattern: str) -> str:
