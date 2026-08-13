@@ -25,6 +25,8 @@ if os.name == "nt":
 
 ROOT = Path(os.path.abspath(__file__)).parent.parent
 SOURCE_PACK_RELATIVE = PurePosixPath("migration/macwin/source")
+GENERATED_ROOT = "migration/macwin/generated"
+GENERATED_INDEX_PATH = f"{GENERATED_ROOT}/index.json"
 
 APPROVED_REPOSITORY = "a1112/Mac-Win"
 APPROVED_SOURCE_TAG = "mw-migration-baseline-db12d5e"
@@ -808,7 +810,7 @@ def build_conversion(repository_root: Path) -> ConversionResult:
 
 
 def render_documents(result: ConversionResult) -> dict[str, bytes]:
-    """Render the closed Task 5/6 outputs without writing output files."""
+    """Render and seal the complete deterministic generated document graph."""
 
     _bootstrap_dependencies()
     _validate_conversion_result(result)
@@ -945,7 +947,323 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
             documents[relative] = _COMMON.canonical_json_bytes(document)
     except _COMMON.MigrationError:
         _fail("catalog outputs cannot be rendered")
-    return documents
+    root = _render_generated_root_index(documents, result)
+    try:
+        documents[GENERATED_INDEX_PATH] = _COMMON.canonical_json_bytes(root)
+    except _COMMON.MigrationError:
+        _fail("generated root index cannot be rendered")
+    ordered = {
+        path: documents[path]
+        for path in sorted(documents, key=lambda value: value.encode("ascii"))
+    }
+    validate_generated_graph(ordered, source_pack)
+    return ordered
+
+
+def _graph_document_kind(path: str) -> str:
+    if path == f"{GENERATED_ROOT}/catalog.json":
+        return "catalog"
+    if path == f"{GENERATED_ROOT}/quarantine.json":
+        return "quarantine"
+    if path.startswith(f"{GENERATED_ROOT}/mappings/"):
+        return "deferred-mapping"
+    if path.startswith(f"{GENERATED_ROOT}/recipes/"):
+        return "recipe"
+    if path.startswith(f"{GENERATED_ROOT}/probes/content/") or path.startswith(
+        f"{GENERATED_ROOT}/fixtures/content/"
+    ):
+        return "portable-content"
+    if path.startswith(f"{GENERATED_ROOT}/probes/"):
+        return "portable-probe"
+    if path.startswith(f"{GENERATED_ROOT}/fixtures/"):
+        return "portable-fixture"
+    _fail("generated document path is invalid")
+
+
+def _graph_references(
+    path: str,
+    raw: bytes,
+    portable_paths: dict[str, str],
+) -> list[str]:
+    references: list[str] = []
+    if path == f"{GENERATED_ROOT}/catalog.json":
+        try:
+            value = _COMMON.parse_json_bytes(raw, label="generated catalog")
+        except _COMMON.MigrationError:
+            _fail("generated graph JSON is invalid")
+        if type(value) is not dict or type(value.get("candidates")) is not list:
+            _fail("generated catalog graph is invalid")
+        for candidate in value["candidates"]:
+            if type(candidate) is not dict:
+                _fail("generated catalog graph is invalid")
+            if candidate.get("status") == "converted":
+                recipe_path = candidate.get("recipePath")
+                if type(recipe_path) is not str:
+                    _fail("generated catalog graph is invalid")
+                references.append(recipe_path)
+    elif _graph_document_kind(path) in {"portable-probe", "portable-fixture"}:
+        try:
+            value = _COMMON.parse_json_bytes(raw, label="portable asset manifest")
+        except _COMMON.MigrationError:
+            _fail("generated graph JSON is invalid")
+        if (
+            type(value) is not dict
+            or type(value.get("contentPath")) is not str
+            or type(value.get("referencedAssetIds")) is not list
+        ):
+            _fail("portable asset graph is invalid")
+        references.append(value["contentPath"])
+        for identifier in value["referencedAssetIds"]:
+            if type(identifier) is not str or identifier not in portable_paths:
+                _fail("portable asset graph is invalid")
+            references.append(portable_paths[identifier])
+    return sorted(references, key=lambda value: value.encode("ascii"))
+
+
+def _record_output_path(
+    record: ConversionRecord,
+    assets: dict[str, SourceAsset],
+) -> str:
+    if record.output_kind == "catalog-boundary":
+        return f"{GENERATED_ROOT}/catalog.json"
+    if record.status == "quarantined":
+        return f"{GENERATED_ROOT}/quarantine.json"
+    if record.output_kind == "patch-mapping":
+        return f"{GENERATED_ROOT}/mappings/patches.json"
+    if record.output_kind == "bottle-schema-mapping":
+        return f"{GENERATED_ROOT}/mappings/bottle-schemas.json"
+    if record.output_kind == "recipe" and record.status == "converted":
+        source = _parse_json_object(assets[record.source_path])
+        identifier = source.get("id")
+        if type(identifier) is not str:
+            _fail("generated Recipe graph identity is invalid")
+        return f"{GENERATED_ROOT}/recipes/{identifier}.json"
+    if record.output_kind in {"portable-probe", "portable-fixture"}:
+        asset = assets[record.source_path]
+        manifest = _portable_document(asset, record)
+        category = "probes" if record.category == "probes" else "fixtures"
+        return f"{GENERATED_ROOT}/{category}/{manifest['id']}.json"
+    _fail("generated record output is invalid")
+
+
+def _expected_graph_records(result: ConversionResult) -> list[dict[str, object]]:
+    assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    records = []
+    for record in sorted(
+        result.records, key=lambda item: item.source_path.encode("ascii")
+    ):
+        records.append(
+            {
+                "sourcePath": record.source_path,
+                "sourceCommit": record.source_commit,
+                "sourceSha256": record.source_sha256,
+                "category": record.category,
+                "status": record.status,
+                "documentPath": _record_output_path(record, assets),
+            }
+        )
+    return records
+
+
+def _portable_manifest_paths(
+    documents: dict[str, bytes],
+) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    for path, raw in documents.items():
+        kind = _graph_document_kind(path)
+        if kind not in {"portable-probe", "portable-fixture"}:
+            continue
+        try:
+            value = _COMMON.parse_json_bytes(raw, label="portable asset manifest")
+        except _COMMON.MigrationError:
+            _fail("generated graph JSON is invalid")
+        identifier = value.get("id") if type(value) is dict else None
+        if type(identifier) is not str or identifier in paths:
+            _fail("portable asset graph identity is invalid")
+        paths[identifier] = path
+    return paths
+
+
+def _render_generated_root_index(
+    documents: dict[str, bytes], result: ConversionResult
+) -> dict[str, object]:
+    """Build the root seal only after every dependent byte string exists."""
+
+    portable_paths = _portable_manifest_paths(documents)
+    entries = [
+        {
+            "path": path,
+            "kind": _graph_document_kind(path),
+            "byteSize": len(documents[path]),
+            "sha256": hashlib.sha256(documents[path]).hexdigest(),
+            "references": _graph_references(path, documents[path], portable_paths),
+        }
+        for path in sorted(documents, key=lambda value: value.encode("ascii"))
+    ]
+    status_counts = {status: 0 for status in sorted(STATUSES)}
+    for record in result.records:
+        status_counts[record.status] += 1
+    source_pack = result.source_pack
+    return {
+        "schemaVersion": "1",
+        "source": {
+            "repository": source_pack.repository,
+            "sourceTag": source_pack.source_tag,
+            "sourceTagObject": source_pack.source_tag_object,
+            "sourceCommit": source_pack.source_commit,
+            "inventoryCommit": source_pack.inventory_commit,
+            "digestAlgorithm": source_pack.digest_algorithm,
+        },
+        "recordCount": len(result.records),
+        "categoryCounts": {
+            "bottleSchema": dict(source_pack.category_counts)["bottle-schema"],
+            "catalog": dict(source_pack.category_counts)["catalog"],
+            "fixtures": dict(source_pack.category_counts)["fixtures"],
+            "patches": dict(source_pack.category_counts)["patches"],
+            "probes": dict(source_pack.category_counts)["probes"],
+        },
+        "statusCounts": status_counts,
+        "documentCount": len(entries),
+        "documents": entries,
+        "records": _expected_graph_records(result),
+    }
+
+
+def validate_generated_graph(
+    documents: dict[str, bytes], source_pack: SourcePack
+) -> None:
+    """Validate a complete graph independently from the rendering entrypoint."""
+
+    _bootstrap_dependencies()
+    _validate_source_pack_model(source_pack)
+    if type(documents) is not dict or GENERATED_INDEX_PATH not in documents:
+        _fail("generated graph set is invalid")
+    if any(type(path) is not str or type(raw) is not bytes for path, raw in documents.items()):
+        _fail("generated graph set is invalid")
+    if list(documents) != sorted(documents, key=lambda value: value.encode("ascii")):
+        _fail("generated graph order is invalid")
+    leaves = {path: raw for path, raw in documents.items() if path != GENERATED_INDEX_PATH}
+    if not leaves:
+        _fail("generated graph is empty")
+    for path, raw in documents.items():
+        try:
+            _COMMON.require_relative_posix_path(path)
+        except _COMMON.MigrationError:
+            _fail("generated graph path is invalid")
+        if not path.startswith(f"{GENERATED_ROOT}/"):
+            _fail("generated graph path is invalid")
+        if path.endswith(".json"):
+            if len(raw) > _COMMON.MAX_METADATA_BYTES:
+                _fail("generated graph JSON is oversized")
+            try:
+                value = _COMMON.parse_json_bytes(raw, label="generated graph JSON")
+                if _COMMON.canonical_json_bytes(value) != raw:
+                    _fail("generated graph JSON is not canonical")
+            except _COMMON.MigrationError:
+                _fail("generated graph JSON is invalid")
+    try:
+        root = _COMMON.parse_json_bytes(
+            documents[GENERATED_INDEX_PATH], label="generated root index"
+        )
+    except _COMMON.MigrationError:
+        _fail("generated root index is invalid")
+    root_fields = {
+        "schemaVersion",
+        "source",
+        "recordCount",
+        "categoryCounts",
+        "statusCounts",
+        "documentCount",
+        "documents",
+        "records",
+    }
+    if type(root) is not dict or set(root) != root_fields:
+        _fail("generated root index fields are invalid")
+    result = classify_source_pack(source_pack)
+    expected_root = _render_generated_root_index(leaves, result)
+    if root != expected_root:
+        _fail("generated root index semantics are invalid")
+    entries = root["documents"]
+    if type(entries) is not list or len(entries) != len(leaves):
+        _fail("generated document index is invalid")
+    indexed_paths: list[str] = []
+    edges: dict[str, tuple[str, ...]] = {}
+    for entry in entries:
+        if type(entry) is not dict or set(entry) != {
+            "path", "kind", "byteSize", "sha256", "references"
+        }:
+            _fail("generated document record is invalid")
+        path = entry["path"]
+        references = entry["references"]
+        if (
+            type(path) is not str
+            or path not in leaves
+            or type(entry["byteSize"]) is not int
+            or type(entry["sha256"]) is not str
+            or _HEX_64.fullmatch(entry["sha256"]) is None
+            or type(references) is not list
+            or any(type(reference) is not str for reference in references)
+            or references
+            != sorted(set(references), key=lambda value: value.encode("ascii"))
+            or any(reference not in leaves for reference in references)
+        ):
+            _fail("generated document record is invalid")
+        indexed_paths.append(path)
+        edges[path] = tuple(references)
+    if indexed_paths != sorted(leaves, key=lambda value: value.encode("ascii")):
+        _fail("generated document coverage is invalid")
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(path: str) -> None:
+        if path in visiting:
+            _fail("generated document graph is circular")
+        if path in visited:
+            return
+        visiting.add(path)
+        for reference in edges[path]:
+            visit(reference)
+        visiting.remove(path)
+        visited.add(path)
+
+    for path in indexed_paths:
+        visit(path)
+    if visited != set(leaves):
+        _fail("generated document graph is incomplete")
+
+    try:
+        catalog = _COMMON.parse_json_bytes(
+            leaves[f"{GENERATED_ROOT}/catalog.json"], label="generated catalog"
+        )
+        quarantine = _COMMON.parse_json_bytes(
+            leaves[f"{GENERATED_ROOT}/quarantine.json"], label="generated quarantine"
+        )
+        mappings = {
+            path: _COMMON.parse_json_bytes(leaves[path], label="deferred mapping")
+            for path in (
+                f"{GENERATED_ROOT}/mappings/patches.json",
+                f"{GENERATED_ROOT}/mappings/bottle-schemas.json",
+            )
+        }
+    except (KeyError, _COMMON.MigrationError):
+        _fail("generated graph contract documents are invalid")
+    _validate_task5_documents(catalog, quarantine, result)
+    _validate_task6_documents(mappings, leaves, result)
+    assets = {asset.source_path: asset for asset in source_pack.assets}
+    for record in result.records:
+        if record.output_kind == "recipe" and record.status == "converted":
+            path = _record_output_path(record, assets)
+            try:
+                expected = _COMMON.canonical_json_bytes(
+                    _render_reviewed_recipe(
+                        assets[record.source_path],
+                        _parse_json_object(assets[record.source_path]),
+                    )
+                )
+            except _COMMON.MigrationError:
+                _fail("generated Recipe graph is invalid")
+            if leaves.get(path) != expected:
+                _fail("generated Recipe graph is invalid")
 
 
 def _portable_document(

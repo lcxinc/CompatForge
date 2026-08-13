@@ -48,7 +48,12 @@ TASK6_DOCUMENT_PATHS = frozenset(
         "migration/macwin/generated/mappings/bottle-schemas.json",
     }
 )
-GENERATED_EVIDENCE_PATHS = TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS
+TASK7_DOCUMENT_PATHS = frozenset(
+    {"migration/macwin/generated/index.json"}
+)
+GENERATED_EVIDENCE_PATHS = (
+    TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS | TASK7_DOCUMENT_PATHS
+)
 TASK5_DOCUMENT_SHA256 = {
     "migration/macwin/generated/catalog.json": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
     "migration/macwin/generated/quarantine.json": "cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b",
@@ -56,6 +61,9 @@ TASK5_DOCUMENT_SHA256 = {
 TASK6_DOCUMENT_SHA256 = {
     "migration/macwin/generated/mappings/patches.json": "c4505c787005d962af5fae3f715f2e7856bbbe790283a21bde75cf214f8a61e2",
     "migration/macwin/generated/mappings/bottle-schemas.json": "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb",
+}
+TASK7_DOCUMENT_SHA256 = {
+    "migration/macwin/generated/index.json": "b77ab1cb7ca2ec91aa09c6a8891df94a02089d46ad44122783f72c7735bad761",
 }
 TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
 TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
@@ -314,7 +322,7 @@ def _read_bound_regular_file(
 
 
 class _GeneratedEvidenceBinding:
-    """Bind exact Task 5 output paths to converter-rebuilt canonical bytes."""
+    """Bind the exact Task 7 generated graph to converter-rebuilt bytes."""
 
     def __init__(
         self,
@@ -424,6 +432,7 @@ def _bind_exact_generated_tree(
     expected = {
         generated_root: (
             ("catalog.json", "regular"),
+            ("index.json", "regular"),
             ("mappings", "directory"),
             ("quarantine.json", "regular"),
         ),
@@ -902,6 +911,118 @@ def _independent_task6_oracle(
             raise ValueError("Task 6 quarantine semantics are invalid")
 
 
+def _independent_task7_oracle(
+    source_binding: object,
+    documents: dict[str, bytes],
+) -> None:
+    """Independently authenticate the fixed real Task 7 root seal."""
+
+    if type(documents) is not dict or set(documents) != GENERATED_EVIDENCE_PATHS:
+        raise ValueError("generated graph set is invalid")
+    raw = documents["migration/macwin/generated/index.json"]
+    if hashlib.sha256(raw).hexdigest() != TASK7_DOCUMENT_SHA256[
+        "migration/macwin/generated/index.json"
+    ]:
+        raise ValueError("Task 7 generated graph digest is invalid")
+    root = _canonical_task5_json(raw)
+    manifest = source_binding.manifest
+    assets = manifest.get("assets") if type(manifest) is dict else None
+    if type(assets) is not list or len(assets) != 90:
+        raise ValueError("Task 7 source coverage is invalid")
+    expected_source = {
+        "repository": TASK5_SOURCE_REPOSITORY,
+        "sourceTag": "mw-migration-baseline-db12d5e",
+        "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+        "sourceCommit": TASK5_SOURCE_COMMIT,
+        "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+        "digestAlgorithm": "sha256",
+    }
+    expected_document_kinds = {
+        "migration/macwin/generated/catalog.json": "catalog",
+        "migration/macwin/generated/mappings/bottle-schemas.json": "deferred-mapping",
+        "migration/macwin/generated/mappings/patches.json": "deferred-mapping",
+        "migration/macwin/generated/quarantine.json": "quarantine",
+    }
+    expected_documents = [
+        {
+            "path": path,
+            "kind": expected_document_kinds[path],
+            "byteSize": len(documents[path]),
+            "sha256": hashlib.sha256(documents[path]).hexdigest(),
+            "references": [],
+        }
+        for path in sorted(expected_document_kinds, key=lambda value: value.encode("ascii"))
+    ]
+    expected_records: list[dict[str, object]] = []
+    category_counts = {
+        "bottle-schema": 0,
+        "catalog": 0,
+        "fixtures": 0,
+        "patches": 0,
+        "probes": 0,
+    }
+    status_counts = {"converted": 0, "deferred": 0, "quarantined": 0}
+    for asset in sorted(assets, key=lambda item: item["sourcePath"].encode("ascii")):
+        if type(asset) is not dict:
+            raise ValueError("Task 7 source identity is invalid")
+        category = asset.get("category")
+        path = asset.get("sourcePath")
+        if category not in category_counts or type(path) is not str:
+            raise ValueError("Task 7 source identity is invalid")
+        category_counts[category] += 1
+        if path in {TASK5_CATALOG_INDEX, TASK5_CATALOG_SIGNATURE}:
+            status = "converted"
+            document_path = "migration/macwin/generated/catalog.json"
+        elif category == "catalog" or category in {"fixtures", "probes"}:
+            status = "quarantined"
+            document_path = "migration/macwin/generated/quarantine.json"
+        elif category == "patches":
+            status = "deferred"
+            document_path = "migration/macwin/generated/mappings/patches.json"
+        elif category == "bottle-schema":
+            status = "deferred"
+            document_path = "migration/macwin/generated/mappings/bottle-schemas.json"
+        else:
+            raise ValueError("Task 7 source classification is invalid")
+        status_counts[status] += 1
+        expected_records.append(
+            {
+                "sourcePath": path,
+                "sourceCommit": asset.get("sourceCommit"),
+                "sourceSha256": asset.get("sha256"),
+                "category": category,
+                "status": status,
+                "documentPath": document_path,
+            }
+        )
+    if (
+        set(root)
+        != {
+            "schemaVersion", "source", "recordCount", "categoryCounts",
+            "statusCounts", "documentCount", "documents", "records",
+        }
+        or root.get("schemaVersion") != "1"
+        or root.get("source") != expected_source
+        or root.get("recordCount") != 90
+        or root.get("categoryCounts")
+        != {
+            "bottleSchema": 4,
+            "catalog": 19,
+            "fixtures": 30,
+            "patches": 11,
+            "probes": 26,
+        }
+        or category_counts
+        != {"bottle-schema": 4, "catalog": 19, "fixtures": 30, "patches": 11, "probes": 26}
+        or root.get("statusCounts") != status_counts
+        or status_counts != {"converted": 2, "deferred": 15, "quarantined": 73}
+        or root.get("documentCount") != 4
+        or root.get("documents") != expected_documents
+        or root.get("records") != expected_records
+    ):
+        raise ValueError("Task 7 generated graph semantics are invalid")
+
+
 def _validated_macwin_generated_evidence_binding(source_binding: object) -> tuple[
     _GeneratedEvidenceBinding | None, list[str]
 ]:
@@ -946,7 +1067,8 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             {relative: committed[relative] for relative in TASK5_DOCUMENT_PATHS},
         )
         _independent_task6_oracle(source_binding, committed)
-        if len(leaves) != 4:
+        _independent_task7_oracle(source_binding, committed)
+        if len(leaves) != 5:
             raise ValueError("generated evidence leaf set is invalid")
         binding = _GeneratedEvidenceBinding(
             generated_root,

@@ -1903,6 +1903,7 @@ class MacWinConversionModelTests(unittest.TestCase):
                 "migration/macwin/generated/quarantine.json",
                 "migration/macwin/generated/mappings/patches.json",
                 "migration/macwin/generated/mappings/bottle-schemas.json",
+                "migration/macwin/generated/index.json",
             },
         )
 
@@ -2157,6 +2158,7 @@ class MacWinConversionModelTests(unittest.TestCase):
                 "migration/macwin/generated/quarantine.json",
                 "migration/macwin/generated/mappings/patches.json",
                 "migration/macwin/generated/mappings/bottle-schemas.json",
+                "migration/macwin/generated/index.json",
             },
         )
         common = _load_macwin_asset_common()
@@ -2441,6 +2443,7 @@ class MacWinPortableAssetTests(unittest.TestCase):
         validator = MigrationLayoutTests._load_repository_validator()
         fixed = (
             "catalog.json",
+            "index.json",
             "quarantine.json",
             "mappings/patches.json",
             "mappings/bottle-schemas.json",
@@ -2922,6 +2925,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 quarantine_path,
                 "migration/macwin/generated/mappings/patches.json",
                 "migration/macwin/generated/mappings/bottle-schemas.json",
+                "migration/macwin/generated/index.json",
             },
         )
         catalog = self.common.parse_json_bytes(
@@ -3019,6 +3023,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 "migration/macwin/generated/mappings/patches.json",
                 "migration/macwin/generated/mappings/bottle-schemas.json",
                 recipe_path,
+                "migration/macwin/generated/index.json",
             },
         )
         self.assertEqual(documents, self.converter.render_documents(result))
@@ -3526,10 +3531,11 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             any(
                 "/probes/" in path
                 or "/fixtures/" in path
-                or path.endswith("/index.json")
+                or "/recipes/" in path
                 for path in documents
             )
         )
+        self.assertIn("migration/macwin/generated/index.json", documents)
         self.assertEqual(
             {path for path in documents if "/mappings/" in path},
             {
@@ -4161,7 +4167,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         shutil.copytree(ROOT / "migration/macwin/source", source)
         generated = temporary_root / "migration/macwin/generated"
         generated.mkdir()
-        for name in ("catalog.json", "quarantine.json"):
+        for name in ("catalog.json", "index.json", "quarantine.json"):
             shutil.copyfile(ROOT / "migration/macwin/generated" / name, generated / name)
         mappings = generated / "mappings"
         mappings.mkdir()
@@ -4248,6 +4254,223 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         return converter.classify_source_pack(
             dataclasses.replace(source_pack, assets=assets)
         )
+
+
+class MacWinGeneratedGraphTests(unittest.TestCase):
+    INDEX_PATH = "migration/macwin/generated/index.json"
+    EXPECTED_LEAVES = {
+        "migration/macwin/generated/catalog.json",
+        "migration/macwin/generated/mappings/bottle-schemas.json",
+        "migration/macwin/generated/mappings/patches.json",
+        "migration/macwin/generated/quarantine.json",
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.common = _load_macwin_asset_common()
+        cls.result = cls.converter.build_conversion(ROOT)
+
+    def test_root_index_seals_exact_real_source_and_output_coverage(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        self.assertEqual(set(documents), self.EXPECTED_LEAVES | {self.INDEX_PATH})
+        root = self._parse_root(documents)
+        self.assertEqual(
+            set(root),
+            {
+                "schemaVersion",
+                "source",
+                "recordCount",
+                "categoryCounts",
+                "statusCounts",
+                "documentCount",
+                "documents",
+                "records",
+            },
+        )
+        self.assertEqual(
+            root["source"],
+            {
+                "repository": "a1112/Mac-Win",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "digestAlgorithm": "sha256",
+            },
+        )
+        self.assertEqual(root["recordCount"], 90)
+        self.assertEqual(
+            root["categoryCounts"],
+            {
+                "bottleSchema": 4,
+                "catalog": 19,
+                "fixtures": 30,
+                "patches": 11,
+                "probes": 26,
+            },
+        )
+        self.assertEqual(
+            root["statusCounts"],
+            {"converted": 2, "deferred": 15, "quarantined": 73},
+        )
+        self.assertEqual(root["documentCount"], 4)
+        self.assertEqual(
+            [entry["path"] for entry in root["documents"]],
+            sorted(self.EXPECTED_LEAVES, key=lambda value: value.encode("ascii")),
+        )
+        self.assertEqual(
+            [record["sourcePath"] for record in root["records"]],
+            sorted(
+                (asset.source_path for asset in self.result.source_pack.assets),
+                key=lambda value: value.encode("ascii"),
+            ),
+        )
+        self.converter.validate_generated_graph(documents, self.result.source_pack)
+
+    def test_every_leaf_is_canonical_bounded_and_sealed_once(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        root = self._parse_root(documents)
+        entries = root["documents"]
+        self.assertEqual(len(entries), len({entry["path"] for entry in entries}))
+        for entry in entries:
+            with self.subTest(path=entry["path"]):
+                self.assertEqual(
+                    set(entry), {"path", "kind", "byteSize", "sha256", "references"}
+                )
+                raw = documents[entry["path"]]
+                self.assertLessEqual(len(raw), self.common.MAX_METADATA_BYTES)
+                self.assertEqual(entry["byteSize"], len(raw))
+                self.assertEqual(entry["sha256"], hashlib.sha256(raw).hexdigest())
+                value = self.common.parse_json_bytes(raw, label="generated graph leaf")
+                self.assertEqual(raw, self.common.canonical_json_bytes(value))
+                self.assertEqual(
+                    entry["references"],
+                    sorted(set(entry["references"]), key=lambda value: value.encode("ascii")),
+                )
+
+    def test_every_source_identity_has_one_exact_provenanced_graph_record(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        root = self._parse_root(documents)
+        assets = {asset.source_path: asset for asset in self.result.source_pack.assets}
+        records = root["records"]
+        self.assertEqual(len(records), 90)
+        self.assertEqual(len({record["sourcePath"] for record in records}), 90)
+        for record in records:
+            with self.subTest(source=record["sourcePath"]):
+                self.assertEqual(
+                    set(record),
+                    {
+                        "sourcePath",
+                        "sourceCommit",
+                        "sourceSha256",
+                        "category",
+                        "status",
+                        "documentPath",
+                    },
+                )
+                asset = assets[record["sourcePath"]]
+                self.assertEqual(record["sourceCommit"], asset.source_commit)
+                self.assertEqual(record["sourceSha256"], asset.sha256)
+                self.assertEqual(record["category"], asset.category)
+                self.assertIn(record["documentPath"], self.EXPECTED_LEAVES)
+
+    def test_graph_rejects_missing_extra_reordered_modified_and_stale_seals(self) -> None:
+        original = self.converter.render_documents(self.result)
+        root = self._parse_root(original)
+        catalog = "migration/macwin/generated/catalog.json"
+        cases: dict[str, dict[str, bytes]] = {}
+        cases["missing"] = {key: value for key, value in original.items() if key != catalog}
+        cases["extra"] = {**original, "migration/macwin/generated/extra.json": b"{}\n"}
+        reordered = copy.deepcopy(root)
+        reordered["documents"] = list(reversed(reordered["documents"]))
+        cases["reordered"] = {**original, self.INDEX_PATH: self.common.canonical_json_bytes(reordered)}
+        cases["modified"] = {**original, catalog: original[catalog][:-2] + b" \n"}
+        stale = copy.deepcopy(root)
+        stale["documents"][0]["sha256"] = "0" * 64
+        cases["stale"] = {**original, self.INDEX_PATH: self.common.canonical_json_bytes(stale)}
+        unknown = copy.deepcopy(root)
+        unknown["future"] = False
+        cases["unknown"] = {**original, self.INDEX_PATH: self.common.canonical_json_bytes(unknown)}
+        for name, documents in cases.items():
+            with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
+                self.converter.validate_generated_graph(documents, self.result.source_pack)
+
+    def test_dangling_duplicate_and_circular_references_reject(self) -> None:
+        original = self.converter.render_documents(self.result)
+        root = self._parse_root(original)
+        paths = [entry["path"] for entry in root["documents"]]
+        mutations = {}
+        dangling = copy.deepcopy(root)
+        dangling["documents"][0]["references"] = [
+            "migration/macwin/generated/missing.json"
+        ]
+        mutations["dangling"] = dangling
+        duplicate = copy.deepcopy(root)
+        duplicate["documents"][0]["references"] = [paths[1], paths[1]]
+        mutations["duplicate"] = duplicate
+        circular = copy.deepcopy(root)
+        circular["documents"][0]["references"] = [paths[1]]
+        circular["documents"][1]["references"] = [paths[0]]
+        mutations["circular"] = circular
+        for name, mutant in mutations.items():
+            documents = {
+                **original,
+                self.INDEX_PATH: self.common.canonical_json_bytes(mutant),
+            }
+            with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
+                self.converter.validate_generated_graph(documents, self.result.source_pack)
+
+    def test_self_consistent_resealed_semantic_forgery_rejects(self) -> None:
+        original = self.converter.render_documents(self.result)
+        quarantine_path = "migration/macwin/generated/quarantine.json"
+        forged_quarantine = self.common.parse_json_bytes(
+            original[quarantine_path], label="forged quarantine"
+        )
+        forged_quarantine["records"][0]["releaseCondition"] = "forged"
+        forged_raw = self.common.canonical_json_bytes(forged_quarantine)
+        root = self._parse_root(original)
+        entry = next(item for item in root["documents"] if item["path"] == quarantine_path)
+        entry["byteSize"] = len(forged_raw)
+        entry["sha256"] = hashlib.sha256(forged_raw).hexdigest()
+        documents = {
+            **original,
+            quarantine_path: forged_raw,
+            self.INDEX_PATH: self.common.canonical_json_bytes(root),
+        }
+        with self.assertRaises(self.converter.ConversionError):
+            self.converter.validate_generated_graph(documents, self.result.source_pack)
+
+    def test_whole_file_seal_mutation_flips_every_byte_of_every_json(self) -> None:
+        original = self.converter.render_documents(self.result)
+        for path, raw in original.items():
+            with self.subTest(path=path):
+                self.assertTrue(path.endswith(".json"))
+                mutant = bytes(value ^ 1 for value in raw)
+                self.assertEqual(len(mutant), len(raw))
+                self.assertTrue(all(left != right for left, right in zip(raw, mutant)))
+                documents = {**original, path: mutant}
+                with self.assertRaises(self.converter.ConversionError):
+                    self.converter.validate_generated_graph(
+                        documents, self.result.source_pack
+                    )
+
+    def test_committed_generated_set_exactly_matches_renderer(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        committed = {
+            path.relative_to(ROOT).as_posix(): path.read_bytes()
+            for path in (ROOT / "migration/macwin/generated").rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(committed, documents)
+
+    def _parse_root(self, documents: dict[str, bytes]) -> dict[str, object]:
+        value = self.common.parse_json_bytes(
+            documents[self.INDEX_PATH], label="generated root index"
+        )
+        self.assertIs(type(value), dict)
+        self.assertEqual(documents[self.INDEX_PATH], self.common.canonical_json_bytes(value))
+        return value
 
 
 class MigrationLayoutTests(unittest.TestCase):
