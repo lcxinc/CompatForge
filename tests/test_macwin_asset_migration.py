@@ -2229,6 +2229,101 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             draft["compatibility"]["warnings"], source["warnings"]
         )
 
+    def test_complete_reviewed_candidate_renders_a_schema_valid_recipe(self) -> None:
+        result = self._synthetic_reviewed_recipe_result()
+        documents = self.converter.render_documents(result)
+        recipe_path = "migration/macwin/generated/recipes/7zip.json"
+        self.assertEqual(
+            set(documents),
+            {
+                "migration/macwin/generated/catalog.json",
+                "migration/macwin/generated/quarantine.json",
+                recipe_path,
+            },
+        )
+        self.assertEqual(documents, self.converter.render_documents(result))
+        self.assertFalse((ROOT / PurePosixPath(recipe_path)).exists())
+
+        catalog = self.common.parse_json_bytes(
+            documents["migration/macwin/generated/catalog.json"],
+            label="synthetic catalog",
+        )
+        self.assertEqual(catalog["convertedCount"], 1)
+        self.assertEqual(catalog["quarantinedCount"], 16)
+        converted = next(
+            entry for entry in catalog["candidates"] if entry["status"] == "converted"
+        )
+        self.assertEqual(converted["recipePath"], recipe_path)
+        self.assertEqual(
+            converted["recipeSha256"], hashlib.sha256(documents[recipe_path]).hexdigest()
+        )
+
+        recipe = self.common.parse_json_bytes(
+            documents[recipe_path], label="synthetic recipe"
+        )
+        self.assertEqual(recipe["metadata"]["license"], "LGPL-2.1-or-later")
+        self.assertEqual(
+            recipe["tests"],
+            [
+                {
+                    "expected": {"exitCode": 0},
+                    "id": "launch-smoke",
+                    "kind": "process-exit",
+                    "timeoutSeconds": 120,
+                }
+            ],
+        )
+        recipe_asset = next(
+            asset for asset in result.source_pack.assets if asset.source_path.endswith(
+                "/recipes/7zip.json"
+            )
+        )
+        self.assertEqual(
+            recipe["provenance"],
+            {
+                "sourceCommit": recipe_asset.source_commit,
+                "sourcePath": recipe_asset.source_path,
+                "sourceRepository": result.source_pack.repository,
+                "sourceSha256": recipe_asset.sha256,
+            },
+        )
+        recipe_schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
+        MigrationSchemaTests._assert_schema_instance_valid(
+            recipe, recipe_schema, recipe_schema
+        )
+
+    def test_reviewed_candidate_missing_evidence_fails_closed(self) -> None:
+        cases = {
+            "tests": (
+                "unsupported-schema",
+                lambda source, asset: (source.pop("tests"), None)[1],
+            ),
+            "license": (
+                "missing-license",
+                lambda source, asset: (source.pop("license"), None)[1],
+            ),
+            "provenance": (
+                "missing-provenance",
+                lambda source, asset: {"provenance_status": "unresolved"},
+            ),
+            "unknown-test-field": (
+                "unsupported-schema",
+                lambda source, asset: source["tests"][0].__setitem__(
+                    "shell", "host-command"
+                ),
+            ),
+        }
+        for name, (expected_reason, mutation) in cases.items():
+            with self.subTest(case=name):
+                result = self._synthetic_reviewed_recipe_result(mutation)
+                record = next(
+                    record
+                    for record in result.records
+                    if record.source_path.endswith("/recipes/7zip.json")
+                )
+                self.assertEqual(record.status, "quarantined")
+                self.assertEqual(record.reason, expected_reason)
+
     def test_environment_and_launcher_maps_are_sorted(self) -> None:
         asset = self._recipe_asset("firefox")
         source = self.converter._parse_json_object(asset)
@@ -2288,7 +2383,11 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 )
 
         provenance_only = dataclasses.replace(asset, license_status="reviewed")
-        findings = self.converter._recipe_findings(provenance_only, base)
+        source_with_license = copy.deepcopy(base)
+        source_with_license["license"] = "reviewed-license"
+        findings = self.converter._recipe_findings(
+            provenance_only, source_with_license
+        )
         self.assertEqual(
             self.converter._select_recipe_reason(findings), "missing-provenance"
         )
@@ -2866,6 +2965,70 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         suffix = f"/recipes/{identifier}.json"
         return next(
             asset for asset in self.result.source_pack.assets if asset.source_path.endswith(suffix)
+        )
+
+    def _synthetic_reviewed_recipe_result(self, mutation=None):
+        converter = self.converter
+        source_pack = self.result.source_pack
+        recipe_asset = self._recipe_asset("7zip")
+        source = converter._parse_json_object(recipe_asset)
+        source["license"] = "LGPL-2.1-or-later"
+        source["tests"] = [
+            {
+                "expected": {"exitCode": 0},
+                "id": "launch-smoke",
+                "kind": "process-exit",
+                "timeoutSeconds": 120,
+            }
+        ]
+        asset_changes = {
+            "development_dependencies": (),
+            "external_refs": (),
+            "license_status": "reviewed",
+            "provenance_status": "reviewed",
+        }
+        if mutation is not None:
+            changes = mutation(source, recipe_asset)
+            if changes is not None:
+                asset_changes.update(changes)
+        recipe_raw = self.common.canonical_json_bytes(source)
+        recipe_digest = hashlib.sha256(recipe_raw).hexdigest()
+        replacement = dataclasses.replace(
+            recipe_asset,
+            raw=recipe_raw,
+            byte_size=len(recipe_raw),
+            sha256=recipe_digest,
+            git_blob_oid=converter._git_blob_oid(recipe_raw),
+            object_path=(
+                f"objects/sha256/{recipe_digest[:2]}/{recipe_digest[2:]}"
+            ),
+            **asset_changes,
+        )
+
+        index_asset = self.assets[converter.CATALOG_INDEX_PATH]
+        index = converter._parse_json_object(index_asset)
+        index_entry = next(entry for entry in index["recipes"] if entry["id"] == "7zip")
+        index_entry["sha256"] = recipe_digest
+        index_raw = self.common.canonical_json_bytes(index)
+        index_digest = hashlib.sha256(index_raw).hexdigest()
+        index_replacement = dataclasses.replace(
+            index_asset,
+            raw=index_raw,
+            byte_size=len(index_raw),
+            sha256=index_digest,
+            git_blob_oid=converter._git_blob_oid(index_raw),
+            object_path=f"objects/sha256/{index_digest[:2]}/{index_digest[2:]}",
+        )
+        assets = tuple(
+            replacement
+            if asset.source_path == recipe_asset.source_path
+            else index_replacement
+            if asset.source_path == index_asset.source_path
+            else asset
+            for asset in source_pack.assets
+        )
+        return converter.classify_source_pack(
+            dataclasses.replace(source_pack, assets=assets)
         )
 
 

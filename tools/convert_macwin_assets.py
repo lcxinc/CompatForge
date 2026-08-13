@@ -100,6 +100,11 @@ RECIPE_TOP_LEVEL_FIELDS = frozenset(
         "warnings",
     }
 )
+REVIEWED_RECIPE_TOP_LEVEL_FIELDS = RECIPE_TOP_LEVEL_FIELDS | {"license", "tests"}
+RECIPE_TEST_FIELDS = frozenset({"expected", "id", "kind", "timeoutSeconds"})
+RECIPE_TEST_KINDS = frozenset(
+    {"manual", "process-exit", "screenshot", "script", "window-visible"}
+)
 RECIPE_RELEASE_CONDITIONS = {
     "absolute-path": "Replace host-absolute locators with reviewed portable references and regenerate the migration.",
     "missing-digest": "Record the reviewed installer SHA-256 and regenerate the migration.",
@@ -765,7 +770,20 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
             entry["reason"] = record.reason
             quarantine_records.append(_quarantine_document(record))
         elif record.status == "converted":
-            _fail("reviewed Recipe evidence is unavailable")
+            if re.fullmatch(r"[a-z0-9][a-z0-9._-]+", identifier) is None:
+                _fail("reviewed Recipe identity is invalid")
+            recipe_path = f"migration/macwin/generated/recipes/{identifier}.json"
+            if recipe_path in documents:
+                _fail("reviewed Recipe identity is duplicated")
+            try:
+                recipe_raw = _COMMON.canonical_json_bytes(
+                    _render_reviewed_recipe(asset, source)
+                )
+            except _COMMON.MigrationError:
+                _fail("reviewed Recipe cannot be rendered")
+            documents[recipe_path] = recipe_raw
+            entry["recipePath"] = recipe_path
+            entry["recipeSha256"] = hashlib.sha256(recipe_raw).hexdigest()
         else:
             _fail("catalog candidate status is invalid")
         candidates.append(entry)
@@ -912,8 +930,8 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
             or asset.byte_size > _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES
             or asset.git_mode not in {"100644", "100755"}
             or asset.kind != EXPECTED_KINDS[asset.category]
-            or asset.license_status != "unresolved"
-            or asset.provenance_status != "unresolved"
+            or asset.license_status not in {"reviewed", "unresolved"}
+            or asset.provenance_status not in {"reviewed", "unresolved"}
             or asset.intended_owner != EXPECTED_OWNERS[asset.category]
             or len(asset.external_refs) > 512
             or len(asset.development_dependencies) > 512
@@ -1079,19 +1097,43 @@ def _recipe_findings(
         _fail("recipe candidate model is invalid")
     findings: list[RecipeFinding] = []
     source_locator = asset.source_path
-    if asset.license_status != "reviewed":
+    if (
+        asset.license_status != "reviewed"
+        or type(source.get("license")) is not str
+        or not source["license"]
+    ):
         _add_recipe_finding(findings, "missing-license", f"{source_locator}#license")
     if asset.provenance_status != "reviewed":
         _add_recipe_finding(
             findings, "missing-provenance", f"{source_locator}#provenance"
         )
-    _add_recipe_finding(findings, "unsupported-schema", f"{source_locator}#tests")
+    tests = source.get("tests")
+    if (
+        type(tests) is not list
+        or not tests
+        or any(
+            type(test) is not dict
+            or not {"id", "kind", "timeoutSeconds"}.issubset(test)
+            or not set(test).issubset(RECIPE_TEST_FIELDS)
+            or type(test.get("id")) is not str
+            or re.fullmatch(r"[a-z0-9][a-z0-9._-]+", test["id"]) is None
+            or test.get("kind") not in RECIPE_TEST_KINDS
+            or type(test.get("timeoutSeconds")) is not int
+            or not 1 <= test["timeoutSeconds"] <= 3600
+            or ("expected" in test and type(test["expected"]) is not dict)
+            for test in tests
+        )
+    ):
+        _add_recipe_finding(findings, "unsupported-schema", f"{source_locator}#tests")
 
     for external_reference in asset.external_refs:
         _add_recipe_finding(
             findings, "unresolved-external-reference", external_reference
         )
-    if set(source) != RECIPE_TOP_LEVEL_FIELDS:
+    if frozenset(source) not in {
+        RECIPE_TOP_LEVEL_FIELDS,
+        REVIEWED_RECIPE_TOP_LEVEL_FIELDS,
+    }:
         _add_recipe_finding(
             findings, "unsupported-schema", f"{source_locator}#source-fields"
         )
@@ -1289,7 +1331,10 @@ def _sorted_string_map(value: dict[str, object]) -> dict[str, str]:
 def _map_recipe_structure(source: dict[str, object]) -> dict[str, object]:
     """Map only representable source structure; reviewed evidence is added later."""
 
-    if type(source) is not dict or set(source) != RECIPE_TOP_LEVEL_FIELDS:
+    if type(source) is not dict or frozenset(source) not in {
+        RECIPE_TOP_LEVEL_FIELDS,
+        REVIEWED_RECIPE_TOP_LEVEL_FIELDS,
+    }:
         _fail("recipe source fields are unsupported")
     bottle = source["bottleTemplate"]
     installer = source["installer"]
@@ -1409,6 +1454,35 @@ def _map_recipe_structure(source: dict[str, object]) -> dict[str, object]:
         },
         "fixes": [],
     }
+
+
+def _render_reviewed_recipe(
+    asset: SourceAsset, source: dict[str, object]
+) -> dict[str, object]:
+    """Close reviewed evidence over one representable Recipe v2 document."""
+
+    if _select_recipe_reason(_recipe_findings(asset, source)) is not None:
+        _fail("reviewed Recipe evidence is incomplete")
+    recipe = _map_recipe_structure(source)
+    recipe["metadata"] = {
+        **recipe["metadata"],
+        "license": source["license"],
+    }
+    recipe["tests"] = [
+        {
+            key: test[key]
+            for key in ("id", "kind", "timeoutSeconds", "expected")
+            if key in test
+        }
+        for test in source["tests"]
+    ]
+    recipe["provenance"] = {
+        "sourceRepository": APPROVED_REPOSITORY,
+        "sourceCommit": asset.source_commit,
+        "sourcePath": asset.source_path,
+        "sourceSha256": asset.sha256,
+    }
+    return recipe
 
 
 def _classify_asset(
@@ -1759,6 +1833,15 @@ def _validate_task5_documents(
             or entry["sourceSha256"] != asset.sha256
             or status != record.status
             or (status == "quarantined" and entry["reason"] != record.reason)
+            or (
+                status == "converted"
+                and (
+                    entry["recipePath"]
+                    != f"migration/macwin/generated/recipes/{identifier}.json"
+                    or type(entry["recipeSha256"]) is not str
+                    or _HEX_64.fullmatch(entry["recipeSha256"]) is None
+                )
+            )
         ):
             _fail("generated catalog candidate provenance is invalid")
         candidate_paths.append(source_path)
