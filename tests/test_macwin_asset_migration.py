@@ -8357,6 +8357,80 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 options["startupinfo"].lpAttributeList, {"handle_list": []}
             )
 
+    def test_isolated_bootstrap_normalizes_hostile_exit_objects(self) -> None:
+        command = self._converter_command("--check")
+        captured = subprocess.CompletedProcess(command, 0, b"", b"")
+        with mock.patch.object(subprocess, "run", return_value=captured) as run:
+            self.assertIs(
+                self._run_audited(command, report_process_id=True), captured
+            )
+        bootstrap = run.call_args.args[0][3]
+        mutants = {
+            "string": "SystemExit('HOSTILE\\x1b[31mTOKEN')",
+            "bool": "SystemExit(True)",
+            "object": (
+                "SystemExit(type('Hostile',(),"
+                "{'__str__':lambda self:'HOSTILE-PATH'})())"
+            ),
+            "exception": "RuntimeError('HOSTILE-TRACE')",
+        }
+        environment = {"PYTHONDONTWRITEBYTECODE": "1"}
+        for name, expression in mutants.items():
+            prefix = (
+                "import runpy\n"
+                "def rejected(*args,**kwargs):\n"
+                f" raise {expression}\n"
+                "runpy.run_path=rejected\n"
+            )
+            completed = subprocess.run(
+                (sys.executable, "-B", "-c", prefix + bootstrap, "ignored"),
+                check=False,
+                cwd=ROOT,
+                env=environment,
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                timeout=30,
+                close_fds=True,
+            )
+            with self.subTest(mutant=name):
+                self.assertEqual(completed.returncode, 1)
+                self.assertEqual(completed.stdout, b"")
+                self.assertEqual(completed.stderr, b"isolated process failed\n")
+
+        for expression, expected_code in (
+            ("SystemExit(None)", 0),
+            ("SystemExit(7)", 7),
+        ):
+            prefix = (
+                "import runpy\n"
+                "def accepted(*args,**kwargs):\n"
+                f" raise {expression}\n"
+                "runpy.run_path=accepted\n"
+            )
+            completed = subprocess.run(
+                (sys.executable, "-B", "-c", prefix + bootstrap, "ignored"),
+                check=False,
+                cwd=ROOT,
+                env=environment,
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                timeout=30,
+                close_fds=True,
+            )
+            with self.subTest(accepted=expression):
+                self.assertEqual(completed.returncode, expected_code)
+                if expected_code == 0:
+                    self.assertRegex(completed.stdout, rb"\A[1-9][0-9]*\n\Z")
+                else:
+                    self.assertEqual(completed.stdout, b"")
+                self.assertEqual(completed.stderr, b"")
+
     def test_controlled_mutants_turn_every_guard_family_red(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
@@ -9644,16 +9718,43 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             }:
                 raise AssertionError("isolated process command is not approved")
             bootstrap = (
-                "import os,runpy,sys\n"
-                "os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
+                "import io,os,runpy,sys\n"
                 "sys.argv=sys.argv[1:]\n"
+                "out_bytes=io.BytesIO()\n"
+                "err_bytes=io.BytesIO()\n"
+                "out=io.TextIOWrapper(out_bytes,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
+                "err=io.TextIOWrapper(err_bytes,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
+                "real_out=sys.stdout\n"
+                "real_err=sys.stderr\n"
+                "sys.stdout=out\n"
+                "sys.stderr=err\n"
+                "code=0\n"
+                "fixed=False\n"
                 "try:\n"
                 " runpy.run_path(sys.argv[0],run_name='__main__')\n"
-                "except SystemExit:\n"
-                " raise\n"
+                "except SystemExit as exit_error:\n"
+                " if exit_error.code is None:\n"
+                "  code=0\n"
+                " elif type(exit_error.code) is int:\n"
+                "  code=exit_error.code\n"
+                " else:\n"
+                "  code=1\n"
+                "  fixed=True\n"
                 "except BaseException:\n"
+                " code=1\n"
+                " fixed=True\n"
+                "finally:\n"
+                " out.flush()\n"
+                " err.flush()\n"
+                " sys.stdout=real_out\n"
+                " sys.stderr=real_err\n"
+                "if code==0:\n"
+                " os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
+                " os.write(1,out_bytes.getvalue())\n"
+                " os.write(2,err_bytes.getvalue())\n"
+                "elif fixed:\n"
                 " os.write(2,b'isolated process failed\\n')\n"
-                " raise SystemExit(1)\n"
+                "raise SystemExit(code)\n"
             )
             isolated_command = (
                 sys.executable,
