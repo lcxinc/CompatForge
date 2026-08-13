@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
-import importlib.util
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -15,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import types
 from typing import NoReturn
 
 
@@ -75,21 +75,93 @@ _INCLUDE_CONFIG = re.compile(
     rb"include(?:if\.[^\r\n=]+)?\.path(?:[ \t]*=|[ \t]*$))",
     re.IGNORECASE | re.MULTILINE,
 )
+_REF_STORAGE_CONFIG = re.compile(
+    rb"^[ \t]*refstorage[ \t]*=", re.IGNORECASE | re.MULTILINE
+)
 
 
 def _load_common():
+    descriptor: int | None = None
     try:
-        import macwin_asset_common as common
-
-        return common
-    except ModuleNotFoundError:
-        path = Path(__file__).with_name("macwin_asset_common.py")
-        spec = importlib.util.spec_from_file_location("macwin_asset_common", path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("migration common module could not be loaded")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        path = Path(os.path.abspath(__file__)).with_name("macwin_asset_common.py")
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or getattr(before, "st_reparse_tag", 0)
+            or before.st_nlink != 1
+            or before.st_size > 1024 * 1024
+        ):
+            raise OSError
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_nlink,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_nlink,
+            )
+            != identity[:4]
+        ):
+            raise OSError
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, 1024 * 1024 + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 1024 * 1024:
+                raise OSError
+            chunks.append(chunk)
+        final = os.fstat(descriptor)
+        if (
+            final.st_dev,
+            final.st_ino,
+            final.st_size,
+            final.st_nlink,
+            final.st_mtime_ns,
+            final.st_ctime_ns,
+        ) != (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_nlink,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ):
+            raise OSError
+        after = path.lstat()
+        if (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_nlink,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) != identity:
+            raise OSError
+        module = types.ModuleType("_compatforge_macwin_asset_common")
+        module.__file__ = str(path)
+        module.__package__ = ""
+        exec(compile(b"".join(chunks), str(path), "exec"), module.__dict__)
         return module
+    except Exception:
+        raise RuntimeError("migration common module could not be loaded") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 _COMMON = _load_common()
@@ -212,7 +284,11 @@ def _run_git(
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one fixed local Git command without ambient repository controls."""
 
-    root = repository.resolve(strict=True)
+    root = repository.absolute()
+    _validate_path_chain(root)
+    root_before = _path_metadata(root)
+    if not stat.S_ISDIR(root_before.st_mode):
+        _fail("source repository is not a directory")
     command = [
         "git",
         "--no-replace-objects",
@@ -248,6 +324,9 @@ def _run_git(
         completed = subprocess.run(command, **options)
     except (OSError, subprocess.TimeoutExpired):
         _fail("Git command failed")
+    _validate_path_chain(root)
+    if _file_identity(_path_metadata(root)) != _file_identity(root_before):
+        _fail("source repository identity changed")
     if (
         type(completed.stdout) is not bytes
         or type(completed.stderr) is not bytes
@@ -284,9 +363,16 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, i
 def _validate_path_chain(path: Path) -> None:
     absolute = path.absolute()
     current = Path(absolute.anchor)
+    identities: list[tuple[Path, tuple[int, int, int, int, int, int]]] = []
     for part in absolute.parts[1:]:
         current /= part
-        _path_metadata(current)
+        metadata = _path_metadata(current)
+        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
+            _fail("filesystem boundary is invalid")
+        identities.append((current, _file_identity(metadata)))
+    for component, identity in identities:
+        if _file_identity(_path_metadata(component)) != identity:
+            _fail("filesystem boundary identity changed")
 
 
 def _read_regular_file(
@@ -399,9 +485,12 @@ def _validate_git_storage(repository: Path) -> Path:
         or b"promisor" in lowered
         or b"partialclone" in lowered
         or b"objectformat" in lowered
+        or _REF_STORAGE_CONFIG.search(config)
         or _path_exists_without_following(git_directory / "config.worktree")
         or _path_exists_without_following(git_directory / "shallow")
+        or _path_exists_without_following(git_directory / "info/grafts")
         or _path_exists_without_following(git_directory / "objects/info/alternates")
+        or _path_exists_without_following(git_directory / "reftable")
     ):
         _fail("source Git storage uses an external boundary")
 
@@ -421,6 +510,11 @@ def _validate_git_storage(repository: Path) -> Path:
         if b" refs/replace/" in raw:
             _fail("source Git storage contains replace refs")
     _read_regular_file(git_directory / "index", 64 * 1024 * 1024)
+    _validate_path_chain(repository)
+    if _file_identity(_path_metadata(repository)) != _file_identity(root_metadata):
+        _fail("source repository identity changed")
+    if _file_identity(_path_metadata(git_directory)) != _file_identity(git_metadata):
+        _fail("source Git directory identity changed")
     return git_directory
 
 
@@ -530,14 +624,17 @@ def _bind_repository(
     try:
         requested_root = repository.absolute()
         _validate_path_chain(requested_root)
-        root = requested_root.resolve(strict=True)
+        root = requested_root
     except OSError:
         _fail("source repository could not be resolved")
+    root_identity = _file_identity(_path_metadata(root))
     git_directory = _validate_git_storage(root)
+    git_directory_identity = _file_identity(_path_metadata(git_directory))
 
     reported_root = Path(
         _one_line(_run_git(root, ("rev-parse", "--show-toplevel")))
-    ).resolve(strict=True)
+    ).absolute()
+    _validate_path_chain(reported_root)
     if reported_root != root:
         _fail("source repository root does not match")
     common_directory = _one_line(
@@ -549,10 +646,15 @@ def _bind_repository(
     index_path = _one_line(
         _run_git(root, ("rev-parse", "--path-format=absolute", "--git-path", "index"))
     )
+    reported_common = Path(common_directory).absolute()
+    reported_objects = Path(object_directory).absolute()
+    reported_index = Path(index_path).absolute()
+    for reported in (reported_common, reported_objects, reported_index):
+        _validate_path_chain(reported)
     if (
-        Path(common_directory).resolve(strict=True) != git_directory
-        or Path(object_directory).resolve(strict=True) != git_directory / "objects"
-        or Path(index_path).resolve(strict=True) != git_directory / "index"
+        reported_common != git_directory
+        or reported_objects != git_directory / "objects"
+        or reported_index != git_directory / "index"
     ):
         _fail("source Git storage identity does not match")
     if _one_line(_run_git(root, ("rev-parse", "--is-bare-repository"))) != "false":
@@ -573,9 +675,14 @@ def _bind_repository(
             "refs/tags/",
         ),
     ).stdout
+    lines = refs.splitlines()
+    if len(lines) > MAX_GIT_REF_NODES:
+        _fail("source tag reference count exceeds the limit")
     exact: tuple[str, str, str] | None = None
-    folded_match = False
-    for line in refs.splitlines():
+    exact_count = 0
+    folded_count = 0
+    expected_ref = f"refs/tags/{tag}"
+    for line in lines:
         fields = line.split(b"\x00")
         if len(fields) != 4:
             _fail("source tag reference is invalid")
@@ -585,11 +692,12 @@ def _bind_repository(
             )
         except UnicodeDecodeError:
             _fail("source tag reference is invalid")
-        if refname.casefold() == f"refs/tags/{tag}".casefold():
-            folded_match = True
-        if refname == f"refs/tags/{tag}":
+        if refname.casefold() == expected_ref.casefold():
+            folded_count += 1
+        if refname == expected_ref:
+            exact_count += 1
             exact = (kind, oid, peeled)
-    if exact is None or not folded_match:
+    if exact is None or exact_count != 1 or folded_count != 1:
         _fail("source tag is missing")
     kind, tag_oid, peeled = exact
     if (
@@ -624,6 +732,12 @@ def _bind_repository(
         or f"tag {tag}".encode("ascii") not in tag_lines[:4]
     ):
         _fail("source tag object does not match")
+
+    _validate_path_chain(root)
+    if _file_identity(_path_metadata(root)) != root_identity:
+        _fail("source repository identity changed")
+    if _file_identity(_path_metadata(git_directory)) != git_directory_identity:
+        _fail("source Git directory identity changed")
 
     return GitBinding(
         repository=root,
@@ -1170,7 +1284,7 @@ def validate_source_pack(source_root: Path) -> dict[str, object]:
     try:
         requested_root = source_root.absolute()
         _validate_path_chain(requested_root)
-        root = requested_root.resolve(strict=True)
+        root = requested_root
     except OSError:
         _fail("source-pack directory is missing")
     _validate_path_chain(root)
@@ -1206,6 +1320,9 @@ def validate_source_pack(source_root: Path) -> dict[str, object]:
             or _git_object_oid("blob", raw) != record["gitBlobOid"]
         ):
             _fail("source-pack object content does not match the index")
+    _validate_path_chain(root)
+    if _file_identity(_path_metadata(root)) != _file_identity(root_metadata):
+        _fail("source-pack root identity changed")
     return manifest
 
 
@@ -1312,17 +1429,22 @@ def _write_source_pack(destination: Path, documents: dict[str, bytes]) -> None:
             except OSError:
                 os.replace(backup, destination)
                 _fail("source-pack transaction failed")
+            installed_verified = False
             try:
                 installed = validate_source_pack(destination)
                 if _document_bytes(destination, installed) != documents:
                     _fail("source-pack installed bytes do not match")
-            except SourcePackError:
-                failed = parent / f".source-failed-{secrets.token_hex(16)}"
-                os.replace(destination, failed)
-                os.replace(backup, destination)
-                shutil.rmtree(failed)
-                committed = False
-                raise
+                installed_verified = True
+            finally:
+                if not installed_verified:
+                    failed = parent / f".source-failed-{secrets.token_hex(16)}"
+                    try:
+                        os.replace(destination, failed)
+                        committed = False
+                        os.replace(backup, destination)
+                        shutil.rmtree(failed)
+                    except OSError:
+                        _fail("source-pack transaction failed")
             shutil.rmtree(backup)
         else:
             try:

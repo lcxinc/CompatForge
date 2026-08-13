@@ -1288,6 +1288,48 @@ class MigrationLayoutTests(unittest.TestCase):
 
         self.assertEqual(self._repository_bytecode(), before)
 
+    def test_official_repository_validator_entry_leaves_no_bytecode(self) -> None:
+        before = self._repository_bytecode()
+        self.assertEqual(before, set())
+        environment = dict(os.environ)
+        for name in (
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONPYCACHEPREFIX",
+        ):
+            environment.pop(name, None)
+
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/validate_repository.py")],
+                cwd=ROOT,
+                check=False,
+                env=environment,
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                text=True,
+                timeout=IMPORT_PROBE_TIMEOUT_SECONDS,
+            )
+            after = self._repository_bytecode()
+        finally:
+            for relative in sorted(
+                self._repository_bytecode() - before,
+                key=lambda value: len(Path(value).parts),
+                reverse=True,
+            ):
+                path = ROOT / PurePosixPath(relative)
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(after, before)
+
     def test_migration_import_probe_ignores_python_environment_injection(self) -> None:
         module = ROOT / "scripts/validate_repository.py"
         with tempfile.TemporaryDirectory() as directory:
@@ -2218,6 +2260,238 @@ class MacWinSourcePackTests(unittest.TestCase):
                     inventory_commit=inventory,
                 )
 
+    def test_git_binding_rejects_a_graft_that_forges_source_ancestry(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            repository, source, inventory = self._make_binding_repository(
+                Path(directory), "non-ancestor"
+            )
+            tag_object = self._git(
+                repository, "rev-parse", "refs/tags/approved-tag"
+            )
+            grafts = repository / ".git/info/grafts"
+            grafts.parent.mkdir(exist_ok=True)
+            grafts.write_text(
+                f"{inventory} {source}\n", encoding="ascii", newline="\n"
+            )
+            self._git(
+                repository,
+                "merge-base",
+                "--is-ancestor",
+                source,
+                inventory,
+            )
+
+            with self.assertRaises(importer.SourcePackError):
+                importer._bind_repository(
+                    repository,
+                    tag="approved-tag",
+                    tag_object=tag_object,
+                    source_commit=source,
+                    inventory_commit=inventory,
+                )
+
+    def test_git_storage_rejects_an_external_reftable_directory(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            repository, _source, _inventory = self._make_binding_repository(
+                root, "valid"
+            )
+            git_directory = repository / ".git"
+            external = root / "external-reftable"
+            external.mkdir()
+            try:
+                os.symlink(
+                    external,
+                    git_directory / "reftable",
+                    target_is_directory=True,
+                )
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"reftable link contract cannot be exercised: {error}")
+            with (git_directory / "config").open(
+                "a", encoding="utf-8", newline="\n"
+            ) as stream:
+                stream.write("[extensions]\n\trefStorage = reftable\n")
+
+            with self.assertRaises(importer.SourcePackError):
+                importer._validate_git_storage(repository)
+
+    def test_git_binding_rejects_a_linked_worktree_common_directory(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            repository, source, inventory = self._make_binding_repository(
+                root, "valid"
+            )
+            linked_worktree = root / "linked-worktree"
+            self._git(
+                repository,
+                "worktree",
+                "add",
+                "--detach",
+                str(linked_worktree),
+                source,
+            )
+            common_directory = Path(
+                self._git(linked_worktree, "rev-parse", "--git-common-dir")
+            )
+            if not common_directory.is_absolute():
+                common_directory = linked_worktree / common_directory
+            self.assertEqual(common_directory.resolve(), (repository / ".git").resolve())
+
+            with self.assertRaises(importer.SourcePackError):
+                importer._bind_repository(
+                    linked_worktree,
+                    tag="approved-tag",
+                    tag_object=self._git(
+                        repository, "rev-parse", "refs/tags/approved-tag"
+                    ),
+                    source_commit=source,
+                    inventory_commit=inventory,
+                )
+
+    def test_git_binding_rejects_casefold_tag_collisions(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            repository, source, inventory = self._make_binding_repository(
+                Path(directory), "valid"
+            )
+            tag_object = self._git(
+                repository, "rev-parse", "refs/tags/approved-tag"
+            )
+            self._git(repository, "pack-refs", "--all")
+            self._git(
+                repository,
+                "update-ref",
+                "refs/tags/Approved-Tag",
+                tag_object,
+            )
+            references = self._git(
+                repository, "for-each-ref", "--format=%(refname)", "refs/tags/"
+            ).splitlines()
+            self.assertEqual(
+                sum(
+                    value.casefold() == "refs/tags/approved-tag"
+                    for value in references
+                ),
+                2,
+            )
+
+            with self.assertRaises(importer.SourcePackError):
+                importer._bind_repository(
+                    repository,
+                    tag="approved-tag",
+                    tag_object=tag_object,
+                    source_commit=source,
+                    inventory_commit=inventory,
+                )
+
+    def test_git_binding_bounds_the_complete_tag_reference_enumeration(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            repository, source, inventory = self._make_binding_repository(
+                Path(directory), "valid"
+            )
+            tag_object = self._git(
+                repository, "rev-parse", "refs/tags/approved-tag"
+            )
+            self._git(repository, "tag", "-a", "other-tag", "-m", "other", source)
+
+            with mock.patch.object(
+                importer,
+                "_validate_git_storage",
+                return_value=repository / ".git",
+            ), mock.patch.object(importer, "MAX_GIT_REF_NODES", 1):
+                with self.assertRaises(importer.SourcePackError):
+                    importer._bind_repository(
+                        repository,
+                        tag="approved-tag",
+                        tag_object=tag_object,
+                        source_commit=source,
+                        inventory_commit=inventory,
+                    )
+
+    def test_repository_root_swap_never_binds_an_external_git_repository(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            inside_parent = root / "inside"
+            outside_parent = root / "outside"
+            inside_parent.mkdir()
+            outside_parent.mkdir()
+            repository, _inside_source, _inside_inventory = (
+                self._make_binding_repository(inside_parent, "valid")
+            )
+            external, source, inventory = self._make_binding_repository(
+                outside_parent, "valid"
+            )
+            tag_object = self._git(
+                external, "rev-parse", "refs/tags/approved-tag"
+            )
+            requested = repository.absolute()
+            saved = repository.with_name("saved-repository")
+            real_validate_path_chain = importer._validate_path_chain
+            swapped = False
+
+            def swap_after_validation(path: Path) -> None:
+                nonlocal swapped
+                real_validate_path_chain(path)
+                if path == requested and not swapped:
+                    repository.rename(saved)
+                    os.symlink(external, repository, target_is_directory=True)
+                    swapped = True
+
+            try:
+                with mock.patch.object(
+                    importer, "_validate_path_chain", swap_after_validation
+                ):
+                    with self.assertRaises(importer.SourcePackError):
+                        importer._bind_repository(
+                            repository,
+                            tag="approved-tag",
+                            tag_object=tag_object,
+                            source_commit=source,
+                            inventory_commit=inventory,
+                        )
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"repository swap contract cannot be exercised: {error}")
+            self.assertTrue(swapped)
+
+    def test_source_pack_root_swap_never_validates_an_external_pack(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            inside_parent = root / "inside"
+            outside_parent = root / "outside"
+            inside_parent.mkdir()
+            outside_parent.mkdir()
+            copied = self._copy_pack(source_root, inside_parent)
+            external = self._copy_pack(source_root, outside_parent)
+            requested = copied.absolute()
+            saved = copied.with_name("saved-source")
+            real_validate_path_chain = importer._validate_path_chain
+            swapped = False
+
+            def swap_after_validation(path: Path) -> None:
+                nonlocal swapped
+                real_validate_path_chain(path)
+                if path == requested and not swapped:
+                    copied.rename(saved)
+                    os.symlink(external, copied, target_is_directory=True)
+                    swapped = True
+
+            try:
+                with mock.patch.object(
+                    importer, "_validate_path_chain", swap_after_validation
+                ):
+                    with self.assertRaises(importer.SourcePackError):
+                        importer.validate_source_pack(copied)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"source-pack swap contract cannot be exercised: {error}")
+            self.assertTrue(swapped)
+
     def test_git_binding_rejects_external_object_and_linked_metadata_boundaries(self) -> None:
         importer = self._load_importer()
         for scenario in (
@@ -2338,6 +2612,82 @@ class MacWinSourcePackTests(unittest.TestCase):
             self.assertEqual(importer.main(()), 2)
         generate.assert_not_called()
 
+    def test_importer_ignores_an_ambient_pythonpath_common_module(self) -> None:
+        importer_path = ROOT / "tools/import_macwin_source_pack.py"
+        common_path = ROOT / "tools/macwin_asset_common.py"
+        with self._temporary_directory() as directory:
+            hostile = Path(directory) / "hostile"
+            hostile.mkdir()
+            (hostile / "macwin_asset_common.py").write_text(
+                "raise RuntimeError('ambient module imported')\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(hostile)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            code = (
+                "import importlib.util, os, pathlib, sys; "
+                "spec=importlib.util.spec_from_file_location('source_pack_probe', sys.argv[1]); "
+                "module=importlib.util.module_from_spec(spec); "
+                "sys.modules[spec.name]=module; "
+                "spec.loader.exec_module(module); "
+                "assert pathlib.Path(module._COMMON.__file__).absolute() == "
+                "pathlib.Path(sys.argv[2]).absolute()"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", code, str(importer_path), str(common_path)],
+                cwd=ROOT,
+                check=False,
+                env=environment,
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                text=True,
+                timeout=IMPORT_PROBE_TIMEOUT_SECONDS,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_importer_rejects_a_linked_common_module_sibling(self) -> None:
+        with self._temporary_directory() as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            tools.mkdir()
+            importer_path = tools / "import_macwin_source_pack.py"
+            importer_path.write_bytes(
+                (ROOT / "tools/import_macwin_source_pack.py").read_bytes()
+            )
+            external = root / "external-common.py"
+            external.write_bytes((ROOT / "tools/macwin_asset_common.py").read_bytes())
+            try:
+                os.symlink(external, tools / "macwin_asset_common.py")
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"common-module link contract cannot be exercised: {error}")
+            code = (
+                "import importlib.util, sys; "
+                "spec=importlib.util.spec_from_file_location('source_pack_probe', sys.argv[1]); "
+                "module=importlib.util.module_from_spec(spec); "
+                "sys.modules[spec.name]=module; "
+                "spec.loader.exec_module(module)"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", code, str(importer_path)],
+                cwd=root,
+                check=False,
+                env={"PYTHONDONTWRITEBYTECODE": "1"},
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                text=True,
+                timeout=IMPORT_PROBE_TIMEOUT_SECONDS,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("migration common module could not be loaded", completed.stderr)
+
     def test_source_pack_writer_creates_only_the_owned_parent_directories(self) -> None:
         importer = self._load_importer()
         with self._temporary_directory() as directory:
@@ -2390,6 +2740,72 @@ class MacWinSourcePackTests(unittest.TestCase):
 
                 self.assertFalse(destination.exists())
                 self.assertEqual(list(destination.parent.iterdir()), [])
+
+    def test_existing_install_rolls_back_every_post_replace_failure(self) -> None:
+        importer = self._load_importer()
+        scenarios = (
+            ("validation-runtime", "validation", RuntimeError),
+            ("readback-runtime", "readback", RuntimeError),
+            ("validation-interrupt", "validation", KeyboardInterrupt),
+            ("readback-system-exit", "readback", SystemExit),
+        )
+        new_documents = {"index.json": b"new source pack\n"}
+
+        for name, injection_point, exception_type in scenarios:
+            with self.subTest(scenario=name), self._temporary_directory() as directory:
+                root = Path(directory)
+                destination = root / "migration/macwin/source"
+                destination.mkdir(parents=True)
+                (destination / "index.json").write_bytes(b"old source pack\n")
+                old_object = destination / "objects/old"
+                old_object.parent.mkdir()
+                old_object.write_bytes(b"old object bytes\x00\r\n")
+
+                def read_tree(path: Path) -> dict[str, bytes]:
+                    return {
+                        value.relative_to(path).as_posix(): value.read_bytes()
+                        for value in sorted(path.rglob("*"))
+                        if value.is_file()
+                    }
+
+                old_documents = read_tree(destination)
+
+                def injected_validate(path: Path) -> dict[str, object]:
+                    if (
+                        path == destination
+                        and read_tree(path) == new_documents
+                        and injection_point == "validation"
+                    ):
+                        raise exception_type("injected installed validation failure")
+                    return {}
+
+                def injected_document_bytes(
+                    path: Path, _manifest: dict[str, object]
+                ) -> dict[str, bytes]:
+                    documents = read_tree(path)
+                    if (
+                        path == destination
+                        and documents == new_documents
+                        and injection_point == "readback"
+                    ):
+                        raise exception_type("injected installed readback failure")
+                    return documents
+
+                with mock.patch.object(
+                    importer, "SOURCE_PACK_ROOT", destination
+                ), mock.patch.object(
+                    importer, "validate_source_pack", injected_validate
+                ), mock.patch.object(
+                    importer, "_document_bytes", injected_document_bytes
+                ):
+                    with self.assertRaises(exception_type):
+                        importer._write_source_pack(destination, new_documents)
+
+                self.assertEqual(read_tree(destination), old_documents)
+                self.assertEqual(
+                    {value.name for value in destination.parent.iterdir()},
+                    {"source"},
+                )
 
     def test_repository_validator_allows_only_the_validated_sealed_evidence(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -2448,8 +2864,9 @@ class MacWinSourcePackTests(unittest.TestCase):
                 validator.ROOT = temporary_root
                 errors = validator.validate_no_developer_paths()
                 self.assertIn("Mac-Win source pack validation failed", errors)
+                index_display = str(Path("migration/macwin/source/index.json"))
                 self.assertTrue(
-                    any("source\\index.json" in error for error in errors), errors
+                    any(index_display in error for error in errors), errors
                 )
 
     def test_repository_validator_fails_when_the_source_pack_is_missing(self) -> None:
@@ -2597,8 +3014,12 @@ class MacWinSourcePackTests(unittest.TestCase):
                 errors = validator.validate_no_developer_paths()
             self.assertTrue(injected)
             self.assertIn("Mac-Win source pack validation failed", errors)
+            index_display = str(Path("migration/macwin/source/index.json"))
             self.assertTrue(
-                any("source\\index.json" in error and "contains developer path" in error for error in errors),
+                any(
+                    index_display in error and "contains developer path" in error
+                    for error in errors
+                ),
                 errors,
             )
 
