@@ -4521,6 +4521,55 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
         with self.assertRaises(self.converter.ConversionError):
             self.converter.validate_generated_graph(documents, self.result.source_pack)
 
+    def test_converted_recipe_catalog_digest_is_bound_to_the_recipe_leaf(self) -> None:
+        helper = MacWinRecipeConversionTests(methodName="runTest")
+        helper.converter = self.converter
+        helper.common = self.common
+        helper.result = self.result
+        helper.assets = {
+            asset.source_path: asset for asset in self.result.source_pack.assets
+        }
+        result = helper._synthetic_reviewed_recipe_result()
+        original = self.converter.render_documents(result)
+        catalog_path = "migration/macwin/generated/catalog.json"
+        recipe_path = "migration/macwin/generated/recipes/7zip.json"
+        cases = {}
+        for name, mutation in {
+            "wrong-digest": lambda entry: entry.update(recipeSha256="0" * 64),
+            "wrong-path": lambda entry: entry.update(
+                recipePath="migration/macwin/generated/recipes/missing.json"
+            ),
+            "missing-digest": lambda entry: entry.pop("recipeSha256"),
+        }.items():
+            catalog = self.common.parse_json_bytes(
+                original[catalog_path], label="synthetic catalog"
+            )
+            converted = next(
+                entry for entry in catalog["candidates"] if entry["status"] == "converted"
+            )
+            mutation(converted)
+            catalog_raw = self.common.canonical_json_bytes(catalog)
+            leaves = {
+                path: raw
+                for path, raw in original.items()
+                if path != self.INDEX_PATH
+            }
+            leaves[catalog_path] = catalog_raw
+            root = self.converter._render_generated_root_index(leaves, result)
+            cases[name] = dict(
+                sorted(
+                    {
+                        **leaves,
+                        self.INDEX_PATH: self.common.canonical_json_bytes(root),
+                    }.items(),
+                    key=lambda item: item[0].encode("ascii"),
+                )
+            )
+        self.assertIn(recipe_path, original)
+        for name, documents in cases.items():
+            with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
+                self.converter.validate_generated_graph(documents, result.source_pack)
+
     def test_self_consistent_resealed_extra_document_rejects(self) -> None:
         original = self.converter.render_documents(self.result)
         cases = {

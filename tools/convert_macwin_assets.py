@@ -1399,6 +1399,28 @@ def validate_generated_graph(
         _fail("generated graph contract documents are invalid")
     _validate_task5_documents(catalog, quarantine, result)
     _validate_task6_documents(mappings, leaves, result)
+    converted_recipe_paths: set[str] = set()
+    for candidate in catalog["candidates"]:
+        if candidate["status"] != "converted":
+            continue
+        path = candidate["recipePath"]
+        digest = candidate["recipeSha256"]
+        if (
+            type(path) is not str
+            or path in converted_recipe_paths
+            or _graph_document_kind(path) != "recipe"
+            or type(digest) is not str
+            or _HEX_64.fullmatch(digest) is None
+            or path not in leaves
+            or hashlib.sha256(leaves[path]).hexdigest() != digest
+        ):
+            _fail("generated catalog Recipe seal is invalid")
+        converted_recipe_paths.add(path)
+    actual_recipe_paths = {
+        path for path in leaves if _graph_document_kind(path) == "recipe"
+    }
+    if actual_recipe_paths != converted_recipe_paths:
+        _fail("generated catalog Recipe coverage is invalid")
     assets = {asset.source_path: asset for asset in source_pack.assets}
     for record in result.records:
         if record.output_kind == "recipe" and record.status == "converted":
