@@ -2360,6 +2360,54 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     validator.validate_no_developer_paths(),
                 )
 
+    def test_repository_oracle_requires_the_exact_committed_task6_tree(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        fixed = (
+            "catalog.json",
+            "quarantine.json",
+            "mappings/patches.json",
+            "mappings/bottle-schemas.json",
+        )
+        cases = ("safe-extra-file", "extra-empty-directory", *fixed)
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-task6-validator-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+                generated = temporary_root / "migration/macwin/generated"
+                if case == "safe-extra-file":
+                    (generated / "future.json").write_bytes(b'{"future":"safe"}\n')
+                elif case == "extra-empty-directory":
+                    (generated / "future").mkdir()
+                else:
+                    (generated / PurePosixPath(case)).unlink()
+                validator.ROOT = temporary_root
+                self.assertIn(
+                    "Mac-Win generated evidence validation failed",
+                    validator.validate_no_developer_paths(),
+                )
+
+    def test_repository_oracle_rejects_an_extra_generated_link(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task6-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            generated = temporary_root / "migration/macwin/generated"
+            target = temporary_root / "safe-target.json"
+            target.write_bytes(b'{"safe":true}\n')
+            try:
+                (generated / "future.json").symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"file symlink unavailable: {error}")
+            validator.ROOT = temporary_root
+            self.assertIn(
+                "Mac-Win generated evidence validation failed",
+                validator.validate_no_developer_paths(),
+            )
+
     def test_reviewed_portable_assets_quarantine_unclosed_dependency_classes(self) -> None:
         cases = (
             ("scripts/inspect-chromium-page.swift", "unresolved-external-reference"),
@@ -3148,7 +3196,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             errors = validator.validate_no_developer_paths()
             self.assertIn("Mac-Win generated evidence validation failed", errors)
 
-    def test_repository_validator_routes_future_converter_documents_to_ordinary_scan(self) -> None:
+    def test_repository_validator_rejects_self_consistent_future_converter_documents(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         for case in ("safe", "hostile"):
             with self.subTest(case=case), tempfile.TemporaryDirectory(
@@ -3188,12 +3236,9 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                     validator, "_load_task5_converter", load_future_converter
                 ):
                     errors = validator.validate_no_developer_paths()
-                if case == "safe":
-                    self.assertEqual(errors, [])
-                else:
-                    self.assertTrue(
-                        any("contains developer path /Users/" in error for error in errors)
-                    )
+                self.assertIn(
+                    "Mac-Win generated evidence validation failed", errors
+                )
 
     def test_repository_validator_rejects_extra_generated_developer_evidence(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -3243,7 +3288,10 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             validator.ROOT = temporary_root
             self.assertEqual(
                 validator.validate_no_developer_paths(),
-                ["Repository developer-path validation failed"],
+                [
+                    "Mac-Win generated evidence validation failed",
+                    "Repository developer-path validation failed",
+                ],
             )
 
     def test_repository_validator_rejects_ordinary_post_read_same_size_mutation(self) -> None:

@@ -322,6 +322,10 @@ class _GeneratedEvidenceBinding:
         root_identity: tuple[int, int, int, int, int, int],
         expected: dict[str, bytes],
         leaves: dict[Path, tuple[bytes, tuple[int, int, int, int, int, int]]],
+        directories: dict[
+            Path,
+            tuple[tuple[int, int], tuple[tuple[str, str], ...]],
+        ],
         converter: object,
         converter_path: Path,
         converter_raw: bytes,
@@ -331,6 +335,7 @@ class _GeneratedEvidenceBinding:
         self.root_identity = root_identity
         self.expected = expected
         self.leaves = leaves
+        self.directories = directories
         self.converter = converter
         self.converter_path = converter_path
         self.converter_raw = converter_raw
@@ -369,16 +374,82 @@ class _GeneratedEvidenceBinding:
         regenerated = self.converter.render_documents(
             self.converter.build_conversion(ROOT)
         )
-        if type(regenerated) is not dict or any(
+        if type(regenerated) is not dict or set(regenerated) != GENERATED_EVIDENCE_PATHS or any(
             regenerated.get(relative) != raw
             for relative, raw in self.expected.items()
         ):
             raise ValueError("generated evidence semantics changed")
+        _revalidate_exact_generated_tree(self.directories)
         for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
             self.verify_path(path)
+        _revalidate_exact_generated_tree(self.directories)
         final_root = self.generated_root.lstat()
         if _filesystem_identity(final_root) != self.root_identity:
             raise ValueError("generated evidence root changed")
+
+
+def _read_exact_generated_directory(
+    path: Path,
+    expected: tuple[tuple[str, str], ...],
+) -> tuple[int, int]:
+    """Bind one small generated directory without accepting extra identities."""
+
+    _validate_bound_path_chain(path)
+    before = path.lstat()
+    if _ordinary_entry_kind(before) != "directory":
+        raise ValueError("generated evidence tree is invalid")
+    identity = _directory_identity(before)
+    entries: list[tuple[str, str]] = []
+    with os.scandir(path) as iterator:
+        for entry in iterator:
+            if len(entries) >= len(expected):
+                raise ValueError("generated evidence tree is invalid")
+            metadata = entry.stat(follow_symlinks=False)
+            entries.append((entry.name, _ordinary_entry_kind(metadata)))
+    actual = tuple(sorted(entries, key=lambda item: item[0].encode("utf-8")))
+    after = path.lstat()
+    if (
+        actual != expected
+        or _ordinary_entry_kind(after) != "directory"
+        or _directory_identity(after) != identity
+    ):
+        raise ValueError("generated evidence tree is invalid")
+    _validate_bound_path_chain(path)
+    return identity
+
+
+def _bind_exact_generated_tree(
+    generated_root: Path,
+) -> dict[Path, tuple[tuple[int, int], tuple[tuple[str, str], ...]]]:
+    expected = {
+        generated_root: (
+            ("catalog.json", "regular"),
+            ("mappings", "directory"),
+            ("quarantine.json", "regular"),
+        ),
+        generated_root / "mappings": (
+            ("bottle-schemas.json", "regular"),
+            ("patches.json", "regular"),
+        ),
+    }
+    return {
+        path: (_read_exact_generated_directory(path, entries), entries)
+        for path, entries in expected.items()
+    }
+
+
+def _revalidate_exact_generated_tree(
+    directories: dict[
+        Path,
+        tuple[tuple[int, int], tuple[tuple[str, str], ...]],
+    ],
+) -> None:
+    if type(directories) is not dict or len(directories) != 2:
+        raise ValueError("generated evidence tree is invalid")
+    for path in sorted(directories, key=lambda value: str(value).encode("utf-8")):
+        identity, expected = directories[path]
+        if _read_exact_generated_directory(path, expected) != identity:
+            raise ValueError("generated evidence tree changed")
 
 
 class _DeveloperPathScanError(ValueError):
@@ -841,7 +912,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             _load_task5_converter()
         )
         expected = converter.render_documents(converter.build_conversion(ROOT))
-        if type(expected) is not dict or not GENERATED_EVIDENCE_PATHS.issubset(expected):
+        if type(expected) is not dict or set(expected) != GENERATED_EVIDENCE_PATHS:
             raise ValueError("generated evidence set is invalid")
         selected = {relative: expected[relative] for relative in GENERATED_EVIDENCE_PATHS}
         if any(
@@ -858,6 +929,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
         ):
             raise ValueError("generated evidence root is invalid")
         root_identity = _filesystem_identity(root)
+        directories = _bind_exact_generated_tree(generated_root)
         leaves: dict[
             Path, tuple[bytes, tuple[int, int, int, int, int, int]]
         ] = {}
@@ -881,6 +953,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             root_identity,
             selected,
             leaves,
+            directories,
             converter,
             converter_path,
             converter_raw,
