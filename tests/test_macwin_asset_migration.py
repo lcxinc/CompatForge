@@ -51,7 +51,7 @@ class MigrationLayoutTests(unittest.TestCase):
 
     def test_json_contracts_are_lf_pinned_by_repository_attributes(self) -> None:
         self._git(ROOT, "ls-files", "--error-unmatch", ".gitattributes")
-        attributes = self._git_bytes(ROOT, "show", ":.gitattributes")
+        attributes = self._git_bytes(ROOT, "show", "HEAD:.gitattributes")
         self.assertNotIn(b"\r", attributes)
         self.assertEqual(
             attributes.count(b"/migration/macwin/**/*.json text eol=lf\n"),
