@@ -8507,6 +8507,37 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     any(record[:2] == ("linked", "symlink") for record in snapshot)
                 )
 
+    def test_snapshot_never_opens_a_linked_leaf_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external = Path(directory).with_name(Path(directory).name + "-external")
+            external.write_bytes(b"secret")
+            linked = root / "linked-leaf"
+            opened = False
+            real_open = self.converter._open_source_leaf_descriptor
+            try:
+                os.symlink(external, linked)
+            except (OSError, NotImplementedError) as error:
+                external.unlink(missing_ok=True)
+                self.skipTest(f"linked leaf contract unavailable: {error}")
+
+            def observe_open(path):
+                nonlocal opened
+                if path == linked:
+                    opened = True
+                return real_open(path)
+
+            try:
+                with mock.patch.object(
+                    self.converter, "_open_source_leaf_descriptor", observe_open
+                ), self.assertRaisesRegex(AssertionError, "reparse point") if os.name == "nt" else contextlib.nullcontext():
+                    snapshot = self._snapshot_tree(root)
+                    if os.name != "nt":
+                        self.assertTrue(any(row[:2] == ("linked-leaf", "symlink") for row in snapshot))
+            finally:
+                external.unlink(missing_ok=True)
+            self.assertFalse(opened)
+
     def test_approved_write_scope_is_exact_and_repeat_is_a_no_op(self) -> None:
         before_repository = self._snapshot_tree(ROOT, exclude_generated=True)
         before_source = self._snapshot_tree(ROOT / "migration/macwin/source")
@@ -8558,6 +8589,80 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 AssertionError, "side effect blocked"
             ):
                 escape_then_write(root, self.documents)
+
+            original = outside.read_text(encoding="utf-8") if outside.exists() else None
+            with self._audit_write_scope(generated), self.assertRaisesRegex(
+                AssertionError, "side effect blocked"
+            ):
+                outside.write_text("mutated", encoding="utf-8")
+                if original is not None:
+                    outside.write_text(original, encoding="utf-8")
+
+            external_directory = root / "external-directory"
+            external_directory.mkdir()
+            link = generated / "escape-link"
+            try:
+                os.symlink(external_directory, link, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"write audit symlink contract unavailable: {error}")
+            with self._audit_write_scope(generated), self.assertRaisesRegex(
+                AssertionError, "side effect blocked"
+            ):
+                (link / "escaped").write_bytes(b"escaped")
+            self.assertFalse((external_directory / "escaped").exists())
+
+    def test_snapshot_rejects_a_directory_swap_before_external_content_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / "child"
+            external = root / "external"
+            child.mkdir()
+            external.mkdir()
+            (child / "inside").write_bytes(b"inside")
+            secret = external / "secret"
+            secret.write_bytes(b"external-secret")
+            saved = root / "saved-child"
+            real_scandir = os.scandir
+            real_reader = self._read_bound_snapshot_file
+            external_read = False
+            swapped = False
+            swap_blocked = False
+            scan_count = 0
+
+            def swap_before_child_scan(target):
+                nonlocal scan_count, swap_blocked, swapped
+                scan_count += 1
+                target_path = Path(target) if not isinstance(target, int) else None
+                if (target_path == child or scan_count == 2) and not swapped:
+                    try:
+                        child.rename(saved)
+                    except OSError:
+                        swap_blocked = True
+                        raise AssertionError("directory replacement blocked") from None
+                    os.symlink(external, child, target_is_directory=True)
+                    swapped = True
+                return real_scandir(target)
+
+            def observe_reader(path, **kwargs):
+                nonlocal external_read
+                if path == secret or external in path.parents:
+                    external_read = True
+                return real_reader(path, **kwargs)
+
+            try:
+                with mock.patch.object(os, "scandir", swap_before_child_scan), mock.patch.object(
+                    self, "_read_bound_snapshot_file", observe_reader
+                ), self.assertRaises((AssertionError, self.converter.ConversionError)):
+                    self._snapshot_tree(root)
+            except NotImplementedError as error:
+                self.skipTest(f"directory swap contract unavailable: {error}")
+            finally:
+                if child.is_symlink():
+                    child.unlink()
+                if saved.exists():
+                    saved.rename(child)
+            self.assertTrue(swapped or swap_blocked)
+            self.assertFalse(external_read)
 
     @staticmethod
     def _write_document_map(root: Path, documents: dict[str, bytes]) -> None:
@@ -8850,6 +8955,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         approved_root = approved_root.absolute()
         events: list[Path] = []
         patches = []
+        root_metadata = os.lstat(approved_root)
+        root_identity = self._snapshot_identity(root_metadata)
+        descriptor_paths: dict[int, Path] = {}
 
         def audit_path(value, *, dir_fd=None):
             if isinstance(value, int):
@@ -8858,13 +8966,29 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             if not path.is_absolute():
                 if dir_fd is None:
                     path = Path.cwd() / path
-                elif os.name != "nt" and Path(f"/proc/self/fd/{dir_fd}").exists():
-                    path = Path(os.readlink(f"/proc/self/fd/{dir_fd}")) / path
+                elif dir_fd in descriptor_paths:
+                    path = descriptor_paths[dir_fd] / path
                 else:
                     raise AssertionError("side effect blocked")
             path = path.absolute()
             if not self._path_is_within(path, approved_root):
                 raise AssertionError("side effect blocked")
+            if self._snapshot_identity(os.lstat(approved_root)) != root_identity:
+                raise AssertionError("side effect blocked")
+            current = approved_root
+            for component in path.relative_to(approved_root).parts[:-1]:
+                current = current / component
+                try:
+                    metadata = os.lstat(current)
+                except FileNotFoundError:
+                    break
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or getattr(metadata, "st_reparse_tag", 0)
+                    or getattr(metadata, "st_file_attributes", 0) & 0x400
+                ):
+                    raise AssertionError("side effect blocked")
             events.append(path)
 
         def wrap(owner, name, path_indexes=(0,)):
@@ -8877,24 +9001,76 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 return real(*args, **kwargs)
             patches.append(mock.patch.object(owner, name, guarded))
 
-        for name in ("unlink", "remove", "mkdir", "makedirs", "rmdir", "utime", "chmod", "chown", "truncate", "symlink"):
+        for name in ("unlink", "remove", "mkdir", "makedirs", "rmdir", "utime", "chmod", "chown", "truncate"):
             if hasattr(os, name):
                 wrap(os, name)
-        for name in ("replace", "rename", "link"):
+        for name in ("replace", "rename", "link", "symlink"):
             if hasattr(os, name):
                 wrap(os, name, (0, 1))
         real_os_open = os.open
+        real_os_close = os.close
         write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
         def guarded_os_open(path, flags, *args, **kwargs):
+            dir_fd = kwargs.get("dir_fd")
             if flags & write_flags:
-                audit_path(path, dir_fd=kwargs.get("dir_fd"))
-            return real_os_open(path, flags, *args, **kwargs)
+                audit_path(path, dir_fd=dir_fd)
+            descriptor = real_os_open(path, flags, *args, **kwargs)
+            try:
+                if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                    opened = Path(os.fsdecode(os.fspath(path)))
+                    if not opened.is_absolute():
+                        opened = (descriptor_paths.get(dir_fd, Path.cwd()) / opened)
+                    descriptor_paths[descriptor] = opened.absolute()
+            except OSError:
+                pass
+            return descriptor
+        def guarded_os_close(descriptor):
+            descriptor_paths.pop(descriptor, None)
+            return real_os_close(descriptor)
         patches.append(mock.patch.object(os, "open", guarded_os_open))
-        real_write_bytes = Path.write_bytes
-        def guarded_write_bytes(path, data):
-            audit_path(path)
-            return real_write_bytes(path, data)
-        patches.append(mock.patch.object(Path, "write_bytes", guarded_write_bytes))
+        patches.append(mock.patch.object(os, "close", guarded_os_close))
+        real_builtin_open = builtins.open
+        real_io_open = io.open
+        def guard_stream(real_function):
+            def guarded(path, mode="r", *args, **kwargs):
+                if any(character in mode for character in "wax+"):
+                    audit_path(path)
+                return real_function(path, mode, *args, **kwargs)
+            return guarded
+        patches.append(mock.patch.object(builtins, "open", guard_stream(real_builtin_open)))
+        patches.append(mock.patch.object(io, "open", guard_stream(real_io_open)))
+        real_move = getattr(self.converter, "_MOVE_FILE", None)
+        real_replace = getattr(self.converter, "_REPLACE_FILE", None)
+        if real_move is not None:
+            def guarded_move(source, destination, *args):
+                audit_path(source)
+                audit_path(destination)
+                return real_move(source, destination, *args)
+            patches.append(mock.patch.object(self.converter, "_MOVE_FILE", guarded_move))
+        if real_replace is not None:
+            def guarded_replace(destination, replacement, *args):
+                audit_path(destination)
+                audit_path(replacement)
+                return real_replace(destination, replacement, *args)
+            patches.append(mock.patch.object(self.converter, "_REPLACE_FILE", guarded_replace))
+        for name, path_count in (
+            ("_posix_rename", 2),
+            ("_atomic_move_no_replace", 2),
+            ("_atomic_replace_with_displaced", 3),
+            ("_install_staged_leaf", 2),
+        ):
+            real_function = getattr(self.converter, name)
+            def make_guarded(function, count):
+                def guarded(*args, **kwargs):
+                    for value in args[:count]:
+                        audit_path(value)
+                    return function(*args, **kwargs)
+                return guarded
+            patches.append(
+                mock.patch.object(
+                    self.converter, name, make_guarded(real_function, path_count)
+                )
+            )
         with contextlib.ExitStack() as stack:
             for patcher in patches:
                 stack.enter_context(patcher)
@@ -8961,37 +9137,52 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         path = Path(completed.stdout.decode("utf-8").strip())
         return path if path.is_absolute() else (ROOT / path).absolute()
 
-    @staticmethod
-    def _snapshot_tree(root: Path, *, exclude_generated: bool = False):
+    def _snapshot_tree(self, root: Path, *, exclude_generated: bool = False):
         root_metadata = os.lstat(root)
-        MacWinMigrationSideEffectTests._reject_snapshot_reparse(root_metadata)
+        self._reject_snapshot_reparse(root_metadata)
         if stat.S_ISLNK(root_metadata.st_mode):
             return ((root.name, "symlink", os.readlink(root)),)
         if not stat.S_ISDIR(root_metadata.st_mode):
-            raw, identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(root)
+            raw, identity = self._read_bound_snapshot_file(root)
             return ((root.name, "file", len(raw), hashlib.sha256(raw).hexdigest(), identity),)
-        root_identity = MacWinMigrationSideEffectTests._snapshot_identity(root_metadata)
+        root_identity = self._snapshot_identity(root_metadata)
         records: list[tuple[object, ...]] = [(".", "directory", root_identity)]
         generated = (root / "migration/macwin/generated").absolute()
-        pending = [(root, "")]
-        while pending:
-            directory, prefix = pending.pop()
-            with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+        held_root = self.converter._hold_generated_directories([root])[0]
+
+        def scan(directory, prefix: str) -> None:
+            self.converter._verify_held_generated_directories([directory])
+            scan_target = directory.handle if os.name != "nt" else directory.path
+            with os.scandir(scan_target) as iterator:
+                entries = sorted(list(iterator), key=lambda entry: os.fsencode(entry.name))
+            self.converter._verify_held_generated_directories([directory])
             for entry in entries:
-                path = Path(entry.path)
+                path = directory.path / entry.name
                 relative = f"{prefix}/{entry.name}" if prefix else entry.name
                 absolute = path.absolute()
                 if exclude_generated and (absolute == generated or generated in absolute.parents):
                     continue
                 metadata = os.lstat(path)
-                MacWinMigrationSideEffectTests._reject_snapshot_reparse(metadata)
-                identity = MacWinMigrationSideEffectTests._snapshot_identity(metadata)
+                self._reject_snapshot_reparse(metadata)
+                identity = self._snapshot_identity(metadata)
                 if stat.S_ISDIR(metadata.st_mode):
                     records.append((relative, "directory", identity))
-                    pending.append((path, relative))
+                    child = self.converter._open_bound_child(directory, entry.name)
+                    try:
+                        opened_identity = (
+                            self._snapshot_identity(os.fstat(child.handle))
+                            if os.name != "nt"
+                            else (child.identity[0], child.identity[1], stat.S_IFDIR)
+                        )
+                        if opened_identity[:2] != identity[:2]:
+                            raise AssertionError("snapshot directory identity changed")
+                        scan(child, relative)
+                    finally:
+                        self.converter._close_generated_directories([child])
                 elif stat.S_ISREG(metadata.st_mode):
-                    raw, opened_identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(path)
+                    raw, opened_identity = self._read_bound_snapshot_file(
+                        path, parent=directory, name=entry.name
+                    )
                     if opened_identity != identity:
                         raise AssertionError("snapshot file identity changed")
                     records.append((relative, "file", len(raw), hashlib.sha256(raw).hexdigest(), metadata.st_mode, identity))
@@ -8999,25 +9190,36 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     records.append((relative, "symlink", os.readlink(path), identity))
                 else:
                     records.append((relative, "nonregular", identity))
-            current = os.lstat(directory)
-            MacWinMigrationSideEffectTests._reject_snapshot_reparse(current)
-            expected = next(
-                record[2]
-                for record in records
-                if record[0] == (prefix or ".") and record[1] == "directory"
-            )
-            if MacWinMigrationSideEffectTests._snapshot_identity(current) != expected:
-                raise AssertionError("snapshot directory identity changed")
+            self.converter._verify_held_generated_directories([directory])
+        try:
+            scan(held_root, "")
+        finally:
+            self.converter._close_generated_directories([held_root])
         return tuple(sorted(records, key=lambda record: os.fsencode(str(record[0]))))
 
-    @staticmethod
-    def _read_bound_snapshot_file(path: Path) -> tuple[bytes, tuple[int, int, int]]:
+    def _read_bound_snapshot_file(
+        self,
+        path: Path,
+        *,
+        parent=None,
+        name: str | None = None,
+    ) -> tuple[bytes, tuple[int, int, int]]:
         metadata = os.lstat(path)
+        self._reject_snapshot_reparse(metadata)
         if not stat.S_ISREG(metadata.st_mode):
             raise AssertionError("snapshot leaf is not regular")
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
+        if parent is not None:
+            self.converter._verify_held_generated_directories([parent])
+        if os.name == "nt":
+            descriptor = self.converter._open_source_leaf_descriptor(path)
+        else:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(
+                name if parent is not None else path,
+                flags,
+                **({"dir_fd": parent.handle} if parent is not None else {}),
+            )
         try:
             before = os.fstat(descriptor)
             chunks = []
@@ -9029,10 +9231,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
-        identity = MacWinMigrationSideEffectTests._snapshot_identity(before)
-        if identity != MacWinMigrationSideEffectTests._snapshot_identity(
+        if parent is not None:
+            self.converter._verify_held_generated_directories([parent])
+        identity = self._snapshot_identity(before)
+        final_metadata = os.lstat(path)
+        self._reject_snapshot_reparse(final_metadata)
+        if identity != self._snapshot_identity(
             after
-        ) or identity != MacWinMigrationSideEffectTests._snapshot_identity(metadata):
+        ) or identity != self._snapshot_identity(metadata) or identity != self._snapshot_identity(final_metadata):
             raise AssertionError(f"snapshot file identity changed: {path}")
         return b"".join(chunks), identity
 
