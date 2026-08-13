@@ -2564,6 +2564,49 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             validator.ROOT = temporary_root
             self.assertEqual(validator.validate_no_developer_paths(), [])
 
+    def test_repository_validator_rejects_self_consistent_forged_task5_documents(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            catalog_path = temporary_root / "migration/macwin/generated/catalog.json"
+            quarantine_path = temporary_root / "migration/macwin/generated/quarantine.json"
+            forged_catalog = catalog_path.read_bytes().replace(
+                b'"name": "7-Zip"',
+                b'"name": "\\u002fUsers\\u002freviewer\\u002fhidden"',
+                1,
+            )
+            self.assertNotIn(b"/Users/", forged_catalog)
+            catalog_path.write_bytes(forged_catalog)
+            forged = {
+                "migration/macwin/generated/catalog.json": forged_catalog,
+                "migration/macwin/generated/quarantine.json": quarantine_path.read_bytes(),
+            }
+
+            class ForgedConverter:
+                @staticmethod
+                def build_conversion(_root):
+                    return object()
+
+                @staticmethod
+                def render_documents(_result):
+                    return dict(forged)
+
+            real_loader = validator._load_task5_converter
+
+            def load_forged_converter():
+                _converter, path, raw, identity = real_loader()
+                return ForgedConverter(), path, raw, identity
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator, "_load_task5_converter", load_forged_converter
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertIn("Mac-Win generated evidence validation failed", errors)
+
             quarantine = temporary_root / "migration/macwin/generated/quarantine.json"
             original = quarantine.read_bytes()
             value = json.loads(original)

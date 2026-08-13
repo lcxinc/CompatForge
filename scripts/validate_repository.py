@@ -42,6 +42,15 @@ TASK5_DOCUMENT_PATHS = frozenset(
         "migration/macwin/generated/quarantine.json",
     }
 )
+TASK5_DOCUMENT_SHA256 = {
+    "migration/macwin/generated/catalog.json": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
+    "migration/macwin/generated/quarantine.json": "855102faa9e2a72f25c354fde6fe0e8a4fd7c52743650fbd02684d5c973cfee7",
+}
+TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
+TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
+TASK5_CATALOG_ROOT = "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog"
+TASK5_CATALOG_INDEX = f"{TASK5_CATALOG_ROOT}/catalog.index.json"
+TASK5_CATALOG_SIGNATURE = f"{TASK5_CATALOG_ROOT}/catalog.signature.json"
 MAX_TASK5_DOCUMENT_BYTES = 1024 * 1024
 MAX_ORDINARY_SCAN_BYTES = 32 * 1024 * 1024
 DEVELOPER_PATH_VALIDATION_ERROR = "Repository developer-path validation failed"
@@ -504,7 +513,165 @@ def _load_task5_converter() -> tuple[
     return module, path, raw, identity
 
 
-def _validated_macwin_generated_evidence_binding() -> tuple[
+def _canonical_task5_json(raw: bytes) -> dict[str, object]:
+    if len(raw) > MAX_TASK5_DOCUMENT_BYTES:
+        raise ValueError("generated evidence is oversized")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+        value = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("generated evidence JSON is invalid") from None
+    if type(value) is not dict:
+        raise ValueError("generated evidence JSON is invalid")
+    canonical = (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        + b"\n"
+    )
+    if raw != canonical:
+        raise ValueError("generated evidence JSON is not canonical")
+    return value
+
+
+def _independent_task5_oracle(
+    source_binding: object,
+    documents: dict[str, bytes],
+) -> None:
+    """Authenticate the fixed real Task 5 ledger without converter callbacks."""
+
+    if type(documents) is not dict or set(documents) != TASK5_DOCUMENT_PATHS:
+        raise ValueError("generated evidence set is invalid")
+    for relative, expected_digest in TASK5_DOCUMENT_SHA256.items():
+        raw = documents.get(relative)
+        if type(raw) is not bytes or hashlib.sha256(raw).hexdigest() != expected_digest:
+            raise ValueError("generated evidence digest is invalid")
+    catalog = _canonical_task5_json(
+        documents["migration/macwin/generated/catalog.json"]
+    )
+    quarantine = _canonical_task5_json(
+        documents["migration/macwin/generated/quarantine.json"]
+    )
+    manifest = source_binding.manifest
+    if (
+        type(manifest) is not dict
+        or manifest.get("repository") != TASK5_SOURCE_REPOSITORY
+        or manifest.get("sourceCommit") != TASK5_SOURCE_COMMIT
+        or type(manifest.get("assets")) is not list
+    ):
+        raise ValueError("source evidence identity is invalid")
+    assets = {
+        item["sourcePath"]: item
+        for item in manifest["assets"]
+        if type(item) is dict and type(item.get("sourcePath")) is str
+    }
+    recipe_paths = sorted(
+        (
+            path
+            for path in assets
+            if path.startswith(f"{TASK5_CATALOG_ROOT}/recipes/")
+        ),
+        key=lambda value: value.encode("ascii"),
+    )
+    if len(recipe_paths) != 17:
+        raise ValueError("source recipe coverage is invalid")
+    expected_candidates: list[dict[str, object]] = []
+    expected_records: list[dict[str, object]] = []
+    for path in recipe_paths:
+        asset = assets[path]
+        raw = source_binding.verify_path(
+            source_binding.root / PurePosixPath(asset["objectPath"])
+        )
+        try:
+            source = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("source recipe JSON is invalid") from None
+        if (
+            type(source) is not dict
+            or type(source.get("id")) is not str
+            or type(source.get("name")) is not str
+            or asset.get("category") != "catalog"
+            or asset.get("intendedOwner") != "compatforge/catalog"
+            or asset.get("sourceCommit") != TASK5_SOURCE_COMMIT
+            or asset.get("license") != {"status": "unresolved"}
+            or asset.get("provenance") != {"status": "unresolved"}
+        ):
+            raise ValueError("source recipe evidence is invalid")
+        expected_candidates.append(
+            {
+                "id": source["id"],
+                "name": source["name"],
+                "reason": "missing-license",
+                "sourceCommit": TASK5_SOURCE_COMMIT,
+                "sourcePath": path,
+                "sourceSha256": asset["sha256"],
+                "status": "quarantined",
+            }
+        )
+        expected_records.append(
+            {
+                "sourcePath": path,
+                "sourceCommit": TASK5_SOURCE_COMMIT,
+                "sourceSha256": asset["sha256"],
+                "category": "catalog",
+                "status": "quarantined",
+                "reason": "missing-license",
+                "intendedOwner": "compatforge/catalog",
+            }
+        )
+    if (
+        set(catalog)
+        != {
+            "schemaVersion", "sourceRepository", "sourceCommit", "catalogBoundary",
+            "candidateCount", "convertedCount", "quarantinedCount", "candidates",
+        }
+        or catalog.get("schemaVersion") != "1"
+        or catalog.get("sourceRepository") != TASK5_SOURCE_REPOSITORY
+        or catalog.get("sourceCommit") != TASK5_SOURCE_COMMIT
+        or catalog.get("candidateCount") != 17
+        or catalog.get("convertedCount") != 0
+        or catalog.get("quarantinedCount") != 17
+        or catalog.get("candidates") != expected_candidates
+    ):
+        raise ValueError("generated catalog semantics are invalid")
+    boundary = catalog["catalogBoundary"]
+    if type(boundary) is not dict or set(boundary) != {"index", "signature"}:
+        raise ValueError("generated catalog boundary is invalid")
+    for label, path in (("index", TASK5_CATALOG_INDEX), ("signature", TASK5_CATALOG_SIGNATURE)):
+        asset = assets.get(path)
+        if boundary.get(label) != {
+            "sourceCommit": TASK5_SOURCE_COMMIT,
+            "sourcePath": path,
+            "sourceSha256": asset.get("sha256") if type(asset) is dict else None,
+        }:
+            raise ValueError("generated catalog boundary is invalid")
+    records = quarantine.get("records")
+    if (
+        set(quarantine) != {"schemaVersion", "records"}
+        or quarantine.get("schemaVersion") != "1"
+        or type(records) is not list
+        or len(records) != 17
+    ):
+        raise ValueError("generated quarantine semantics are invalid")
+    for actual, expected in zip(records, expected_records, strict=True):
+        if (
+            type(actual) is not dict
+            or set(actual)
+            != {
+                "sourcePath", "sourceCommit", "sourceSha256", "category", "status",
+                "reason", "evidenceLocators", "intendedOwner", "releaseCondition",
+            }
+            or any(actual.get(key) != value for key, value in expected.items())
+            or type(actual.get("evidenceLocators")) is not list
+            or not actual["evidenceLocators"]
+            or actual["evidenceLocators"]
+            != sorted(set(actual["evidenceLocators"]), key=lambda value: value.encode("utf-8"))
+            or f'{actual["sourcePath"]}#license' not in actual["evidenceLocators"]
+            or actual.get("releaseCondition")
+            != "Record a reviewed source license and regenerate the migration."
+        ):
+            raise ValueError("generated quarantine record is invalid")
+
+
+def _validated_macwin_generated_evidence_binding(source_binding: object) -> tuple[
     _GeneratedEvidenceBinding | None, list[str]
 ]:
     """Rebuild, compare, and bind only the two approved Task 5 leaves."""
@@ -530,12 +697,15 @@ def _validated_macwin_generated_evidence_binding() -> tuple[
         leaves: dict[
             Path, tuple[bytes, tuple[int, int, int, int, int, int]]
         ] = {}
+        committed: dict[str, bytes] = {}
         for relative in sorted(expected, key=lambda value: value.encode("ascii")):
             path = (ROOT / PurePosixPath(relative)).absolute()
             raw, identity = _read_bound_regular_file(path, MAX_TASK5_DOCUMENT_BYTES)
             if raw != expected[relative] or hashlib.sha256(raw).digest() != hashlib.sha256(expected[relative]).digest():
                 raise ValueError("generated evidence bytes do not match")
             leaves[path] = (raw, identity)
+            committed[relative] = raw
+        _independent_task5_oracle(source_binding, committed)
         if len(leaves) != 2:
             raise ValueError("generated evidence leaf set is invalid")
         binding = _GeneratedEvidenceBinding(
@@ -641,7 +811,7 @@ def validate_no_developer_paths() -> list[str]:
     if source_binding is None:
         return [*errors, *_unbound_developer_path_scan()]
     generated_binding, generated_errors = (
-        _validated_macwin_generated_evidence_binding()
+        _validated_macwin_generated_evidence_binding(source_binding)
     )
     if generated_binding is None:
         try:
