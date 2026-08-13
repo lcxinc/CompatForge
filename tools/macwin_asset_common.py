@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import NoReturn
 
@@ -292,3 +293,57 @@ def require_relative_posix_path(value: str) -> str:
         ):
             _fail("path is not a safe relative POSIX path")
     return value
+
+
+def is_host_dependent_path(value: object) -> bool:
+    """Recognize host-absolute, home, and environment-dependent locators."""
+
+    if type(value) is not str:
+        return False
+    normalized = value.replace("\\", "/")
+    return (
+        normalized.startswith(("/", "~/", "$HOME/", "${HOME}/"))
+        or re.match(r"^[A-Za-z]:/", normalized) is not None
+        or re.match(r"^%[^%]+%/", normalized) is not None
+        or re.match(r"^\$\{[^}]+\}/", normalized) is not None
+        or re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*/", normalized) is not None
+    )
+
+
+def is_safe_guest_executable(value: object) -> bool:
+    """Accept one bounded relative guest path or explicit Wine C: path."""
+
+    if type(value) is not str or not value:
+        return False
+    try:
+        encoded = value.encode("ascii", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    if len(encoded) > 1024 or any(byte < 0x20 or byte == 0x7F for byte in encoded):
+        return False
+    normalized = value.replace("\\", "/")
+    if normalized.startswith(("//", "~/")):
+        return False
+    if re.match(r"^[A-Za-z]:", normalized):
+        if not normalized.startswith("C:/"):
+            return False
+        normalized = normalized[3:]
+    elif normalized.startswith("/") or ":" in normalized:
+        return False
+    if not normalized or normalized.endswith("/") or "//" in normalized:
+        return False
+    if any(character in '<>"|?*' for character in normalized):
+        return False
+    reserved = {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    reserved.update(f"com{number}" for number in range(1, 10))
+    reserved.update(f"lpt{number}" for number in range(1, 10))
+    for part in normalized.split("/"):
+        stem = part.split(".", 1)[0].rstrip(" ").casefold()
+        if (
+            part in {"", ".", ".."}
+            or len(part.encode("ascii")) > 255
+            or part.endswith((".", " "))
+            or stem in reserved
+        ):
+            return False
+    return True

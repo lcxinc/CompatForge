@@ -2342,6 +2342,86 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         self.assertNotIn("command", draft["installer"])
         self.assertEqual(draft["installer"]["arguments"], source["installer"]["arguments"])
 
+    def test_host_dependency_detection_covers_portable_path_attacks(self) -> None:
+        hostile = (
+            "/Users/reviewer/tool.exe",
+            "C:/Users/reviewer/tool.exe",
+            "C:\\Users\\reviewer\\tool.exe",
+            "//server/share/tool.exe",
+            "\\\\server\\share\\tool.exe",
+            "//?/C:/device/tool.exe",
+            "\\\\?\\C:\\device\\tool.exe",
+            "//./pipe/host",
+            "\\\\.\\pipe\\host",
+            "~/private/tool.exe",
+            "~\\private\\tool.exe",
+            "%USERPROFILE%\\private\\tool.exe",
+            "${HOME}/private/tool.exe",
+            "$HOME/private/tool.exe",
+        )
+        for value in hostile:
+            with self.subTest(value=value):
+                self.assertTrue(self.converter._is_host_absolute_locator(value))
+        for value in (
+            "bin/tool.exe",
+            "bin\\tool.exe",
+            "C:relative.exe",
+            "https://example.invalid/tool.exe",
+        ):
+            with self.subTest(safe=value):
+                self.assertFalse(self.converter._is_host_absolute_locator(value))
+
+    def test_guest_executable_contract_normalizes_separators_and_windows_rules(self) -> None:
+        safe = (
+            "bin/tool.exe",
+            "bin\\tool.exe",
+            "Program Files/App/tool.exe",
+            "Program Files\\App\\tool.exe",
+            "C:/Program Files/App/tool.exe",
+            "C:\\Program Files\\App\\tool.exe",
+        )
+        hostile = (
+            "",
+            "/absolute/tool.exe",
+            "D:/absolute/tool.exe",
+            "C:relative.exe",
+            "//server/share/tool.exe",
+            "\\\\server\\share\\tool.exe",
+            "\\\\?\\C:\\device\\tool.exe",
+            "\\\\.\\pipe\\tool.exe",
+            "../tool.exe",
+            ".\\tool.exe",
+            "bin/../tool.exe",
+            "bin//tool.exe",
+            "bin/tool.exe:stream",
+            "bin/a<b.exe",
+            "bin/a>b.exe",
+            'bin/a"b.exe',
+            "bin/a|b.exe",
+            "bin/a?b.exe",
+            "bin/a*b.exe",
+            "bin/trailing.",
+            "bin/trailing ",
+            "bin/control\x1f.exe",
+            "CON",
+            "con.txt",
+            "bin/PRN.log",
+            "bin/AUX",
+            "bin/NUL.txt",
+            "bin/COM1.exe",
+            "bin/LPT9.exe",
+            "bin/CONIN$.txt",
+            "bin/CONOUT$.txt",
+            ("a" * 256) + "/tool.exe",
+            "/".join(["a" * 255] * 5),
+        )
+        for value in safe:
+            with self.subTest(safe=value):
+                self.assertTrue(self.converter._is_safe_guest_executable(value))
+        for value in hostile:
+            with self.subTest(hostile=value):
+                self.assertFalse(self.converter._is_safe_guest_executable(value))
+
     def test_every_rejection_rule_is_detected_with_fixed_precedence(self) -> None:
         asset = self._recipe_asset("7zip")
         base = self.converter._parse_json_object(asset)

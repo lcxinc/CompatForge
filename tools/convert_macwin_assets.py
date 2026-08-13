@@ -1062,30 +1062,13 @@ def _add_recipe_finding(
 
 
 def _is_host_absolute_locator(value: object) -> bool:
-    if type(value) is not str:
-        return False
-    return (
-        value.startswith("/")
-        or value.startswith("~/")
-        or value.startswith("$HOME/")
-        or value.startswith("${HOME}/")
-        or re.match(r"^[A-Za-z]:/", value) is not None
-    )
+    _bootstrap_dependencies()
+    return _COMMON.is_host_dependent_path(value)
 
 
 def _is_safe_guest_executable(value: object) -> bool:
-    if type(value) is not str or not value or len(value) > 1024:
-        return False
-    if _is_host_absolute_locator(value) or value.startswith(("\\\\", "\\\\?\\", "\\\\.\\")):
-        return False
-    if value.startswith("C:\\"):
-        parts = value[3:].split("\\")
-        return bool(parts) and all(part not in {"", ".", ".."} for part in parts)
-    try:
-        _COMMON.require_relative_posix_path(value)
-    except _COMMON.MigrationError:
-        return False
-    return True
+    _bootstrap_dependencies()
+    return _COMMON.is_safe_guest_executable(value)
 
 
 def _recipe_findings(
@@ -1231,10 +1214,11 @@ def _recipe_findings(
                 _add_recipe_finding(findings, "unsupported-schema", locator)
                 continue
             executable = launcher.get("exePath")
-            if _is_host_absolute_locator(executable):
-                _add_recipe_finding(findings, "absolute-path", executable)
-            elif not _is_safe_guest_executable(executable):
-                _add_recipe_finding(findings, "unsupported-behavior", locator)
+            if not _is_safe_guest_executable(executable):
+                if _is_host_absolute_locator(executable):
+                    _add_recipe_finding(findings, "absolute-path", executable)
+                else:
+                    _add_recipe_finding(findings, "unsupported-behavior", locator)
             overrides = launcher.get("envOverrides")
             if type(overrides) is not dict or any(
                 type(key) is not str or type(value) is not str
