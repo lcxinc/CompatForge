@@ -8611,6 +8611,57 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 (link / "escaped").write_bytes(b"escaped")
             self.assertFalse((external_directory / "escaped").exists())
 
+            external_file = root / "external-file"
+            external_file.write_bytes(b"original")
+            linked_leaf = generated / "linked-leaf"
+            try:
+                os.symlink(external_file, linked_leaf)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"write audit leaf link contract unavailable: {error}")
+            with self._audit_write_scope(generated), self.assertRaisesRegex(
+                AssertionError, "side effect blocked"
+            ):
+                linked_leaf.write_bytes(b"escaped")
+            self.assertEqual(external_file.read_bytes(), b"original")
+
+            descriptor = os.open(external_file, os.O_RDWR)
+            try:
+                with self._audit_write_scope(generated), self.assertRaisesRegex(
+                    AssertionError, "side effect blocked"
+                ):
+                    os.write(descriptor, b"mutated!")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    os.write(descriptor, b"original")
+            finally:
+                os.close(descriptor)
+            self.assertEqual(external_file.read_bytes(), b"original")
+
+    def test_git_snapshot_distinguishes_missing_and_dangling_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git_directory = root / "worktree"
+            common = root / "common"
+            git_directory.mkdir()
+            common.mkdir()
+            with mock.patch.object(
+                self, "_git_absolute_path", side_effect=(git_directory, common)
+            ):
+                missing = self._snapshot_git_metadata()
+            dangling = common / "reftable"
+            try:
+                os.symlink(root / "missing-target", dangling, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"dangling git metadata contract unavailable: {error}")
+            with mock.patch.object(
+                self, "_git_absolute_path", side_effect=(git_directory, common)
+            ):
+                if os.name == "nt":
+                    with self.assertRaisesRegex(AssertionError, "reparse point"):
+                        self._snapshot_git_metadata()
+                else:
+                    linked = self._snapshot_git_metadata()
+                    self.assertNotEqual(missing, linked)
+
     def test_snapshot_rejects_a_directory_swap_before_external_content_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -8958,10 +9009,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         root_metadata = os.lstat(approved_root)
         root_identity = self._snapshot_identity(root_metadata)
         descriptor_paths: dict[int, Path] = {}
+        descriptor_identities: dict[int, tuple[int, int, int]] = {}
 
-        def audit_path(value, *, dir_fd=None):
-            if isinstance(value, int):
-                return
+        def resolved_path(value, *, dir_fd=None):
             path = Path(os.fsdecode(os.fspath(value)))
             if not path.is_absolute():
                 if dir_fd is None:
@@ -8970,13 +9020,19 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     path = descriptor_paths[dir_fd] / path
                 else:
                     raise AssertionError("side effect blocked")
-            path = path.absolute()
+            return path.absolute()
+
+        def audit_path(value, *, dir_fd=None):
+            if isinstance(value, int):
+                return
+            path = resolved_path(value, dir_fd=dir_fd)
             if not self._path_is_within(path, approved_root):
                 raise AssertionError("side effect blocked")
             if self._snapshot_identity(os.lstat(approved_root)) != root_identity:
                 raise AssertionError("side effect blocked")
             current = approved_root
-            for component in path.relative_to(approved_root).parts[:-1]:
+            relative_parts = path.relative_to(approved_root).parts
+            for component in relative_parts[:-1]:
                 current = current / component
                 try:
                     metadata = os.lstat(current)
@@ -8989,6 +9045,16 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     or getattr(metadata, "st_file_attributes", 0) & 0x400
                 ):
                     raise AssertionError("side effect blocked")
+            if relative_parts:
+                try:
+                    final = os.lstat(path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if stat.S_ISLNK(final.st_mode) or getattr(
+                        final, "st_reparse_tag", 0
+                    ) or getattr(final, "st_file_attributes", 0) & 0x400:
+                        raise AssertionError("side effect blocked")
             events.append(path)
 
         def wrap(owner, name, path_indexes=(0,)):
@@ -9009,6 +9075,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 wrap(os, name, (0, 1))
         real_os_open = os.open
         real_os_close = os.close
+        real_os_write = os.write
+        real_os_ftruncate = os.ftruncate
+        real_os_fchmod = getattr(os, "fchmod", None)
         write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
         def guarded_os_open(path, flags, *args, **kwargs):
             dir_fd = kwargs.get("dir_fd")
@@ -9016,19 +9085,42 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 audit_path(path, dir_fd=dir_fd)
             descriptor = real_os_open(path, flags, *args, **kwargs)
             try:
-                if stat.S_ISDIR(os.fstat(descriptor).st_mode):
-                    opened = Path(os.fsdecode(os.fspath(path)))
-                    if not opened.is_absolute():
-                        opened = (descriptor_paths.get(dir_fd, Path.cwd()) / opened)
-                    descriptor_paths[descriptor] = opened.absolute()
-            except OSError:
-                pass
+                metadata = os.fstat(descriptor)
+                opened = resolved_path(path, dir_fd=dir_fd)
+                if self._path_is_within(opened, approved_root) and (
+                    flags & write_flags or stat.S_ISDIR(metadata.st_mode)
+                ):
+                    descriptor_paths[descriptor] = opened
+                    descriptor_identities[descriptor] = self._snapshot_identity(metadata)
+            except BaseException:
+                real_os_close(descriptor)
+                raise
             return descriptor
         def guarded_os_close(descriptor):
             descriptor_paths.pop(descriptor, None)
+            descriptor_identities.pop(descriptor, None)
             return real_os_close(descriptor)
+        def audit_descriptor(descriptor):
+            if descriptor not in descriptor_paths or descriptor not in descriptor_identities:
+                raise AssertionError("side effect blocked")
+            if self._snapshot_identity(os.fstat(descriptor)) != descriptor_identities[descriptor]:
+                raise AssertionError("side effect blocked")
+            audit_path(descriptor_paths[descriptor])
+        def guarded_os_write(descriptor, data):
+            audit_descriptor(descriptor)
+            return real_os_write(descriptor, data)
+        def guarded_os_ftruncate(descriptor, length):
+            audit_descriptor(descriptor)
+            return real_os_ftruncate(descriptor, length)
         patches.append(mock.patch.object(os, "open", guarded_os_open))
         patches.append(mock.patch.object(os, "close", guarded_os_close))
+        patches.append(mock.patch.object(os, "write", guarded_os_write))
+        patches.append(mock.patch.object(os, "ftruncate", guarded_os_ftruncate))
+        if real_os_fchmod is not None:
+            def guarded_os_fchmod(descriptor, mode):
+                audit_descriptor(descriptor)
+                return real_os_fchmod(descriptor, mode)
+            patches.append(mock.patch.object(os, "fchmod", guarded_os_fchmod))
         real_builtin_open = builtins.open
         real_io_open = io.open
         def guard_stream(real_function):
@@ -9123,7 +9215,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         }
         result: dict[str, object] = {}
         for name, path in paths.items():
-            if not path.exists():
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
                 result[name] = None
             else:
                 result[name] = self._snapshot_tree(path)
