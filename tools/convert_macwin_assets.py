@@ -1076,6 +1076,10 @@ def _is_safe_guest_executable(value: object) -> bool:
 _INSTALLER_URL_MAX_LENGTH = 4096
 _INSTALLER_URL_COMPONENT_MAX_LENGTH = 2048
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_IPV4_LIKE_HOST = re.compile(
+    r"(?:0[xX][0-9A-Fa-f]+|0[0-9]+|[0-9]+)"
+    r"(?:\.(?:0[xX][0-9A-Fa-f]+|0[0-9]+|[0-9]+)){0,3}"
+)
 _URL_PATH = re.compile(r"(?:[A-Za-z0-9._~!$&'()*+,;=:@/%-])*")
 _URL_QUERY = re.compile(r"(?:[A-Za-z0-9._~!$&'()*+,;=:@/?%-])*")
 
@@ -1114,6 +1118,25 @@ def _is_safe_url_component(value: str, *, path: bool) -> bool:
             return False
         if any(part in {b".", b".."} for part in decoded.split(b"/")):
             return False
+    return True
+
+
+def _is_safe_dns_hostname(hostname: str) -> bool:
+    if len(hostname) > 253:
+        return False
+    labels = hostname.split(".")
+    for label in labels:
+        if _DNS_LABEL.fullmatch(label) is None:
+            return False
+        folded = label.casefold()
+        if folded.startswith("xn--"):
+            try:
+                decoded = folded.encode("ascii").decode("idna")
+                roundtrip = decoded.encode("idna").decode("ascii").casefold()
+            except UnicodeError:
+                return False
+            if roundtrip != folded:
+                return False
     return True
 
 
@@ -1180,18 +1203,16 @@ def _is_safe_installer_url(value: object) -> bool:
             return False
         if not host_text or hostname.lower() != host_text.lower():
             return False
-        if re.fullmatch(r"[0-9.]+", host_text):
+        if re.fullmatch(r"[0-9.]+", host_text) or _IPV4_LIKE_HOST.fullmatch(
+            host_text
+        ):
             try:
                 if str(ipaddress.IPv4Address(host_text)) != host_text:
                     return False
             except ipaddress.AddressValueError:
                 return False
-        else:
-            if len(host_text) > 253:
-                return False
-            labels = host_text.split(".")
-            if any(_DNS_LABEL.fullmatch(label) is None for label in labels):
-                return False
+        elif not _is_safe_dns_hostname(host_text):
+            return False
 
     if not _is_safe_url_component(parsed.path, path=True) or not _is_safe_url_component(
         parsed.query, path=False

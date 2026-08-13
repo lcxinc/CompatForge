@@ -2563,6 +2563,56 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
         MigrationSchemaTests._assert_schema_instance_valid(recipe, schema, schema)
 
+    def test_reviewed_candidate_rejects_ambiguous_numeric_and_invalid_alabel_hosts(self) -> None:
+        invalid = (
+            "https://0x7f.0.0.1/setup.exe",
+            "https://0x7f000001/setup.exe",
+            "https://0177.0.0.1/setup.exe",
+            "https://127.1/setup.exe",
+            "https://2130706433/setup.exe",
+            "https://xn--a.invalid/setup.exe",
+        )
+        for value in invalid:
+            with self.subTest(invalid=value):
+                result = self._synthetic_reviewed_recipe_result(
+                    lambda source, asset, url=value: source["installer"].__setitem__(
+                        "url", url
+                    )
+                )
+                record = next(
+                    record
+                    for record in result.records
+                    if record.source_path.endswith("/recipes/7zip.json")
+                )
+                self.assertEqual(record.status, "quarantined")
+                self.assertEqual(record.reason, "unresolved-external-reference")
+                self.assertIn(
+                    f"{record.source_path}#installer.url", record.evidence_locators
+                )
+                self.assertNotIn(value, record.evidence_locators)
+
+        valid = (
+            "https://127.0.0.1/setup.exe",
+            "https://example.invalid/setup.exe",
+            "https://xn--caf-dma.invalid/setup.exe",
+            "https://XN--CAF-DMA.invalid/setup.exe",
+            "https://[2001:db8::1]/setup.exe",
+        )
+        for value in valid:
+            with self.subTest(valid=value):
+                self.assertTrue(self.converter._is_safe_installer_url(value))
+                result = self._synthetic_reviewed_recipe_result(
+                    lambda source, asset, url=value: source["installer"].__setitem__(
+                        "url", url
+                    )
+                )
+                record = next(
+                    record
+                    for record in result.records
+                    if record.source_path.endswith("/recipes/7zip.json")
+                )
+                self.assertEqual(record.status, "converted")
+
     def test_every_rejection_rule_is_detected_with_fixed_precedence(self) -> None:
         asset = self._recipe_asset("7zip")
         base = self.converter._parse_json_object(asset)
