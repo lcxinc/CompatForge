@@ -75,6 +75,9 @@ QUARANTINE_REASONS = frozenset(
     }
 )
 MAX_EVIDENCE_LOCATORS = 512
+APPROVED_PORTABLE_ASSET_TABLE_SHA256 = (
+    "9db4bac2e7ddb3f542e655f5f9be1aed9d265ecd6dfa44cd563ef2b1c7eddf54"
+)
 STATUSES = frozenset({"converted", "deferred", "quarantined"})
 RECIPE_REASON_PRECEDENCE = (
     "missing-license",
@@ -1190,6 +1193,23 @@ def _validate_portable_contract_tables(source_pack: SourcePack) -> None:
             _fail("portable asset table is invalid")
         identifiers[identifier] = path
         folded_identifiers.add(folded)
+    try:
+        table_raw = _COMMON.canonical_json_bytes(
+            {
+                path: list(PORTABLE_ASSET_TABLE[path])
+                for path in sorted(
+                    PORTABLE_ASSET_TABLE,
+                    key=lambda value: value.encode("ascii"),
+                )
+            }
+        )
+    except _COMMON.MigrationError:
+        _fail("portable asset table is invalid")
+    if (
+        hashlib.sha256(table_raw).hexdigest()
+        != APPROVED_PORTABLE_ASSET_TABLE_SHA256
+    ):
+        _fail("portable asset table is invalid")
 
     if (
         type(PORTABLE_REFERENCE_TABLE) is not dict
@@ -2156,6 +2176,19 @@ def _validate_conversion_result(result: ConversionResult) -> None:
     )
     if result.records != expected:
         _fail("conversion result record is invalid")
+    records_by_path = {record.source_path: record for record in result.records}
+    paths_by_identifier = {
+        entry[0]: path for path, entry in PORTABLE_ASSET_TABLE.items()
+    }
+    for source_path in sorted(
+        PORTABLE_REFERENCE_TABLE, key=lambda value: value.encode("ascii")
+    ):
+        if records_by_path[source_path].status != "converted":
+            continue
+        for target_identifier in PORTABLE_REFERENCE_TABLE[source_path]:
+            target_path = paths_by_identifier[target_identifier]
+            if records_by_path[target_path].status != "converted":
+                _fail("portable converted reference is unresolved")
     for record in result.records:
         if (
             record.status not in STATUSES

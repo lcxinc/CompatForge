@@ -546,12 +546,47 @@ class MigrationSchemaTests(unittest.TestCase):
     def test_schema_boundary_oracle_uses_only_the_standard_library(self) -> None:
         tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         imported = set()
+        importlib_aliases = {"importlib"}
+        import_module_aliases = {"__import__"}
+        dynamic_imports = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".", 1)[0] for alias in node.names)
+                importlib_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "importlib"
+                )
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".", 1)[0])
+                if node.module == "importlib":
+                    import_module_aliases.update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == "import_module"
+                    )
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "jsonschema"
+                and (
+                    (
+                        isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in importlib_aliases
+                        and node.func.attr == "import_module"
+                    )
+                    or (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id in import_module_aliases
+                    )
+                )
+            ):
+                dynamic_imports.add(node.args[0].value)
         self.assertNotIn("jsonschema", imported)
+        self.assertNotIn("jsonschema", dynamic_imports)
 
     def test_source_pack_contract_captures_source_identities_and_dependencies(self) -> None:
         schema = self._schema("macwin-source-pack.schema.json")
@@ -2568,7 +2603,6 @@ class MacWinPortableAssetTests(unittest.TestCase):
             self.assertEqual(documents[manifest["contentPath"]], replacements[path].raw)
 
     def test_portable_schemas_require_reviewed_license_and_provenance(self) -> None:
-        jsonschema = importlib.import_module("jsonschema")
         cases = (
             ("scripts/analyze-window-image.py", "portable-probe.schema.json"),
             ("scripts/fixtures/meshlab-cube.obj", "portable-fixture.schema.json"),
@@ -2587,17 +2621,18 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 )
                 manifest = self.converter._portable_document(reviewed, record)
                 schema = json.loads((ROOT / "schemas" / schema_name).read_bytes())
-                jsonschema.Draft202012Validator(schema).validate(manifest)
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    manifest, schema, schema
+                )
                 for field in ("license", "provenance"):
                     mutant = copy.deepcopy(manifest)
                     mutant[field] = {"status": "unresolved"}
-                    with self.subTest(field=field), self.assertRaises(
-                        jsonschema.ValidationError
-                    ):
-                        jsonschema.Draft202012Validator(schema).validate(mutant)
+                    with self.subTest(field=field), self.assertRaises(AssertionError):
+                        MigrationSchemaTests._assert_schema_instance_valid(
+                            mutant, schema, schema
+                        )
 
     def test_portable_evidence_union_is_bounded_after_deduplication(self) -> None:
-        jsonschema = importlib.import_module("jsonschema")
         schema = json.loads((ROOT / "schemas/quarantine.schema.json").read_bytes())
         asset = self.assets["scripts/analyze-window-image.py"]
 
@@ -2619,7 +2654,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     documents["migration/macwin/generated/quarantine.json"],
                     label="bounded quarantine",
                 )
-                jsonschema.Draft202012Validator(schema).validate(quarantine)
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    quarantine, schema, schema
+                )
                 record = next(
                     item
                     for item in quarantine["records"]
@@ -2659,6 +2696,10 @@ class MacWinPortableAssetTests(unittest.TestCase):
         converter = self.converter
         table = converter.PORTABLE_ASSET_TABLE
         self.assertEqual(len(table), 56)
+        self.assertEqual(
+            converter.APPROVED_PORTABLE_ASSET_TABLE_SHA256,
+            "9db4bac2e7ddb3f542e655f5f9be1aed9d265ecd6dfa44cd563ef2b1c7eddf54",
+        )
         probe_path = "scripts/analyze-window-image.py"
         fixture_path = "scripts/fixtures/meshlab-cube.obj"
         probe = table[probe_path]
@@ -2690,6 +2731,18 @@ class MacWinPortableAssetTests(unittest.TestCase):
             "reserved-id": {
                 **table,
                 probe_path: ("con", probe[1], probe[2]),
+            },
+            "valid-id-substitution": {
+                **table,
+                probe_path: (f"{probe[0]}-reviewed", probe[1], probe[2]),
+            },
+            "valid-kind-substitution": {
+                **table,
+                probe_path: (probe[0], "data", probe[2]),
+            },
+            "valid-media-substitution": {
+                **table,
+                probe_path: (probe[0], probe[1], "application/octet-stream"),
             },
         }
         for name, mutant in mutants.items():
@@ -2754,6 +2807,68 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 converter.ConversionError, "portable reference graph is invalid"
             ):
                 converter.classify_source_pack(self.result.source_pack)
+
+    def test_converted_portable_reference_rejects_a_quarantined_target(self) -> None:
+        converter = self.converter
+        source_path = "scripts/analyze-window-image.py"
+        target_path = "scripts/fixtures/meshlab-cube.obj"
+        source = self.assets[source_path]
+        reviewed_source = dataclasses.replace(
+            source, license_status="reviewed", provenance_status="reviewed"
+        )
+        references = {
+            **converter.PORTABLE_REFERENCE_TABLE,
+            source_path: (converter.PORTABLE_ASSET_TABLE[target_path][0],),
+        }
+        with mock.patch.object(
+            converter, "PORTABLE_REFERENCE_TABLE", references
+        ), self.assertRaisesRegex(
+            converter.ConversionError,
+            "portable converted reference is unresolved",
+        ):
+            converter.classify_source_pack(
+                self._replace_asset(self.result.source_pack, source, reviewed_source)
+            )
+
+    def test_converted_portable_reference_renders_both_closed_manifests(self) -> None:
+        converter = self.converter
+        source_path = "scripts/analyze-window-image.py"
+        target_path = "scripts/fixtures/meshlab-cube.obj"
+        replacements = {
+            path: dataclasses.replace(
+                self.assets[path],
+                license_status="reviewed",
+                provenance_status="reviewed",
+            )
+            for path in (source_path, target_path)
+        }
+        source_pack = dataclasses.replace(
+            self.result.source_pack,
+            assets=tuple(
+                replacements.get(asset.source_path, asset)
+                for asset in self.result.source_pack.assets
+            ),
+        )
+        target_id = converter.PORTABLE_ASSET_TABLE[target_path][0]
+        references = {
+            **converter.PORTABLE_REFERENCE_TABLE,
+            source_path: (target_id,),
+        }
+        with mock.patch.object(converter, "PORTABLE_REFERENCE_TABLE", references):
+            result = converter.classify_source_pack(source_pack)
+            documents = converter.render_documents(result)
+        source_id = converter.PORTABLE_ASSET_TABLE[source_path][0]
+        source_manifest_path = (
+            f"migration/macwin/generated/probes/{source_id}.json"
+        )
+        target_manifest_path = (
+            f"migration/macwin/generated/fixtures/{target_id}.json"
+        )
+        source_manifest = self.common.parse_json_bytes(
+            documents[source_manifest_path], label=source_manifest_path
+        )
+        self.assertEqual(source_manifest["referencedAssetIds"], [target_id])
+        self.assertIn(target_manifest_path, documents)
 
     @staticmethod
     def _replace_asset(source_pack, original, replacement):
