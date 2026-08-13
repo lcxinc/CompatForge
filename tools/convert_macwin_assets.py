@@ -3043,6 +3043,7 @@ _TRANSACTION_DIRECTORY_NAME = ".compatforge-transaction"
 _MAX_GENERATED_LEAF_BYTES = 8 * 1024 * 1024
 _MAX_GENERATED_TREE_BYTES = 16 * 1024 * 1024
 _MAX_GENERATED_ENTRIES = 4096
+_MAX_GENERATED_DEPTH = 128
 
 
 def _generated_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -3165,8 +3166,8 @@ def _mkdir_bound_child(
             os.mkdir(name, dir_fd=parent.handle)
     except OSError:
         _fail("generated output directory could not be created")
-    _verify_held_generated_directories([parent])
     try:
+        _verify_held_generated_directories([parent])
         return _hold_generated_directories([path])[0]
     except BaseException:
         try:
@@ -3731,6 +3732,15 @@ def _validate_output_document_map(documents: dict[str, bytes]) -> None:
         total += len(raw)
         if total > _MAX_GENERATED_TREE_BYTES:
             _fail("generated output document map exceeds the byte limit")
+    implied_directories = _expected_output_directories(documents)
+    if (
+        len(documents) + len(implied_directories) > _MAX_GENERATED_ENTRIES
+        or any(
+            len(PurePosixPath(path).parts) > _MAX_GENERATED_DEPTH
+            for path in implied_directories
+        )
+    ):
+        _fail("generated output document tree exceeds its structural bound")
 
 
 def _expected_output_directories(documents: dict[str, bytes]) -> set[str]:
@@ -4091,7 +4101,7 @@ class _CleanupBudget:
 
     def consume(self, depth: int) -> None:
         self.entries += 1
-        if self.entries > _MAX_GENERATED_ENTRIES or depth > 128:
+        if self.entries > _MAX_GENERATED_ENTRIES or depth > _MAX_GENERATED_DEPTH:
             _fail("generated output cleanup exceeds its bound")
 
 
@@ -4265,6 +4275,10 @@ def _restore_generated_snapshot(
     held_directories: list[_HeldGeneratedDirectory] | None = None,
 ) -> None:
     restored_cache: dict[str, _HeldGeneratedDirectory] = {}
+    trusted_root = transaction / "trusted-restore"
+    trusted_held: list[_HeldGeneratedDirectory] = []
+    rebound_transaction: list[_HeldGeneratedDirectory] = []
+    rebound_generated: list[_HeldGeneratedDirectory] = []
     try:
         authenticated: dict[str, _GeneratedLeafBinding] = {}
         for relative, binding in snapshot.leaves:
@@ -4278,20 +4292,47 @@ def _restore_generated_snapshot(
             ):
                 _fail("generated output rollback source changed")
             authenticated[relative] = staged_binding
-        generated_binding = next(
-            (
-                directory
-                for directory in (held_directories or [])
-                if directory.path.absolute() == generated.absolute()
-            ),
-            None,
+        transaction_binding = _find_held_directory(
+            transaction, held_directories
         )
+        if transaction_binding is None:
+            generated_binding = _find_held_directory(
+                generated, held_directories
+            )
+            if generated_binding is None:
+                generated_parent = _find_held_directory(
+                    generated.parent, held_directories
+                )
+                if generated_parent is None:
+                    _fail("generated output rollback transaction binding is unavailable")
+                generated_binding = _open_bound_child(
+                    generated_parent, generated.name
+                )
+                rebound_generated.append(generated_binding)
+            transaction_binding = _open_bound_child(
+                generated_binding, _TRANSACTION_DIRECTORY_NAME
+            )
+            rebound_transaction.append(transaction_binding)
+        trusted_held.append(
+            _mkdir_bound_child(transaction_binding, "trusted-restore")
+        )
+        trusted_bindings = _stage_document_map(
+            trusted_root,
+            {path: binding.raw for path, binding in snapshot.leaves},
+            root_binding=trusted_held[0],
+            held=trusted_held,
+        )
+        if set(trusted_bindings) != {path for path, _binding in snapshot.leaves}:
+            _fail("generated output trusted rollback staging is incomplete")
+        generated_binding = _find_held_directory(generated, held_directories)
+        if generated_binding is None and rebound_generated:
+            generated_binding = rebound_generated[-1]
         if os.name != "nt" and generated_binding is not None:
-            for entry in list(os.scandir(generated_binding.handle)):
+            for entry in os.scandir(generated_binding.handle):
                 if entry.name != _TRANSACTION_DIRECTORY_NAME:
                     _remove_child_posix(generated_binding.handle, entry.name)
         else:
-            for entry in list(os.scandir(generated)):
+            for entry in os.scandir(generated):
                 if entry.name != _TRANSACTION_DIRECTORY_NAME:
                     _remove_entry_without_following(Path(entry.path))
         for relative_tail, _identity in snapshot.directory_identities:
@@ -4305,7 +4346,7 @@ def _restore_generated_snapshot(
                 )
         for relative, binding in snapshot.leaves:
             tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
-            source = rollback_root / Path(*tail.parts)
+            source = trusted_root / Path(*tail.parts)
             destination = generated / Path(*tail.parts)
             if generated_binding is None:
                 _make_plain_directories(generated, tail.parent)
@@ -4314,16 +4355,20 @@ def _restore_generated_snapshot(
                     generated_binding, tail.parent, restored_cache
                 )
             active_held = [*(held_directories or []), *restored_cache.values()]
-            if _read_transaction_leaf(source, active_held) != authenticated[relative]:
-                _fail("generated output rollback source changed")
-            _atomic_move_no_replace(source, destination, active_held)
-            restored_binding = _read_transaction_leaf(destination, active_held)
+            expected_trusted = trusted_bindings[relative]
+            if _read_transaction_leaf(source, [*active_held, *trusted_held]) != expected_trusted:
+                _fail("generated output trusted rollback source changed")
+            restore_held = [*active_held, *trusted_held]
+            _atomic_move_no_replace(source, destination, restore_held)
+            restored_binding = _read_transaction_leaf(destination, restore_held)
             if (
                 restored_binding.raw != binding.raw
                 or restored_binding.identity[:2]
-                != authenticated[relative].identity[:2]
+                != expected_trusted.identity[:2]
             ):
                 _fail("generated output rollback verification failed")
+        _close_generated_directories(trusted_held)
+        _close_generated_directories(rebound_transaction)
         if os.name != "nt" and generated_binding is not None:
             _remove_child_posix(
                 generated_binding.handle, _TRANSACTION_DIRECTORY_NAME
@@ -4342,6 +4387,7 @@ def _restore_generated_snapshot(
             _fail("generated output rollback was incomplete")
         if created_root:
             if os.name == "nt":
+                _close_generated_directories(rebound_generated)
                 try:
                     generated.rmdir()
                 except FileNotFoundError:
@@ -4369,6 +4415,9 @@ def _restore_generated_snapshot(
     except OSError:
         _fail("generated output rollback failed")
     finally:
+        _close_generated_directories(trusted_held)
+        _close_generated_directories(rebound_transaction)
+        _close_generated_directories(rebound_generated)
         _close_generated_directories(list(restored_cache.values()))
 
 

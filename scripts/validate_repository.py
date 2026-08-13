@@ -18,6 +18,25 @@ import types
 from pathlib import Path
 from pathlib import PurePosixPath
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _VALIDATOR_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _VALIDATOR_CREATE_FILE = _VALIDATOR_KERNEL32.CreateFileW
+    _VALIDATOR_CREATE_FILE.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    _VALIDATOR_CREATE_FILE.restype = wintypes.HANDLE
+    _VALIDATOR_CLOSE_HANDLE = _VALIDATOR_KERNEL32.CloseHandle
+    _VALIDATOR_INVALID_HANDLE = ctypes.c_void_p(-1).value
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MEMBER = re.compile(r'^\s*"([^"]+)"[,]?\s*$')
@@ -83,25 +102,130 @@ MAX_ORDINARY_SCAN_TOTAL_BYTES = 1024 * 1024 * 1024
 DEVELOPER_PATH_VALIDATION_ERROR = "Repository developer-path validation failed"
 
 
+def _bind_validator_directory(path: Path) -> tuple[object, tuple[int, int]]:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or getattr(metadata, "st_reparse_tag", 0)
+    ):
+        raise ValueError("validator directory is unsafe")
+    if os.name == "nt":
+        descriptor = _VALIDATOR_CREATE_FILE(
+            str(path),
+            0x80000000 | 0x0080,
+            0x00000001 | 0x00000002,
+            None,
+            3,
+            0x02000000 | 0x00200000,
+            None,
+        )
+        if descriptor == _VALIDATOR_INVALID_HANDLE:
+            raise ValueError("validator directory could not be bound")
+        opened = metadata
+    else:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+    identity = (opened.st_dev, opened.st_ino)
+    if not stat.S_ISDIR(opened.st_mode) or identity != (
+        metadata.st_dev,
+        metadata.st_ino,
+    ):
+        _close_validator_directory(descriptor)
+        raise ValueError("validator directory identity changed")
+    return descriptor, identity
+
+
+def _close_validator_directory(descriptor: object) -> None:
+    if os.name == "nt":
+        _VALIDATOR_CLOSE_HANDLE(descriptor)
+    else:
+        os.close(descriptor)
+
+
+def _read_bound_converter(
+    tools: Path, descriptor: object, identity: tuple[int, int]
+) -> bytes:
+    path = tools / "convert_macwin_assets.py"
+    if os.name == "nt":
+        raw, _leaf_identity = _read_bound_regular_file(
+            path, MAX_MIGRATION_CONVERTER_BYTES
+        )
+    else:
+        leaf = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=descriptor,
+        )
+        try:
+            opened = os.fstat(leaf)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or opened.st_size > MAX_MIGRATION_CONVERTER_BYTES
+            ):
+                raise ValueError("migration converter is unsafe")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(
+                    leaf,
+                    min(
+                        64 * 1024,
+                        MAX_MIGRATION_CONVERTER_BYTES + 1 - total,
+                    ),
+                )
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_MIGRATION_CONVERTER_BYTES:
+                    raise ValueError("migration converter is too large")
+                chunks.append(chunk)
+            final = os.fstat(leaf)
+            if _filesystem_identity(final) != _filesystem_identity(opened):
+                raise ValueError("migration converter changed")
+            raw = b"".join(chunks)
+        finally:
+            os.close(leaf)
+    current = tools.lstat()
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or (current.st_dev, current.st_ino) != identity
+        or (
+            os.name != "nt"
+            and (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino)
+            != identity
+        )
+    ):
+        raise ValueError("migration tools binding changed")
+    return raw
+
+
 def validate_macwin_asset_migration() -> list[str]:
     """Run the required migration converter check."""
     converter = ROOT / "tools/convert_macwin_assets.py"
+    tools_descriptor: object | None = None
     try:
-        for directory in (ROOT, ROOT / "tools"):
-            metadata = directory.lstat()
-            if (
-                not stat.S_ISDIR(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or getattr(metadata, "st_reparse_tag", 0)
-            ):
-                return ["Mac-Win asset migration converter path is not a regular file"]
-        converter_raw, _converter_identity = _read_bound_regular_file(
-            converter, MAX_MIGRATION_CONVERTER_BYTES
+        tools_descriptor, tools_identity = _bind_validator_directory(
+            ROOT / "tools"
+        )
+        converter_raw = _read_bound_converter(
+            ROOT / "tools", tools_descriptor, tools_identity
         )
     except (FileNotFoundError, ValueError):
         return ["Mac-Win asset migration converter path is not a regular file"]
     except OSError:
         return ["Mac-Win asset migration converter path is not a regular file"]
+    finally:
+        if tools_descriptor is not None:
+            _close_validator_directory(tools_descriptor)
     environment = {
         key: value
         for key, value in os.environ.items()
