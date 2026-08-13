@@ -8373,11 +8373,15 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "{'__str__':lambda self:'HOSTILE-PATH'})())"
             ),
             "exception": "RuntimeError('HOSTILE-TRACE')",
+            "fd1": "(os.write(1,b'HOSTILE-FD1\\x1b[31m'),RuntimeError('x'))[1]",
+            "fd2": "(os.write(2,b'HOSTILE-FD2\\x1b[31m'),RuntimeError('x'))[1]",
+            "close": "(sys.stdout.close(),RuntimeError('x'))[1]",
+            "detach": "(sys.stdout.detach(),RuntimeError('x'))[1]",
         }
         environment = {"PYTHONDONTWRITEBYTECODE": "1"}
         for name, expression in mutants.items():
             prefix = (
-                "import runpy\n"
+                "import os,runpy,sys\n"
                 "def rejected(*args,**kwargs):\n"
                 f" raise {expression}\n"
                 "runpy.run_path=rejected\n"
@@ -8396,9 +8400,38 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 close_fds=True,
             )
             with self.subTest(mutant=name):
-                self.assertEqual(completed.returncode, 1)
+                self.assertEqual(completed.returncode, 250)
                 self.assertEqual(completed.stdout, b"")
-                self.assertEqual(completed.stderr, b"isolated process failed\n")
+                self.assertEqual(completed.stderr, b"")
+
+        failed = subprocess.CompletedProcess(command, 250, b"HOSTILE", b"TRACE")
+        with mock.patch.object(subprocess, "run", return_value=failed):
+            normalized = self._run_audited(command, report_process_id=True)
+        self.assertEqual(normalized.returncode, 1)
+        self.assertEqual(normalized.stdout, b"")
+        self.assertEqual(normalized.stderr, b"isolated process failed\n")
+
+        pre_capture = subprocess.run(
+            (
+                sys.executable,
+                "-B",
+                "-c",
+                "import os\ndef rejected():raise RuntimeError('HOSTILE-PRECAPTURE')\nos.pipe=rejected\n"
+                + bootstrap,
+                "ignored",
+            ),
+            check=False,
+            cwd=ROOT,
+            env=environment,
+            executable=None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            timeout=30,
+            close_fds=True,
+        )
+        self.assertEqual((pre_capture.returncode, pre_capture.stdout, pre_capture.stderr), (250, b"", b""))
 
         for expression, expected_code in (
             ("SystemExit(None)", 0),
@@ -9718,43 +9751,56 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             }:
                 raise AssertionError("isolated process command is not approved")
             bootstrap = (
-                "import io,os,runpy,sys\n"
-                "sys.argv=sys.argv[1:]\n"
-                "out_bytes=io.BytesIO()\n"
-                "err_bytes=io.BytesIO()\n"
-                "out=io.TextIOWrapper(out_bytes,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
-                "err=io.TextIOWrapper(err_bytes,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
-                "real_out=sys.stdout\n"
-                "real_err=sys.stderr\n"
-                "sys.stdout=out\n"
-                "sys.stderr=err\n"
-                "code=0\n"
-                "fixed=False\n"
+                "import io,os,runpy,sys,threading\n"
+                "FAIL=250\n"
+                "saved_out=saved_err=None\n"
                 "try:\n"
-                " runpy.run_path(sys.argv[0],run_name='__main__')\n"
-                "except SystemExit as exit_error:\n"
-                " if exit_error.code is None:\n"
-                "  code=0\n"
-                " elif type(exit_error.code) is int:\n"
-                "  code=exit_error.code\n"
-                " else:\n"
-                "  code=1\n"
-                "  fixed=True\n"
+                " saved_out=os.dup(1);saved_err=os.dup(2)\n"
+                " out_read,out_write=os.pipe();err_read,err_write=os.pipe()\n"
+                " out_chunks=[];err_chunks=[]\n"
+                " def drain(descriptor,chunks):\n"
+                "  try:\n"
+                "   while True:\n"
+                "    raw=os.read(descriptor,65536)\n"
+                "    if not raw:break\n"
+                "    chunks.append(raw)\n"
+                "  finally:os.close(descriptor)\n"
+                " out_thread=threading.Thread(target=drain,args=(out_read,out_chunks))\n"
+                " err_thread=threading.Thread(target=drain,args=(err_read,err_chunks))\n"
+                " out_thread.start();err_thread.start()\n"
+                " os.dup2(out_write,1);os.dup2(err_write,2)\n"
+                " os.close(out_write);os.close(err_write)\n"
+                " out_raw=os.fdopen(os.dup(1),'wb');err_raw=os.fdopen(os.dup(2),'wb')\n"
+                " out=io.TextIOWrapper(out_raw,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
+                " err=io.TextIOWrapper(err_raw,encoding='utf-8',errors='strict',newline='\\n',write_through=True)\n"
+                " sys.argv=sys.argv[1:];sys.stdout=out;sys.stderr=err\n"
+                " code=0;fixed=False\n"
+                " try:\n"
+                "  runpy.run_path(sys.argv[0],run_name='__main__')\n"
+                " except SystemExit as exit_error:\n"
+                "  if exit_error.code is None:code=0\n"
+                "  elif type(exit_error.code) is int:code=exit_error.code\n"
+                "  else:code=1;fixed=True\n"
+                " except BaseException:code=1;fixed=True\n"
+                " try:out.flush();err.flush()\n"
+                " except BaseException:code=1;fixed=True\n"
+                " for stream in (out,err,out_raw,err_raw):\n"
+                "  try:stream.close()\n"
+                "  except BaseException:code=1;fixed=True\n"
+                " os.dup2(saved_out,1);os.dup2(saved_err,2)\n"
+                " os.close(saved_out);os.close(saved_err);saved_out=saved_err=None\n"
+                " out_thread.join();err_thread.join()\n"
+                " if fixed:os._exit(FAIL)\n"
+                " if code==0:\n"
+                "  os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
+                "  os.write(1,b''.join(out_chunks));os.write(2,b''.join(err_chunks))\n"
+                " os._exit(code)\n"
                 "except BaseException:\n"
-                " code=1\n"
-                " fixed=True\n"
-                "finally:\n"
-                " out.flush()\n"
-                " err.flush()\n"
-                " sys.stdout=real_out\n"
-                " sys.stderr=real_err\n"
-                "if code==0:\n"
-                " os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
-                " os.write(1,out_bytes.getvalue())\n"
-                " os.write(2,err_bytes.getvalue())\n"
-                "elif fixed:\n"
-                " os.write(2,b'isolated process failed\\n')\n"
-                "raise SystemExit(code)\n"
+                " try:\n"
+                "  if saved_out is not None:os.dup2(saved_out,1)\n"
+                "  if saved_err is not None:os.dup2(saved_err,2)\n"
+                " except BaseException:pass\n"
+                " os._exit(FAIL)\n"
             )
             isolated_command = (
                 sys.executable,
@@ -9779,10 +9825,15 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             startup = subprocess.STARTUPINFO()
             startup.lpAttributeList = {"handle_list": []}
             options["startupinfo"] = startup
-        return subprocess.run(
+        completed = subprocess.run(
             isolated_command,
             **options,
         )
+        if report_process_id and completed.returncode == 250:
+            return subprocess.CompletedProcess(
+                command, 1, b"", b"isolated process failed\n"
+            )
+        return completed
 
     @staticmethod
     def _converter_command(*arguments: str) -> tuple[str, ...]:
