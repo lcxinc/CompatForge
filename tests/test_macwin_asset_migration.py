@@ -1214,22 +1214,102 @@ class MacWinConversionModelTests(unittest.TestCase):
             ):
                 converter.classify_source_pack(forged)
 
-    def test_each_authenticated_source_object_enters_the_model_once(self) -> None:
+    def test_each_source_leaf_is_read_once_by_the_bounded_bottom_primitive(self) -> None:
         converter = self.converter
-        seen: list[str] = []
-        original = converter._load_authenticated_asset_bytes
+        source_root = (ROOT / "migration/macwin/source").absolute()
+        counts: dict[str, int] = {}
+        limits: dict[str, set[int]] = {}
+        original = converter._SOURCE_PACK._read_regular_file
 
-        def observe(binding, source_root, record):
-            seen.append(record["sourcePath"])
-            return original(binding, source_root, record)
+        def observe(path, maximum, **options):
+            relative = path.absolute().relative_to(source_root).as_posix()
+            counts[relative] = counts.get(relative, 0) + 1
+            limits.setdefault(relative, set()).add(maximum)
+            return original(path, maximum, **options)
 
         with mock.patch.object(
-            converter, "_load_authenticated_asset_bytes", side_effect=observe
+            converter._SOURCE_PACK, "_read_regular_file", side_effect=observe
         ):
             loaded = converter.load_source_pack(ROOT)
         self.assertEqual(len(loaded.assets), 90)
-        self.assertEqual(len(seen), 90)
-        self.assertEqual(len(set(seen)), 90)
+        expected_objects = {asset.object_path for asset in loaded.assets}
+        self.assertEqual(set(counts), {"index.json", *expected_objects})
+        self.assertEqual(
+            (
+                counts["index.json"],
+                sum(counts[path] for path in expected_objects),
+            ),
+            (1, 90),
+            counts,
+        )
+        self.assertTrue(
+            all(counts[path] == 1 for path in expected_objects), counts
+        )
+        self.assertEqual(sum(counts.values()), 91)
+        self.assertEqual(
+            limits["index.json"], {converter._SOURCE_PACK.MAX_SOURCE_INDEX_BYTES}
+        )
+        self.assertTrue(
+            all(
+                limits[path] == {converter._SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES}
+                for path in expected_objects
+            ),
+            limits,
+        )
+
+    def test_classification_and_rendering_reuse_authenticated_memory_bytes(self) -> None:
+        converter = self.converter
+        with mock.patch.object(
+            converter._SOURCE_PACK,
+            "_read_regular_file",
+            side_effect=AssertionError("authenticated source bytes were reread"),
+        ):
+            result = converter.classify_source_pack(self.source_pack)
+            documents = converter.render_documents(result)
+        self.assertEqual(set(documents), {"conversion-ledger.json"})
+
+    def test_single_pass_loader_rejects_post_read_mutation_without_rereading(self) -> None:
+        converter = self.converter
+        source_asset = self.source_pack.assets[0]
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-converter-test-", dir=ROOT
+        ) as directory:
+            repository_root = Path(directory)
+            source_root = repository_root / "migration/macwin/source"
+            source_root.parent.mkdir(parents=True)
+            shutil.copytree(ROOT / "migration/macwin/source", source_root)
+            target = source_root / PurePosixPath(source_asset.object_path)
+            original_load = converter._load_authenticated_asset_bytes
+            original_read = converter._SOURCE_PACK._read_regular_file
+            target_reads = 0
+            mutated = False
+
+            def observe_read(path, maximum, **options):
+                nonlocal target_reads
+                if path.absolute() == target.absolute():
+                    target_reads += 1
+                return original_read(path, maximum, **options)
+
+            def mutate_after_read(root, record, expected_identity):
+                nonlocal mutated
+                raw = original_load(root, record, expected_identity)
+                if record["objectPath"] == source_asset.object_path:
+                    target.write_bytes(raw + b"post-read-mutation")
+                    mutated = True
+                return raw
+
+            with mock.patch.object(
+                converter._SOURCE_PACK,
+                "_read_regular_file",
+                side_effect=observe_read,
+            ), mock.patch.object(
+                converter,
+                "_load_authenticated_asset_bytes",
+                side_effect=mutate_after_read,
+            ), self.assertRaises(converter.ConversionError):
+                converter.load_source_pack(repository_root)
+        self.assertTrue(mutated)
+        self.assertEqual(target_reads, 1)
 
     def test_conversion_is_byte_deterministic_and_has_no_locator_side_effects(self) -> None:
         converter = self.converter

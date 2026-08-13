@@ -226,11 +226,28 @@ class ConversionResult:
     records: tuple[ConversionRecord, ...]
 
 
-def _load_authenticated_asset_bytes(binding, source_root: Path, record: dict[str, object]) -> bytes:
+@dataclass(frozen=True, slots=True)
+class _SourceTreeBinding:
+    root_identity: tuple[int, int, int, int, int, int]
+    index_identity: tuple[int, int, int, int, int, int]
+    directories: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+    leaves: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
+
+
+def _load_authenticated_asset_bytes(
+    source_root: Path,
+    record: dict[str, object],
+    expected_identity: tuple[int, int, int, int, int, int],
+) -> bytes:
     path = source_root / PurePosixPath(record["objectPath"])
-    raw = binding.verify_path(path)
+    before = _SOURCE_PACK._file_identity(_SOURCE_PACK._path_metadata(path))
+    if before != expected_identity:
+        _fail("source asset identity changed")
+    raw = _SOURCE_PACK._read_regular_file(path, _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES)
+    after = _SOURCE_PACK._file_identity(_SOURCE_PACK._path_metadata(path))
     if (
-        type(raw) is not bytes
+        after != expected_identity
+        or type(raw) is not bytes
         or len(raw) != record["byteSize"]
         or hashlib.sha256(raw).hexdigest() != record["sha256"]
         or _git_blob_oid(raw) != record["gitBlobOid"]
@@ -246,32 +263,85 @@ def load_source_pack(repository_root: Path) -> SourcePack:
         _fail("repository root is invalid")
     source_root = repository_root.absolute() / SOURCE_PACK_RELATIVE
     try:
-        with _SOURCE_PACK.bind_source_pack(source_root) as binding:
-            manifest = binding.manifest
-            assets: list[SourceAsset] = []
-            for raw_record in manifest["assets"]:
-                raw = _load_authenticated_asset_bytes(binding, source_root, raw_record)
-                assets.append(
-                    SourceAsset(
-                        category=raw_record["category"],
-                        source_path=raw_record["sourcePath"],
-                        source_commit=raw_record["sourceCommit"],
-                        git_blob_oid=raw_record["gitBlobOid"],
-                        sha256=raw_record["sha256"],
-                        byte_size=raw_record["byteSize"],
-                        git_mode=raw_record["gitMode"],
-                        kind=raw_record["kind"],
-                        license_status=raw_record["license"]["status"],
-                        provenance_status=raw_record["provenance"]["status"],
-                        intended_owner=raw_record["intendedOwner"],
-                        external_refs=tuple(raw_record["externalRefs"]),
-                        development_dependencies=tuple(
-                            raw_record["developmentDependencies"]
-                        ),
-                        object_path=raw_record["objectPath"],
-                        raw=raw,
-                    )
+        _SOURCE_PACK._validate_path_chain(source_root)
+        root_metadata = _SOURCE_PACK._path_metadata(source_root)
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            _fail("source pack path is not a directory")
+        root_identity = _SOURCE_PACK._file_identity(root_metadata)
+
+        index_path = source_root / "index.json"
+        index_before = _SOURCE_PACK._file_identity(
+            _SOURCE_PACK._path_metadata(index_path)
+        )
+        index_raw = _SOURCE_PACK._read_regular_file(
+            index_path, _SOURCE_PACK.MAX_SOURCE_INDEX_BYTES
+        )
+        index_after = _SOURCE_PACK._file_identity(
+            _SOURCE_PACK._path_metadata(index_path)
+        )
+        if index_after != index_before:
+            _fail("source pack index identity changed")
+        if (
+            hashlib.sha256(index_raw).hexdigest()
+            != _SOURCE_PACK.APPROVED_SOURCE_INDEX_SHA256
+        ):
+            _fail("source pack index does not match the approved seal")
+        manifest = _SOURCE_PACK._validate_manifest(
+            _SOURCE_PACK._parse_json(
+                index_raw, maximum=_SOURCE_PACK.MAX_SOURCE_INDEX_BYTES
+            )
+        )
+        try:
+            if _COMMON.canonical_json_bytes(manifest) != index_raw:
+                _fail("source pack index is not canonical")
+        except _COMMON.MigrationError:
+            _fail("source pack index is not canonical")
+
+        expected_paths = frozenset(
+            record["objectPath"] for record in manifest["assets"]
+        )
+        tree = _bind_source_tree(source_root, expected_paths)
+        if (
+            tree.root_identity != root_identity
+            or tree.index_identity != index_before
+        ):
+            _fail("source pack tree identity changed")
+        leaf_identities = dict(tree.leaves)
+        assets: list[SourceAsset] = []
+        total = 0
+        for raw_record in manifest["assets"]:
+            raw = _load_authenticated_asset_bytes(
+                source_root,
+                raw_record,
+                leaf_identities[raw_record["objectPath"]],
+            )
+            total += len(raw)
+            if total > _SOURCE_PACK.MAX_TOTAL_SOURCE_BYTES:
+                _fail("source pack total bytes exceed the limit")
+            assets.append(
+                SourceAsset(
+                    category=raw_record["category"],
+                    source_path=raw_record["sourcePath"],
+                    source_commit=raw_record["sourceCommit"],
+                    git_blob_oid=raw_record["gitBlobOid"],
+                    sha256=raw_record["sha256"],
+                    byte_size=raw_record["byteSize"],
+                    git_mode=raw_record["gitMode"],
+                    kind=raw_record["kind"],
+                    license_status=raw_record["license"]["status"],
+                    provenance_status=raw_record["provenance"]["status"],
+                    intended_owner=raw_record["intendedOwner"],
+                    external_refs=tuple(raw_record["externalRefs"]),
+                    development_dependencies=tuple(
+                        raw_record["developmentDependencies"]
+                    ),
+                    object_path=raw_record["objectPath"],
+                    raw=raw,
                 )
+            )
+        if _bind_source_tree(source_root, expected_paths) != tree:
+            _fail("source pack tree identity changed")
+        _SOURCE_PACK._validate_path_chain(source_root)
     except _SOURCE_PACK.SourcePackError:
         _fail("source pack is invalid")
     source_pack = SourcePack(
@@ -286,6 +356,90 @@ def load_source_pack(repository_root: Path) -> SourcePack:
     )
     _validate_source_pack_model(source_pack)
     return source_pack
+
+
+def _bind_source_tree(
+    source_root: Path, expected_paths: frozenset[str]
+) -> _SourceTreeBinding:
+    """Bind the exact source-pack tree using metadata only, never content reads."""
+
+    if type(expected_paths) is not frozenset or len(expected_paths) != 90:
+        _fail("source pack object identity set is invalid")
+    expected_shards: dict[str, set[str]] = {}
+    for relative in expected_paths:
+        parts = PurePosixPath(relative).parts
+        if (
+            len(parts) != 4
+            or parts[:2] != ("objects", "sha256")
+            or re.fullmatch(r"[0-9a-f]{2}", parts[2]) is None
+            or re.fullmatch(r"[0-9a-f]{62}", parts[3]) is None
+        ):
+            _fail("source pack object path is invalid")
+        expected_shards.setdefault(parts[2], set()).add(parts[3])
+
+    root_metadata = _SOURCE_PACK._path_metadata(source_root)
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        _fail("source pack path is not a directory")
+    root_entries = _SOURCE_PACK._bounded_directory_entries(source_root, 2)
+    if set(root_entries) != {"index.json", "objects"}:
+        _fail("source pack root entries are invalid")
+
+    index_path = Path(root_entries["index.json"].path)
+    index_metadata = _SOURCE_PACK._path_metadata(index_path)
+    if not stat.S_ISREG(index_metadata.st_mode) or index_metadata.st_nlink != 1:
+        _fail("source pack index leaf is invalid")
+
+    directories: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    leaves: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    objects = Path(root_entries["objects"].path)
+    _append_bound_directory(source_root, objects, directories)
+    algorithm_entries = _SOURCE_PACK._bounded_directory_entries(objects, 1)
+    if set(algorithm_entries) != {"sha256"}:
+        _fail("source pack digest directory is invalid")
+    digest_root = Path(algorithm_entries["sha256"].path)
+    _append_bound_directory(source_root, digest_root, directories)
+
+    shard_entries = _SOURCE_PACK._bounded_directory_entries(digest_root, 90)
+    if set(shard_entries) != set(expected_shards):
+        _fail("source pack shard set is invalid")
+    for shard_name in sorted(expected_shards):
+        shard = Path(shard_entries[shard_name].path)
+        _append_bound_directory(source_root, shard, directories)
+        leaf_entries = _SOURCE_PACK._bounded_directory_entries(shard, 90)
+        if set(leaf_entries) != expected_shards[shard_name]:
+            _fail("source pack object set is incomplete")
+        for leaf_name in sorted(expected_shards[shard_name]):
+            leaf = Path(leaf_entries[leaf_name].path)
+            metadata = _SOURCE_PACK._path_metadata(leaf)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                _fail("source pack object leaf is invalid")
+            relative = leaf.relative_to(source_root).as_posix()
+            leaves.append((relative, _SOURCE_PACK._file_identity(metadata)))
+
+    directories.sort(key=lambda item: item[0].encode("ascii"))
+    leaves.sort(key=lambda item: item[0].encode("ascii"))
+    return _SourceTreeBinding(
+        root_identity=_SOURCE_PACK._file_identity(root_metadata),
+        index_identity=_SOURCE_PACK._file_identity(index_metadata),
+        directories=tuple(directories),
+        leaves=tuple(leaves),
+    )
+
+
+def _append_bound_directory(
+    source_root: Path,
+    directory: Path,
+    bindings: list[tuple[str, tuple[int, int, int, int, int, int]]],
+) -> None:
+    metadata = _SOURCE_PACK._path_metadata(directory)
+    if not stat.S_ISDIR(metadata.st_mode):
+        _fail("source pack directory is invalid")
+    bindings.append(
+        (
+            directory.relative_to(source_root).as_posix(),
+            _SOURCE_PACK._file_identity(metadata),
+        )
+    )
 
 
 def classify_source_pack(source_pack: SourcePack) -> ConversionResult:
