@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import concurrent.futures
 import contextlib
 import copy
@@ -8271,8 +8272,6 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"must remain unchanged\n")
-            before = self._snapshot_boundary(sentinel)
-
             commands = (
                 self._converter_command(),
                 self._converter_command("--check"),
@@ -8282,10 +8281,10 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 self._converter_command("--write"),
             )
             for command in commands:
+                before = self._snapshot_boundary(sentinel)
                 completed = self._run_audited(command)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
-
-            self.assertEqual(self._snapshot_boundary(sentinel), before)
+                self.assertEqual(self._snapshot_boundary(sentinel), before)
             self.assertEqual(
                 tuple(self.converter.read_generated_documents(ROOT)),
                 self.DOCUMENT_PATHS,
@@ -8300,46 +8299,54 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             sentinel.write_bytes(b"guarded\n")
             before = self._snapshot_boundary(sentinel)
             validator = MigrationLayoutTests._load_repository_validator()
-            with self._guard_external_effects(sentinel):
-                for arguments in ((), ("--check",), ("--explain", "7zip")):
-                    with self.subTest(arguments=arguments):
+            for arguments in ((), ("--check",), ("--explain", "7zip")):
+                with self.subTest(arguments=arguments):
+                    mode_before = self._snapshot_boundary(sentinel)
+                    with self._guard_external_effects(sentinel), self._guard_read_only_writes():
                         code, stdout, stderr = self._run_main(arguments)
-                        self.assertEqual(code, 0)
-                        self.assertEqual(stderr, b"")
-                        if arguments == ("--check",):
-                            self.assertEqual(stdout, b"")
-                        else:
-                            self.assertTrue(stdout.endswith(b"\n"))
+                    self.assertEqual(code, 0)
+                    self.assertEqual(stderr, b"")
+                    if arguments == ("--check",):
+                        self.assertEqual(stdout, b"")
+                    else:
+                        self.assertTrue(stdout.endswith(b"\n"))
+                    self.assertEqual(self._snapshot_boundary(sentinel), mode_before)
 
-                for _ in range(2):
+            for _ in range(2):
+                write_before = self._snapshot_boundary(sentinel)
+                with self._guard_external_effects(sentinel):
                     code, stdout, stderr = self._run_main(("--write",))
-                    self.assertEqual((code, stdout, stderr), (0, b"", b""))
+                self.assertEqual((code, stdout, stderr), (0, b"", b""))
+                self.assertEqual(self._snapshot_boundary(sentinel), write_before)
 
-                def audited_check(argv, **options):
-                    self.assertEqual(
-                        argv,
-                        [
-                            sys.executable,
-                            "-B",
-                            "-c",
-                            validator.MIGRATION_CONVERTER_BOOTSTRAP,
-                            str(ROOT / "tools/convert_macwin_assets.py"),
-                            "--check",
-                        ],
-                    )
-                    self.assertFalse(options["shell"])
-                    self.assertIsNone(options["executable"])
-                    self.assertEqual(options["cwd"], ROOT)
-                    self.assertIs(options["stdout"], subprocess.DEVNULL)
-                    self.assertIs(options["stderr"], subprocess.DEVNULL)
-                    self.assertEqual(
-                        options["input"],
-                        (ROOT / "tools/convert_macwin_assets.py").read_bytes(),
-                    )
-                    return subprocess.CompletedProcess(argv, 0, b"", b"")
+            def audited_check(argv, **options):
+                self.assertEqual(
+                    argv,
+                    [
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        validator.MIGRATION_CONVERTER_BOOTSTRAP,
+                        str(ROOT / "tools/convert_macwin_assets.py"),
+                        "--check",
+                    ],
+                )
+                self.assertFalse(options["shell"])
+                self.assertIsNone(options["executable"])
+                self.assertEqual(options["cwd"], ROOT)
+                self.assertIs(options["stdout"], subprocess.DEVNULL)
+                self.assertIs(options["stderr"], subprocess.DEVNULL)
+                self.assertEqual(
+                    options["input"],
+                    (ROOT / "tools/convert_macwin_assets.py").read_bytes(),
+                )
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+            validator_before = self._snapshot_boundary(sentinel)
+            with self._guard_external_effects(sentinel), self._guard_read_only_writes():
                 with mock.patch.object(validator.subprocess, "run", audited_check):
                     self.assertEqual(validator.validate_macwin_asset_migration(), [])
+            self.assertEqual(self._snapshot_boundary(sentinel), validator_before)
 
             self.assertEqual(self._snapshot_boundary(sentinel), before)
 
@@ -8348,22 +8355,40 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"guarded\n")
             bottle = ROOT / "examples/bottles/7zip-default.json"
-            forbidden_locator = self._forbidden_locator()
+            forbidden_locator = self._forbidden_locators()[0]
+            second_locator = self._forbidden_locators()[1]
             mutants = {
                 "dns": lambda: socket.getaddrinfo("example.invalid", 443),
+                "dns-name": lambda: socket.gethostbyname("example.invalid"),
+                "dns-name-ex": lambda: socket.gethostbyname_ex("example.invalid"),
+                "dns-reverse": lambda: socket.gethostbyaddr("192.0.2.1"),
+                "dns-info": lambda: socket.getnameinfo(("192.0.2.1", 443), 0),
                 "socket": lambda: socket.socket(),
                 "urlopen": lambda: urllib.request.urlopen("https://example.invalid"),
+                "urlretrieve": lambda: urllib.request.urlretrieve("https://example.invalid"),
                 "subprocess": lambda: subprocess.run(["asset"], check=False),
                 "environment": lambda: os.getenv("HOME"),
                 "environment-mapping": lambda: self.converter.os.environ["HOME"],
+                "environment-global": lambda: os.environ.get("PATH"),
                 "home-expansion": lambda: os.path.expanduser("~/asset"),
                 "locator-probe": lambda: Path(forbidden_locator).exists(),
                 "locator-stat": lambda: Path(forbidden_locator).stat(),
                 "locator-open": lambda: Path(forbidden_locator).open("rb"),
+                "locator-os-path-exists": lambda: os.path.exists(forbidden_locator),
+                "locator-os-stat": lambda: os.stat(forbidden_locator),
+                "locator-os-lstat": lambda: os.lstat(forbidden_locator),
+                "locator-os-access": lambda: os.access(forbidden_locator, os.F_OK),
+                "locator-os-open": lambda: os.open(forbidden_locator, os.O_RDONLY),
+                "locator-builtin-open": lambda: builtins.open(forbidden_locator, "rb"),
+                "second-locator": lambda: os.path.exists(second_locator),
                 "dynamic-import": lambda: importlib.util.spec_from_file_location(
                     "migrated_asset", forbidden_locator
                 ),
+                "module-import": lambda: importlib.import_module("migrated_asset"),
+                "run-path": lambda: runpy.run_path(forbidden_locator),
                 "asset-execution": lambda: os.system("asset"),
+                "asset-popen": lambda: os.popen("asset"),
+                "asset-exec": lambda: os.execv("asset", ("asset",)),
                 "bottle-access": lambda: bottle.read_bytes(),
                 "external-write": lambda: sentinel.write_bytes(b"mutated\n"),
             }
@@ -8379,13 +8404,67 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 code, stdout, stderr = self._run_main(("--check",))
                 self.assertEqual((code, stdout, stderr), (0, b"", b""))
 
+            with self._guard_external_effects(sentinel):
+                for locator in self._forbidden_evidence_values():
+                    with self.subTest(locator=locator), self.assertRaisesRegex(
+                        AssertionError, "side effect blocked"
+                    ):
+                        os.path.exists(locator)
+
+    def test_read_only_firewall_rejects_transient_and_persistent_write_mutants(self) -> None:
+        generated = ROOT / "migration/macwin/generated"
+        transient = generated / "transient-side-effect"
+        persistent = generated / "persistent-side-effect"
+
+        def transient_mutant(*_args, **_kwargs):
+            transient.write_bytes(b"escaped")
+            transient.unlink()
+            return self.result
+
+        def persistent_mutant(*_args, **_kwargs):
+            persistent.write_bytes(b"escaped")
+            return self.result
+
+        try:
+            for name, mutant in (
+                ("transient", transient_mutant),
+                ("persistent", persistent_mutant),
+            ):
+                with self.subTest(mutant=name), self._guard_read_only_writes(), mock.patch.object(
+                    self.converter, "build_conversion", side_effect=mutant
+                ), self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                    self.converter.main(("--check",))
+        finally:
+            transient.unlink(missing_ok=True)
+            persistent.unlink(missing_ok=True)
+
+    def test_tree_snapshot_binds_empty_directories_and_nonregular_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty"
+            empty.mkdir()
+            regular = root / "regular"
+            regular.write_bytes(b"content")
+            linked = root / "linked"
+            try:
+                os.symlink(regular, linked)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink snapshot contract unavailable: {error}")
+            snapshot = self._snapshot_tree(root)
+            self.assertIn(("empty", "directory"), snapshot)
+            self.assertTrue(
+                any(record[:2] == ("linked", "symlink") for record in snapshot)
+            )
+
     def test_approved_write_scope_is_exact_and_repeat_is_a_no_op(self) -> None:
         before_repository = self._snapshot_tree(ROOT, exclude_generated=True)
         before_source = self._snapshot_tree(ROOT / "migration/macwin/source")
         first = self.converter.read_generated_documents(ROOT)
-        self.converter.write_generated_documents(ROOT, self.documents)
+        with self._guard_read_only_writes():
+            self.converter.write_generated_documents(ROOT, self.documents)
         second = self.converter.read_generated_documents(ROOT)
-        self.converter.write_generated_documents(ROOT, self.documents)
+        with self._guard_read_only_writes():
+            self.converter.write_generated_documents(ROOT, self.documents)
         third = self.converter.read_generated_documents(ROOT)
         self.assertEqual(first, self.documents)
         self.assertEqual(second, first)
@@ -8398,9 +8477,41 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 for path in (ROOT / "migration/macwin/generated").rglob("*")
             )
         )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "migration/macwin/generated"
+            generated.mkdir(parents=True)
+            sentinel = root / "outside-generated"
+            sentinel.write_bytes(b"unchanged\n")
+            self._write_document_map(root, self.documents)
+            (generated / "catalog.json").write_bytes(b"stale\n")
+            outside_before = self._snapshot_tree(root, exclude_generated=True)
+            self.converter.write_generated_documents(root, self.documents)
+            self.assertEqual(self.converter.read_generated_documents(root), self.documents)
+            self.assertEqual(self._snapshot_tree(root, exclude_generated=True), outside_before)
+            with self._guard_read_only_writes():
+                self.converter.write_generated_documents(root, self.documents)
+
+    @staticmethod
+    def _write_document_map(root: Path, documents: dict[str, bytes]) -> None:
+        for relative, raw in documents.items():
+            path = root / PurePosixPath(relative)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
 
     @contextlib.contextmanager
     def _guard_external_effects(self, sentinel: Path):
+        real_builtin_open = builtins.open
+        real_io_open = io.open
+        real_os_access = os.access
+        real_os_lstat = os.lstat
+        real_os_open = os.open
+        real_os_scandir = os.scandir
+        real_os_stat = os.stat
+        real_path_exists = os.path.exists
+        real_path_isdir = os.path.isdir
+        real_path_isfile = os.path.isfile
+        real_path_lexists = os.path.lexists
         real_open = Path.open
         real_stat = Path.stat
         real_exists = Path.exists
@@ -8411,32 +8522,90 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             (ROOT / "examples/runtime-packs").absolute(),
             (ROOT / "tests/fixtures/runtime-packs").absolute(),
         )
-        forbidden_values = frozenset(
-            {str(sentinel.absolute()), self._forbidden_locator()}
+        locator_values = self._forbidden_evidence_values()
+        forbidden_values = frozenset({str(sentinel.absolute()), *locator_values})
+        allowed_environment = tuple(
+            (key, value)
+            for key, value in os.environ.items()
+            if key.upper() in IMPORT_PROBE_ENVIRONMENT_NAMES
         )
 
         def blocked(*_args, **_kwargs):
             raise AssertionError("side effect blocked")
 
-        class GuardedOs:
-            @property
-            def environ(self):
+        class GuardedEnvironment:
+            def items(self):
+                return allowed_environment
+
+            def __getitem__(self, _key):
                 blocked()
 
-            def __getattr__(self, name: str):
-                if name == "getenv":
-                    return blocked
-                return getattr(os, name)
+            def get(self, _key, _default=None):
+                blocked()
 
-        def path_is_forbidden(path: Path) -> bool:
-            value = str(path)
-            portable_value = path.as_posix()
+            def __iter__(self):
+                blocked()
+
+            def __contains__(self, _key):
+                blocked()
+
+        def path_is_forbidden(path) -> bool:
+            if isinstance(path, int):
+                return False
+            try:
+                value = os.fsdecode(os.fspath(path))
+            except TypeError:
+                return False
+            portable_value = value.replace("\\", "/")
             if value in forbidden_values or portable_value in forbidden_values:
                 return True
-            absolute = path.absolute()
+            candidate = Path(value)
+            absolute = candidate.absolute()
             return any(
                 absolute == root or root in absolute.parents for root in forbidden_roots
+            ) or (
+                absolute != ROOT
+                and ROOT not in absolute.parents
+                and absolute not in ROOT.parents
             )
+
+        def guard_path(path):
+            if path_is_forbidden(path):
+                blocked()
+
+        def guarded_builtin_open(path, *args, **kwargs):
+            guard_path(path)
+            return real_builtin_open(path, *args, **kwargs)
+
+        def guarded_io_open(path, *args, **kwargs):
+            guard_path(path)
+            return real_io_open(path, *args, **kwargs)
+
+        def guarded_os_access(path, *args, **kwargs):
+            guard_path(path)
+            return real_os_access(path, *args, **kwargs)
+
+        def guarded_os_lstat(path, *args, **kwargs):
+            guard_path(path)
+            return real_os_lstat(path, *args, **kwargs)
+
+        def guarded_os_open(path, *args, **kwargs):
+            guard_path(path)
+            return real_os_open(path, *args, **kwargs)
+
+        def guarded_os_scandir(path="."):
+            guard_path(path)
+            return real_os_scandir(path)
+
+        def guarded_os_stat(path, *args, **kwargs):
+            guard_path(path)
+            return real_os_stat(path, *args, **kwargs)
+
+        def guarded_path_predicate(real_function):
+            def wrapper(path):
+                guard_path(path)
+                return real_function(path)
+            return wrapper
 
         def guarded_open(path: Path, *args, **kwargs):
             if path_is_forbidden(path):
@@ -8463,11 +8632,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 blocked()
             return real_write_bytes(path, data)
 
-        patches = (
+        patches = [
             mock.patch.object(socket, "socket", side_effect=blocked),
             mock.patch.object(socket, "create_connection", side_effect=blocked),
             mock.patch.object(socket, "getaddrinfo", side_effect=blocked),
             mock.patch.object(socket, "gethostbyname", side_effect=blocked),
+            mock.patch.object(socket, "gethostbyname_ex", side_effect=blocked),
+            mock.patch.object(socket, "gethostbyaddr", side_effect=blocked),
+            mock.patch.object(socket, "getnameinfo", side_effect=blocked),
             mock.patch.object(urllib.request, "urlopen", side_effect=blocked),
             mock.patch.object(urllib.request, "urlretrieve", side_effect=blocked),
             mock.patch.object(subprocess, "Popen", side_effect=blocked),
@@ -8475,19 +8647,99 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             mock.patch.object(subprocess, "check_call", side_effect=blocked),
             mock.patch.object(subprocess, "check_output", side_effect=blocked),
             mock.patch.object(os, "getenv", side_effect=blocked),
+            mock.patch.object(os, "environ", GuardedEnvironment()),
             mock.patch.object(os.path, "expanduser", side_effect=blocked),
             mock.patch.object(Path, "expanduser", side_effect=blocked),
             mock.patch.object(importlib.util, "spec_from_file_location", side_effect=blocked),
             mock.patch.object(importlib, "import_module", side_effect=blocked),
             mock.patch.object(runpy, "run_path", side_effect=blocked),
+            mock.patch.object(self.converter.argparse, "_", lambda value: value),
             mock.patch.object(os, "system", side_effect=blocked),
-            mock.patch.object(self.converter, "os", GuardedOs()),
+            mock.patch.object(os, "popen", side_effect=blocked),
+            mock.patch.object(os, "stat", guarded_os_stat),
+            mock.patch.object(os, "lstat", guarded_os_lstat),
+            mock.patch.object(os, "access", guarded_os_access),
+            mock.patch.object(os, "open", guarded_os_open),
+            mock.patch.object(os, "scandir", guarded_os_scandir),
+            mock.patch.object(os.path, "exists", guarded_path_predicate(real_path_exists)),
+            mock.patch.object(os.path, "lexists", guarded_path_predicate(real_path_lexists)),
+            mock.patch.object(os.path, "isfile", guarded_path_predicate(real_path_isfile)),
+            mock.patch.object(os.path, "isdir", guarded_path_predicate(real_path_isdir)),
+            mock.patch.object(builtins, "open", guarded_builtin_open),
+            mock.patch.object(io, "open", guarded_io_open),
             mock.patch.object(Path, "open", guarded_open),
             mock.patch.object(Path, "stat", guarded_stat),
             mock.patch.object(Path, "exists", guarded_exists),
             mock.patch.object(Path, "read_bytes", guarded_read_bytes),
             mock.patch.object(Path, "write_bytes", guarded_write_bytes),
+        ]
+        for name in (
+            "execl",
+            "execle",
+            "execlp",
+            "execlpe",
+            "execv",
+            "execve",
+            "execvp",
+            "execvpe",
+            "spawnl",
+            "spawnle",
+            "spawnlp",
+            "spawnlpe",
+            "spawnv",
+            "spawnve",
+            "spawnvp",
+            "spawnvpe",
+            "startfile",
+        ):
+            if hasattr(os, name):
+                patches.append(mock.patch.object(os, name, side_effect=blocked))
+        with contextlib.ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            yield
+
+    @contextlib.contextmanager
+    def _guard_read_only_writes(self):
+        real_builtin_open = builtins.open
+        real_io_open = io.open
+        real_os_open = os.open
+        write_flags = (
+            os.O_WRONLY
+            | os.O_RDWR
+            | os.O_APPEND
+            | os.O_CREAT
+            | os.O_TRUNC
         )
+
+        def blocked(*_args, **_kwargs):
+            raise AssertionError("side effect blocked")
+
+        def guarded_os_open(path, flags, *args, **kwargs):
+            if flags & write_flags:
+                blocked()
+            return real_os_open(path, flags, *args, **kwargs)
+
+        def guarded_stream_open(real_function):
+            def wrapper(path, mode="r", *args, **kwargs):
+                if any(character in mode for character in "wax+"):
+                    blocked()
+                return real_function(path, mode, *args, **kwargs)
+            return wrapper
+
+        patches = [
+            mock.patch.object(os, "open", guarded_os_open),
+            mock.patch.object(builtins, "open", guarded_stream_open(real_builtin_open)),
+            mock.patch.object(io, "open", guarded_stream_open(real_io_open)),
+        ]
+        for owner, names in (
+            (os, ("write", "replace", "rename", "unlink", "remove", "mkdir", "makedirs", "rmdir")),
+            (Path, ("write_bytes", "write_text", "touch", "mkdir", "unlink", "rename", "replace", "rmdir")),
+            (tempfile, ("NamedTemporaryFile", "TemporaryFile", "mkdtemp", "mkstemp")),
+        ):
+            for name in names:
+                if hasattr(owner, name):
+                    patches.append(mock.patch.object(owner, name, side_effect=blocked))
         with contextlib.ExitStack() as stack:
             for patcher in patches:
                 stack.enter_context(patcher)
@@ -8517,48 +8769,103 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         }
 
     def _snapshot_git_metadata(self) -> dict[str, object]:
-        names = (
-            "index",
-            "refs",
-            "packed-refs",
-            "objects",
-            "config",
-            "config.worktree",
-            "HEAD",
-        )
+        git_directory = self._git_absolute_path("--absolute-git-dir")
+        common_directory = self._git_absolute_path("--git-common-dir")
+        paths = {
+            "worktree-admin": git_directory,
+            "common-config": common_directory / "config",
+            "common-objects": common_directory / "objects",
+            "common-packed-refs": common_directory / "packed-refs",
+            "common-refs": common_directory / "refs",
+            "common-reftable": common_directory / "reftable",
+            "worktree-config": git_directory / "config.worktree",
+            "worktree-head": git_directory / "HEAD",
+            "worktree-index": git_directory / "index",
+            "worktree-refs": git_directory / "refs",
+            "worktree-reftable": git_directory / "reftable",
+        }
         result: dict[str, object] = {}
-        for name in names:
-            completed = self._run_audited(
-                ("git", "rev-parse", "--path-format=absolute", "--git-path", name)
-            )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            path = Path(completed.stdout.decode("utf-8").strip())
+        for name, path in paths.items():
             if not path.exists():
                 result[name] = None
             else:
                 result[name] = self._snapshot_tree(path) if path.is_dir() else path.read_bytes()
         return result
 
+    def _git_absolute_path(self, option: str) -> Path:
+        completed = self._run_audited(
+            ("git", "rev-parse", "--path-format=absolute", option)
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        path = Path(completed.stdout.decode("utf-8").strip())
+        return path if path.is_absolute() else (ROOT / path).absolute()
+
     @staticmethod
     def _snapshot_tree(root: Path, *, exclude_generated: bool = False):
-        if not root.exists():
-            return ()
-        if root.is_file():
-            return ((root.name, len(root.read_bytes()), hashlib.sha256(root.read_bytes()).hexdigest()),)
-        records = []
-        generated = (ROOT / "migration/macwin/generated").absolute()
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if exclude_generated:
+        root_metadata = os.lstat(root)
+        if stat.S_ISLNK(root_metadata.st_mode):
+            return ((root.name, "symlink", os.readlink(root)),)
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raw, identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(root)
+            return ((root.name, "file", len(raw), hashlib.sha256(raw).hexdigest(), identity),)
+        records: list[tuple[object, ...]] = []
+        generated = (root / "migration/macwin/generated").absolute()
+        pending = [(root, "")]
+        while pending:
+            directory, prefix = pending.pop()
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+            for entry in entries:
+                path = Path(entry.path)
+                relative = f"{prefix}/{entry.name}" if prefix else entry.name
                 absolute = path.absolute()
-                if absolute == generated or generated in absolute.parents:
+                if exclude_generated and (absolute == generated or generated in absolute.parents):
                     continue
-            raw = path.read_bytes()
-            records.append(
-                (path.relative_to(root).as_posix(), len(raw), hashlib.sha256(raw).hexdigest())
-            )
-        return tuple(sorted(records))
+                metadata = os.lstat(path)
+                identity = MacWinMigrationSideEffectTests._snapshot_identity(metadata)
+                if stat.S_ISDIR(metadata.st_mode):
+                    records.append((relative, "directory"))
+                    pending.append((path, relative))
+                elif stat.S_ISREG(metadata.st_mode):
+                    raw, opened_identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(path)
+                    if opened_identity != identity:
+                        raise AssertionError("snapshot file identity changed")
+                    records.append((relative, "file", len(raw), hashlib.sha256(raw).hexdigest(), metadata.st_mode, identity))
+                elif stat.S_ISLNK(metadata.st_mode):
+                    records.append((relative, "symlink", os.readlink(path), identity))
+                else:
+                    records.append((relative, "nonregular", identity))
+        return tuple(sorted(records, key=lambda record: os.fsencode(str(record[0]))))
+
+    @staticmethod
+    def _read_bound_snapshot_file(path: Path) -> tuple[bytes, tuple[int, int, int]]:
+        metadata = os.lstat(path)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AssertionError("snapshot leaf is not regular")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            chunks = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        identity = MacWinMigrationSideEffectTests._snapshot_identity(before)
+        if identity != MacWinMigrationSideEffectTests._snapshot_identity(
+            after
+        ) or identity != MacWinMigrationSideEffectTests._snapshot_identity(metadata):
+            raise AssertionError(f"snapshot file identity changed: {path}")
+        return b"".join(chunks), identity
+
+    @staticmethod
+    def _snapshot_identity(metadata: os.stat_result) -> tuple[int, int, int]:
+        return (metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode))
 
     @staticmethod
     def _run_audited(command: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
@@ -8615,13 +8922,20 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return completed.stdout
 
-    def _forbidden_locator(self) -> str:
-        return next(
+    def _forbidden_locators(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(
             locator
             for record in self.result.records
             for locator in record.evidence_locators
             if locator.startswith("/") or re.match(r"^[A-Za-z]:", locator)
-        )
+        ))
+
+    def _forbidden_evidence_values(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(
+            locator
+            for record in self.result.records
+            for locator in record.evidence_locators
+        ))
 
     def _run_main(self, arguments: tuple[str, ...]) -> tuple[int, bytes, bytes]:
         stdout = mock.Mock()
@@ -8665,9 +8979,7 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         raw = self.DOCUMENT.read_bytes()
         text = self._validate_document(raw)
         self.assertIn("# Mac-Win portable asset migration boundary", text)
-        for path, digest in self._generated_digests().items():
-            self.assertIn(f"`{path}`", text)
-            self.assertIn(f"`{digest}`", text)
+        self.assertEqual(self._parse_output_rows(text), self._generated_rows())
 
     def test_readme_and_testing_docs_link_the_visible_boundary(self) -> None:
         readme = (ROOT / "README.md").read_bytes()
@@ -8691,6 +9003,15 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
 
     def test_raw_document_seal_rejects_transport_and_semantic_decoys(self) -> None:
         raw = self.DOCUMENT.read_bytes()
+        catalog_digest = b"c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a"
+        bottle_digest = b"f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb"
+        swapped = raw.replace(catalog_digest, b"DIGEST-A", 1).replace(
+            bottle_digest, catalog_digest, 1
+        ).replace(b"DIGEST-A", bottle_digest, 1)
+        catalog_row = next(
+            line for line in raw.splitlines(keepends=True)
+            if b"generated/catalog.json`" in line
+        )
         mutants = {
             "crlf": raw.replace(b"\n", b"\r\n", 1),
             "mixed": raw[:20] + b"\r\n" + raw[20:],
@@ -8702,6 +9023,11 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
                 self.REQUIRED_FACTS[0].encode("utf-8"),
                 b"<!-- repository: `a1112/Mac-Win` -->",
             ),
+            "swapped-digests": swapped,
+            "wrong-byte-size": raw.replace(b"| 7,603 |", b"| 7,604 |", 1),
+            "duplicate-row": raw.replace(catalog_row, catalog_row + catalog_row, 1),
+            "missing-row": raw.replace(catalog_row, b"", 1),
+            "contradictory-status": raw + b"The sealed result has 3 converted records.\n",
         }
         for name, mutant in mutants.items():
             with self.subTest(mutant=name), self.assertRaises(ValueError):
@@ -8721,12 +9047,57 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             raise ValueError("migration document framing is invalid")
         if any(fact not in text for fact in self.REQUIRED_FACTS):
             raise ValueError("migration document facts are incomplete")
+        if self._parse_output_rows(text) != self._generated_rows():
+            raise ValueError("migration document output seals are incomplete")
+        numeric_statuses = {
+            status: {
+                int(value)
+                for value in re.findall(rf"\b(\d+) {status}(?:\b| records?\b)", text)
+            }
+            for status in ("converted", "deferred", "quarantined")
+        }
+        if any(
+            values - {expected}
+            for status, values in numeric_statuses.items()
+            for expected in ({"converted": 2, "deferred": 15, "quarantined": 73}[status],)
+        ):
+            raise ValueError("migration document status claims are contradictory")
+        root = json.loads((ROOT / "migration/macwin/generated/index.json").read_bytes())
+        dependent = {
+            document["path"]: (document["byteSize"], document["sha256"])
+            for document in root["documents"]
+        }
+        rows = self._generated_rows()
+        if root["documentCount"] != len(dependent) or set(dependent) != set(rows) - {
+            "migration/macwin/generated/index.json"
+        }:
+            raise ValueError("migration document root semantics are incomplete")
+        if any(rows[path] != seal for path, seal in dependent.items()):
+            raise ValueError("migration document dependent seals are incomplete")
         return text
 
     @staticmethod
-    def _generated_digests() -> dict[str, str]:
+    def _parse_output_rows(text: str) -> dict[str, tuple[int, str]]:
+        matches = re.findall(
+            r"^\| `(?P<path>migration/macwin/generated/[^`]+\.json)` "
+            r"\| (?P<size>[0-9][0-9,]*) \| `(?P<digest>[0-9a-f]{64})` \|$",
+            text,
+            flags=re.MULTILINE,
+        )
+        rows: dict[str, tuple[int, str]] = {}
+        for path, size, digest in matches:
+            if path in rows:
+                raise ValueError("migration document output row is duplicated")
+            rows[path] = (int(size.replace(",", "")), digest)
+        return rows
+
+    @staticmethod
+    def _generated_rows() -> dict[str, tuple[int, str]]:
         return {
-            path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            path.relative_to(ROOT).as_posix(): (
+                len(path.read_bytes()),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
             for path in sorted((ROOT / "migration/macwin/generated").rglob("*.json"))
         }
 
