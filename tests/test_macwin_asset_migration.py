@@ -8343,7 +8343,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
 
             validator_before = self._snapshot_boundary(sentinel)
-            with self._guard_external_effects(sentinel), self._guard_read_only_writes():
+            with self._guard_external_effects(
+                sentinel, allow_audited_environment_items=True
+            ), self._guard_read_only_writes():
                 with mock.patch.object(validator.subprocess, "run", audited_check):
                     self.assertEqual(validator.validate_macwin_asset_migration(), [])
             self.assertEqual(self._snapshot_boundary(sentinel), validator_before)
@@ -8370,6 +8372,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "environment": lambda: os.getenv("HOME"),
                 "environment-mapping": lambda: self.converter.os.environ["HOME"],
                 "environment-global": lambda: os.environ.get("PATH"),
+                "environment-items": lambda: tuple(os.environ.items()),
                 "home-expansion": lambda: os.path.expanduser("~/asset"),
                 "locator-probe": lambda: Path(forbidden_locator).exists(),
                 "locator-stat": lambda: Path(forbidden_locator).stat(),
@@ -8380,6 +8383,10 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "locator-os-access": lambda: os.access(forbidden_locator, os.F_OK),
                 "locator-os-open": lambda: os.open(forbidden_locator, os.O_RDONLY),
                 "locator-builtin-open": lambda: builtins.open(forbidden_locator, "rb"),
+                "locator-listdir": lambda: os.listdir(forbidden_locator),
+                "locator-walk": lambda: next(os.walk(forbidden_locator)),
+                "locator-iterdir": lambda: next(Path(forbidden_locator).iterdir()),
+                "locator-glob": lambda: next(Path(forbidden_locator).glob("*")),
                 "second-locator": lambda: os.path.exists(second_locator),
                 "dynamic-import": lambda: importlib.util.spec_from_file_location(
                     "migrated_asset", forbidden_locator
@@ -8389,6 +8396,10 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "asset-execution": lambda: os.system("asset"),
                 "asset-popen": lambda: os.popen("asset"),
                 "asset-exec": lambda: os.execv("asset", ("asset",)),
+                "asset-compile": lambda: builtins.compile("x = 1", "asset", "exec"),
+                "asset-eval": lambda: builtins.eval("1 + 1"),
+                "asset-builtin-exec": lambda: builtins.exec("x = 1"),
+                "asset-import": lambda: builtins.__import__("migrated_asset"),
                 "bottle-access": lambda: bottle.read_bytes(),
                 "external-write": lambda: sentinel.write_bytes(b"mutated\n"),
             }
@@ -8438,6 +8449,35 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             transient.unlink(missing_ok=True)
             persistent.unlink(missing_ok=True)
 
+        catalog = generated / "catalog.json"
+        original_times = (catalog.stat().st_atime_ns, catalog.stat().st_mtime_ns)
+        metadata_mutants = {
+            "utime": lambda: (
+                os.utime(catalog, ns=(original_times[0], original_times[1] - 1)),
+                os.utime(catalog, ns=original_times),
+            ),
+            "chmod": lambda: os.chmod(catalog, catalog.stat().st_mode),
+            "truncate": lambda: os.truncate(catalog, catalog.stat().st_size),
+            "hardlink": lambda: (
+                os.link(catalog, generated / "transient-hardlink"),
+                os.unlink(generated / "transient-hardlink"),
+            ),
+            "symlink": lambda: (
+                os.symlink(catalog, generated / "transient-symlink"),
+                os.unlink(generated / "transient-symlink"),
+            ),
+        }
+        for name, mutant in metadata_mutants.items():
+            with self.subTest(mutant=name), self._guard_read_only_writes(), mock.patch.object(
+                self.converter,
+                "build_conversion",
+                side_effect=lambda *_args, _mutant=mutant, **_kwargs: (
+                    _mutant(),
+                    self.result,
+                )[1],
+            ), self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                self.converter.main(("--check",))
+
     def test_tree_snapshot_binds_empty_directories_and_nonregular_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -8445,16 +8485,27 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             empty.mkdir()
             regular = root / "regular"
             regular.write_bytes(b"content")
+            snapshot = self._snapshot_tree(root)
+            self.assertTrue(
+                any(record[:2] == ("empty", "directory") for record in snapshot)
+            )
+            before = snapshot
+            empty.rmdir()
+            empty.mkdir()
+            self.assertNotEqual(self._snapshot_tree(root), before)
             linked = root / "linked"
             try:
                 os.symlink(regular, linked)
             except (OSError, NotImplementedError) as error:
                 self.skipTest(f"symlink snapshot contract unavailable: {error}")
-            snapshot = self._snapshot_tree(root)
-            self.assertIn(("empty", "directory"), snapshot)
-            self.assertTrue(
-                any(record[:2] == ("linked", "symlink") for record in snapshot)
-            )
+            if os.name == "nt":
+                with self.assertRaisesRegex(AssertionError, "reparse point"):
+                    self._snapshot_tree(root)
+            else:
+                snapshot = self._snapshot_tree(root)
+                self.assertTrue(
+                    any(record[:2] == ("linked", "symlink") for record in snapshot)
+                )
 
     def test_approved_write_scope_is_exact_and_repeat_is_a_no_op(self) -> None:
         before_repository = self._snapshot_tree(ROOT, exclude_generated=True)
@@ -8486,11 +8537,27 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             self._write_document_map(root, self.documents)
             (generated / "catalog.json").write_bytes(b"stale\n")
             outside_before = self._snapshot_tree(root, exclude_generated=True)
-            self.converter.write_generated_documents(root, self.documents)
+            with self._audit_write_scope(generated) as events:
+                self.converter.write_generated_documents(root, self.documents)
             self.assertEqual(self.converter.read_generated_documents(root), self.documents)
             self.assertEqual(self._snapshot_tree(root, exclude_generated=True), outside_before)
-            with self._guard_read_only_writes():
+            self.assertTrue(events)
+            self.assertTrue(all(self._path_is_within(path, generated) for path in events))
+            with self._audit_write_scope(generated) as repeat_events:
                 self.converter.write_generated_documents(root, self.documents)
+            self.assertEqual(repeat_events, [])
+
+            outside = root / "transient-outside"
+
+            def escape_then_write(*args, **kwargs):
+                outside.write_bytes(b"escaped")
+                outside.unlink()
+                return self.converter.write_generated_documents(*args, **kwargs)
+
+            with self._audit_write_scope(generated), self.assertRaisesRegex(
+                AssertionError, "side effect blocked"
+            ):
+                escape_then_write(root, self.documents)
 
     @staticmethod
     def _write_document_map(root: Path, documents: dict[str, bytes]) -> None:
@@ -8500,11 +8567,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             path.write_bytes(raw)
 
     @contextlib.contextmanager
-    def _guard_external_effects(self, sentinel: Path):
+    def _guard_external_effects(
+        self, sentinel: Path, *, allow_audited_environment_items: bool = False
+    ):
         real_builtin_open = builtins.open
         real_io_open = io.open
         real_os_access = os.access
         real_os_lstat = os.lstat
+        real_os_listdir = os.listdir
         real_os_open = os.open
         real_os_scandir = os.scandir
         real_os_stat = os.stat
@@ -8513,6 +8583,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         real_path_isfile = os.path.isfile
         real_path_lexists = os.path.lexists
         real_open = Path.open
+        real_iterdir = Path.iterdir
+        real_glob = Path.glob
+        real_rglob = Path.rglob
         real_stat = Path.stat
         real_exists = Path.exists
         real_read_bytes = Path.read_bytes
@@ -8535,6 +8608,8 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
         class GuardedEnvironment:
             def items(self):
+                if not allow_audited_environment_items:
+                    blocked()
                 return allowed_environment
 
             def __getitem__(self, _key):
@@ -8589,6 +8664,10 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             guard_path(path)
             return real_os_lstat(path, *args, **kwargs)
 
+        def guarded_os_listdir(path="."):
+            guard_path(path)
+            return real_os_listdir(path)
+
         def guarded_os_open(path, *args, **kwargs):
             guard_path(path)
             return real_os_open(path, *args, **kwargs)
@@ -8632,6 +8711,18 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 blocked()
             return real_write_bytes(path, data)
 
+        def guarded_iterdir(path: Path):
+            guard_path(path)
+            return real_iterdir(path)
+
+        def guarded_glob(path: Path, pattern: str, *args, **kwargs):
+            guard_path(path)
+            return real_glob(path, pattern, *args, **kwargs)
+
+        def guarded_rglob(path: Path, pattern: str, *args, **kwargs):
+            guard_path(path)
+            return real_rglob(path, pattern, *args, **kwargs)
+
         patches = [
             mock.patch.object(socket, "socket", side_effect=blocked),
             mock.patch.object(socket, "create_connection", side_effect=blocked),
@@ -8658,6 +8749,8 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             mock.patch.object(os, "popen", side_effect=blocked),
             mock.patch.object(os, "stat", guarded_os_stat),
             mock.patch.object(os, "lstat", guarded_os_lstat),
+            mock.patch.object(os, "listdir", guarded_os_listdir),
+            mock.patch.object(os, "walk", side_effect=blocked),
             mock.patch.object(os, "access", guarded_os_access),
             mock.patch.object(os, "open", guarded_os_open),
             mock.patch.object(os, "scandir", guarded_os_scandir),
@@ -8672,6 +8765,13 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             mock.patch.object(Path, "exists", guarded_exists),
             mock.patch.object(Path, "read_bytes", guarded_read_bytes),
             mock.patch.object(Path, "write_bytes", guarded_write_bytes),
+            mock.patch.object(Path, "iterdir", guarded_iterdir),
+            mock.patch.object(Path, "glob", guarded_glob),
+            mock.patch.object(Path, "rglob", guarded_rglob),
+            mock.patch.object(builtins, "compile", side_effect=blocked),
+            mock.patch.object(builtins, "eval", side_effect=blocked),
+            mock.patch.object(builtins, "exec", side_effect=blocked),
+            mock.patch.object(builtins, "__import__", side_effect=blocked),
         ]
         for name in (
             "execl",
@@ -8733,7 +8833,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             mock.patch.object(io, "open", guarded_stream_open(real_io_open)),
         ]
         for owner, names in (
-            (os, ("write", "replace", "rename", "unlink", "remove", "mkdir", "makedirs", "rmdir")),
+            (os, ("write", "replace", "rename", "unlink", "remove", "mkdir", "makedirs", "rmdir", "utime", "chmod", "chown", "truncate", "link", "symlink")),
             (Path, ("write_bytes", "write_text", "touch", "mkdir", "unlink", "rename", "replace", "rmdir")),
             (tempfile, ("NamedTemporaryFile", "TemporaryFile", "mkdtemp", "mkstemp")),
         ):
@@ -8744,6 +8844,67 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             for patcher in patches:
                 stack.enter_context(patcher)
             yield
+
+    @contextlib.contextmanager
+    def _audit_write_scope(self, approved_root: Path):
+        approved_root = approved_root.absolute()
+        events: list[Path] = []
+        patches = []
+
+        def audit_path(value, *, dir_fd=None):
+            if isinstance(value, int):
+                return
+            path = Path(os.fsdecode(os.fspath(value)))
+            if not path.is_absolute():
+                if dir_fd is None:
+                    path = Path.cwd() / path
+                elif os.name != "nt" and Path(f"/proc/self/fd/{dir_fd}").exists():
+                    path = Path(os.readlink(f"/proc/self/fd/{dir_fd}")) / path
+                else:
+                    raise AssertionError("side effect blocked")
+            path = path.absolute()
+            if not self._path_is_within(path, approved_root):
+                raise AssertionError("side effect blocked")
+            events.append(path)
+
+        def wrap(owner, name, path_indexes=(0,)):
+            real = getattr(owner, name)
+            def guarded(*args, **kwargs):
+                dir_fd = kwargs.get("dir_fd")
+                for index in path_indexes:
+                    if index < len(args):
+                        audit_path(args[index], dir_fd=dir_fd)
+                return real(*args, **kwargs)
+            patches.append(mock.patch.object(owner, name, guarded))
+
+        for name in ("unlink", "remove", "mkdir", "makedirs", "rmdir", "utime", "chmod", "chown", "truncate", "symlink"):
+            if hasattr(os, name):
+                wrap(os, name)
+        for name in ("replace", "rename", "link"):
+            if hasattr(os, name):
+                wrap(os, name, (0, 1))
+        real_os_open = os.open
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+        def guarded_os_open(path, flags, *args, **kwargs):
+            if flags & write_flags:
+                audit_path(path, dir_fd=kwargs.get("dir_fd"))
+            return real_os_open(path, flags, *args, **kwargs)
+        patches.append(mock.patch.object(os, "open", guarded_os_open))
+        real_write_bytes = Path.write_bytes
+        def guarded_write_bytes(path, data):
+            audit_path(path)
+            return real_write_bytes(path, data)
+        patches.append(mock.patch.object(Path, "write_bytes", guarded_write_bytes))
+        with contextlib.ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            yield events
+
+    @staticmethod
+    def _path_is_within(path: Path, root: Path) -> bool:
+        path = path.absolute()
+        root = root.absolute()
+        return path == root or root in path.parents
 
     def _snapshot_boundary(self, sentinel: Path) -> dict[str, object]:
         return {
@@ -8789,7 +8950,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             if not path.exists():
                 result[name] = None
             else:
-                result[name] = self._snapshot_tree(path) if path.is_dir() else path.read_bytes()
+                result[name] = self._snapshot_tree(path)
         return result
 
     def _git_absolute_path(self, option: str) -> Path:
@@ -8803,12 +8964,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
     @staticmethod
     def _snapshot_tree(root: Path, *, exclude_generated: bool = False):
         root_metadata = os.lstat(root)
+        MacWinMigrationSideEffectTests._reject_snapshot_reparse(root_metadata)
         if stat.S_ISLNK(root_metadata.st_mode):
             return ((root.name, "symlink", os.readlink(root)),)
         if not stat.S_ISDIR(root_metadata.st_mode):
             raw, identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(root)
             return ((root.name, "file", len(raw), hashlib.sha256(raw).hexdigest(), identity),)
-        records: list[tuple[object, ...]] = []
+        root_identity = MacWinMigrationSideEffectTests._snapshot_identity(root_metadata)
+        records: list[tuple[object, ...]] = [(".", "directory", root_identity)]
         generated = (root / "migration/macwin/generated").absolute()
         pending = [(root, "")]
         while pending:
@@ -8822,9 +8985,10 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 if exclude_generated and (absolute == generated or generated in absolute.parents):
                     continue
                 metadata = os.lstat(path)
+                MacWinMigrationSideEffectTests._reject_snapshot_reparse(metadata)
                 identity = MacWinMigrationSideEffectTests._snapshot_identity(metadata)
                 if stat.S_ISDIR(metadata.st_mode):
-                    records.append((relative, "directory"))
+                    records.append((relative, "directory", identity))
                     pending.append((path, relative))
                 elif stat.S_ISREG(metadata.st_mode):
                     raw, opened_identity = MacWinMigrationSideEffectTests._read_bound_snapshot_file(path)
@@ -8835,6 +8999,15 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     records.append((relative, "symlink", os.readlink(path), identity))
                 else:
                     records.append((relative, "nonregular", identity))
+            current = os.lstat(directory)
+            MacWinMigrationSideEffectTests._reject_snapshot_reparse(current)
+            expected = next(
+                record[2]
+                for record in records
+                if record[0] == (prefix or ".") and record[1] == "directory"
+            )
+            if MacWinMigrationSideEffectTests._snapshot_identity(current) != expected:
+                raise AssertionError("snapshot directory identity changed")
         return tuple(sorted(records, key=lambda record: os.fsencode(str(record[0]))))
 
     @staticmethod
@@ -8866,6 +9039,12 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
     @staticmethod
     def _snapshot_identity(metadata: os.stat_result) -> tuple[int, int, int]:
         return (metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode))
+
+    @staticmethod
+    def _reject_snapshot_reparse(metadata: os.stat_result) -> None:
+        reparse_attribute = 0x400
+        if getattr(metadata, "st_file_attributes", 0) & reparse_attribute:
+            raise AssertionError("snapshot entry is a reparse point")
 
     @staticmethod
     def _run_audited(command: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
@@ -8951,6 +9130,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
 class MacWinMigrationDocumentationTests(unittest.TestCase):
     DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
+    DOCUMENT_SHA256 = "a89a2cbd56d2a27284dc2ac6d991ef3456d0e2b343cf6695ad59409813dec56f"
     MAX_DOCUMENT_BYTES = 1024 * 1024
     REQUIRED_FACTS = (
         "repository: `a1112/Mac-Win`",
@@ -9028,6 +9208,9 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             "duplicate-row": raw.replace(catalog_row, catalog_row + catalog_row, 1),
             "missing-row": raw.replace(catalog_row, b"", 1),
             "contradictory-status": raw + b"The sealed result has 3 converted records.\n",
+            "contradictory-word-status": raw + b"There are three converted records.\n",
+            "contradictory-count": raw + b"The governed inventory has 91 assets.\n",
+            "contradictory-commit": raw + b"source commit: `0000000000000000000000000000000000000000`\n",
         }
         for name, mutant in mutants.items():
             with self.subTest(mutant=name), self.assertRaises(ValueError):
@@ -9045,6 +9228,8 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             raise ValueError("migration document is not UTF-8") from error
         if not text.endswith("\n") or text.startswith("\ufeff"):
             raise ValueError("migration document framing is invalid")
+        if hashlib.sha256(raw).hexdigest() != self.DOCUMENT_SHA256:
+            raise ValueError("migration document whole-file seal changed")
         if any(fact not in text for fact in self.REQUIRED_FACTS):
             raise ValueError("migration document facts are incomplete")
         if self._parse_output_rows(text) != self._generated_rows():
