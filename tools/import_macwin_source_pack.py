@@ -113,6 +113,69 @@ class GitBinding:
     inventory_commit: str
 
 
+@dataclass(frozen=True)
+class SourcePackLeafBinding:
+    path: Path
+    identity: tuple[int, int, int, int, int, int]
+    raw: bytes
+
+
+class SourcePackBinding:
+    """Bind the exact source-pack path identities and authenticated bytes."""
+
+    def __init__(
+        self,
+        root: Path,
+        root_identity: tuple[int, int, int, int, int, int],
+        manifest: dict[str, object],
+        leaves: dict[Path, SourcePackLeafBinding],
+    ) -> None:
+        self.root = root
+        self.root_identity = root_identity
+        self.manifest = manifest
+        self._leaves = leaves
+
+    def __enter__(self) -> SourcePackBinding:
+        return self
+
+    def __exit__(self, _kind, _value, _traceback) -> None:
+        return None
+
+    def contains(self, path: Path) -> bool:
+        return path.absolute() in self._leaves
+
+    def verify_path(self, path: Path) -> bytes:
+        absolute = path.absolute()
+        leaf = self._leaves.get(absolute)
+        if leaf is None:
+            _fail("source-pack binding path is not authenticated")
+        before = _path_metadata(absolute)
+        if _file_identity(before) != leaf.identity:
+            _fail("source-pack binding identity changed")
+        maximum = (
+            MAX_SOURCE_INDEX_BYTES
+            if absolute == self.root / "index.json"
+            else MAX_SOURCE_OBJECT_BYTES
+        )
+        raw = _read_regular_file(absolute, maximum)
+        after = _path_metadata(absolute)
+        if _file_identity(after) != leaf.identity or raw != leaf.raw:
+            _fail("source-pack binding content changed")
+        return raw
+
+    def revalidate(self) -> None:
+        current_root = _path_metadata(self.root)
+        if _file_identity(current_root) != self.root_identity:
+            _fail("source-pack binding root changed")
+        if validate_source_pack(self.root) != self.manifest:
+            _fail("source-pack binding manifest changed")
+        for path in sorted(self._leaves, key=lambda value: str(value).encode("utf-8")):
+            self.verify_path(path)
+        final_root = _path_metadata(self.root)
+        if _file_identity(final_root) != self.root_identity:
+            _fail("source-pack binding root changed")
+
+
 def _safe_git_environment() -> dict[str, str]:
     allowed = {
         "COMSPEC",
@@ -205,6 +268,17 @@ def _path_metadata(path: Path) -> os.stat_result:
     if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
         _fail("filesystem boundary is linked")
     return metadata
+
+
+def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_nlink,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _validate_path_chain(path: Path) -> None:
@@ -1133,6 +1207,37 @@ def validate_source_pack(source_root: Path) -> dict[str, object]:
         ):
             _fail("source-pack object content does not match the index")
     return manifest
+
+
+def bind_source_pack(source_root: Path) -> SourcePackBinding:
+    """Authenticate and bind every exact offline source-pack leaf for a caller."""
+
+    manifest = validate_source_pack(source_root)
+    root = source_root.absolute()
+    root_identity = _file_identity(_path_metadata(root))
+    relative_paths = ["index.json"]
+    relative_paths.extend(record["objectPath"] for record in manifest["assets"])
+    leaves: dict[Path, SourcePackLeafBinding] = {}
+    for relative in relative_paths:
+        path = root / PurePosixPath(relative)
+        maximum = (
+            MAX_SOURCE_INDEX_BYTES
+            if relative == "index.json"
+            else MAX_SOURCE_OBJECT_BYTES
+        )
+        before = _path_metadata(path)
+        raw = _read_regular_file(path, maximum)
+        after = _path_metadata(path)
+        identity = _file_identity(before)
+        if _file_identity(after) != identity:
+            _fail("source-pack binding identity changed")
+        absolute = path.absolute()
+        leaves[absolute] = SourcePackLeafBinding(absolute, identity, raw)
+    if len(leaves) != 91:
+        _fail("source-pack binding leaf count is invalid")
+    binding = SourcePackBinding(root, root_identity, manifest, leaves)
+    binding.revalidate()
+    return binding
 
 
 def _document_bytes(source_root: Path, manifest: dict[str, object]) -> dict[str, bytes]:

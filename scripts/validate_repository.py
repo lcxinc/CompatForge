@@ -139,64 +139,59 @@ def validate_markdown_links() -> list[str]:
     return errors
 
 
-def _validated_macwin_source_pack_paths() -> tuple[set[Path], list[str]]:
-    """Return only leaves authenticated by the complete offline source-pack validator."""
+def _validated_macwin_source_pack_binding() -> tuple[object | None, list[str]]:
+    """Return a live identity/content binding for the authenticated source pack."""
     source_root = ROOT / "migration" / "macwin" / "source"
     try:
         source_metadata = source_root.lstat()
     except FileNotFoundError:
-        return set(), ["Mac-Win source pack validation failed"]
+        return None, ["Mac-Win source pack validation failed"]
     except OSError:
-        return set(), ["Mac-Win source pack validation failed"]
+        return None, ["Mac-Win source pack validation failed"]
     if (
         not stat.S_ISDIR(source_metadata.st_mode)
         or stat.S_ISLNK(source_metadata.st_mode)
         or getattr(source_metadata, "st_reparse_tag", 0)
     ):
-        return set(), ["Mac-Win source pack validation failed"]
+        return None, ["Mac-Win source pack validation failed"]
 
     try:
         validator_metadata = SOURCE_PACK_VALIDATOR.lstat()
     except OSError:
-        return set(), ["Mac-Win source pack validation failed"]
+        return None, ["Mac-Win source pack validation failed"]
     if (
         not stat.S_ISREG(validator_metadata.st_mode)
         or stat.S_ISLNK(validator_metadata.st_mode)
         or getattr(validator_metadata, "st_reparse_tag", 0)
     ):
-        return set(), ["Mac-Win source pack validation failed"]
+        return None, ["Mac-Win source pack validation failed"]
 
     try:
         spec = importlib.util.spec_from_file_location(
             "repository_macwin_source_pack_validator", SOURCE_PACK_VALIDATOR
         )
         if spec is None or spec.loader is None:
-            return set(), ["Mac-Win source pack validation failed"]
+            return None, ["Mac-Win source pack validation failed"]
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         try:
             spec.loader.exec_module(module)
         finally:
             sys.modules.pop(spec.name, None)
-        manifest = module.validate_source_pack(source_root)
+        binding = module.bind_source_pack(source_root)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        return set(), ["Mac-Win source pack validation failed"]
-
-    paths = {source_root / "index.json"}
-    for record in manifest["assets"]:
-        paths.add(source_root / Path(*record["objectPath"].split("/")))
-    if len(paths) != 91:
-        return set(), ["Mac-Win source pack validation failed"]
-    return {path.absolute() for path in paths}, []
+        return None, ["Mac-Win source pack validation failed"]
+    return binding, []
 
 
-def validate_no_developer_paths() -> list[str]:
-    exempt_paths, errors = _validated_macwin_source_pack_paths()
+def _scan_developer_paths(binding: object | None) -> list[str]:
+    errors: list[str] = []
     forbidden = ("/Users/a1-6/", "/home/a1-6/")
     for path in sorted(ROOT.rglob("*")):
-        if not path.is_file() or ".git" in path.parts:
+        if binding is not None and binding.contains(path):
+            binding.verify_path(path)
             continue
-        if path.absolute() in exempt_paths:
+        if not path.is_file() or ".git" in path.parts:
             continue
         if path.resolve() == Path(__file__).resolve():
             continue
@@ -208,6 +203,18 @@ def validate_no_developer_paths() -> list[str]:
             if value in content:
                 errors.append(f"{path.relative_to(ROOT)}: contains developer path {value}")
     return errors
+
+
+def validate_no_developer_paths() -> list[str]:
+    binding, errors = _validated_macwin_source_pack_binding()
+    if binding is None:
+        return [*errors, *_scan_developer_paths(None)]
+    try:
+        scanned_errors = _scan_developer_paths(binding)
+        binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None)]
+    return scanned_errors
 
 
 def validate_pe_inspection_fixture() -> list[str]:

@@ -2426,6 +2426,139 @@ class MacWinSourcePackTests(unittest.TestCase):
         ), mock.patch("socket.create_connection", side_effect=AssertionError("network invoked")):
             self.assertEqual(validator.validate_no_developer_paths(), [])
 
+    def test_source_pack_binding_rejects_same_byte_path_replacement(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            copied = self._copy_pack(source_root, Path(directory))
+            target = self._developer_path_object(copied)
+            raw = target.read_bytes()
+            with importer.bind_source_pack(copied) as binding:
+                replaced = copied / "replaced-object"
+                target.replace(replaced)
+                target.write_bytes(raw)
+                with self.assertRaises(importer.SourcePackError):
+                    binding.verify_path(target)
+
+    def test_source_pack_binding_rejects_same_identity_content_mutation(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            copied = self._copy_pack(source_root, Path(directory))
+            target = self._developer_path_object(copied)
+            original = target.read_bytes()
+            with importer.bind_source_pack(copied) as binding:
+                metadata = target.stat()
+                mutated = bytes([original[0] ^ 1]) + original[1:]
+                target.write_bytes(mutated)
+                os.utime(
+                    target,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                )
+                with self.assertRaises(importer.SourcePackError):
+                    binding.verify_path(target)
+
+    def test_repository_validator_rejects_replacement_after_authentication(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            temporary_root = Path(directory)
+            copied = temporary_root / "migration/macwin/source"
+            copied.parent.mkdir(parents=True)
+            shutil.copytree(source_root, copied)
+            target = self._developer_path_object(copied)
+            raw = target.read_bytes()
+            original_rglob = Path.rglob
+            injected = False
+
+            def replace_before_scan(path: Path, pattern: str):
+                nonlocal injected
+                if path == temporary_root and not injected:
+                    injected = True
+                    replaced = copied / "replaced-object"
+                    target.replace(replaced)
+                    target.write_bytes(raw)
+                return original_rglob(path, pattern)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(Path, "rglob", replace_before_scan):
+                errors = validator.validate_no_developer_paths()
+            self.assertIn("Mac-Win source pack validation failed", errors)
+            self.assertTrue(
+                any(target.name in error and "contains developer path" in error for error in errors),
+                errors,
+            )
+
+    def test_repository_validator_revalidates_after_a_skipped_evidence_leaf(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            temporary_root = Path(directory)
+            copied = temporary_root / "migration/macwin/source"
+            copied.parent.mkdir(parents=True)
+            shutil.copytree(source_root, copied)
+            target = self._developer_path_object(copied)
+            original_rglob = Path.rglob
+            injected = False
+
+            def mutate_during_scan(path: Path, pattern: str):
+                nonlocal injected
+                values = original_rglob(path, pattern)
+                if path != temporary_root or injected:
+                    yield from values
+                    return
+                for value in values:
+                    yield value
+                    if value == target:
+                        raw = target.read_bytes()
+                        target.write_bytes(raw + b"\nmutation-after-skip")
+                        injected = True
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(Path, "rglob", mutate_during_scan):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertIn("Mac-Win source pack validation failed", errors)
+            self.assertTrue(
+                any(target.name in error and "contains developer path" in error for error in errors),
+                errors,
+            )
+
+    def test_repository_validator_revalidates_after_index_mutation_during_scan(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        source_root = ROOT / "migration/macwin/source"
+        with self._temporary_directory() as directory:
+            temporary_root = Path(directory)
+            copied = temporary_root / "migration/macwin/source"
+            copied.parent.mkdir(parents=True)
+            shutil.copytree(source_root, copied)
+            index = copied / "index.json"
+            original_rglob = Path.rglob
+            injected = False
+
+            def mutate_index(path: Path, pattern: str):
+                nonlocal injected
+                values = original_rglob(path, pattern)
+                if path != temporary_root or injected:
+                    yield from values
+                    return
+                for value in values:
+                    yield value
+                    if value == index:
+                        raw = index.read_bytes()
+                        index.write_bytes(raw[:-1] + b" \n")
+                        injected = True
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(Path, "rglob", mutate_index):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertIn("Mac-Win source pack validation failed", errors)
+            self.assertTrue(
+                any("source\\index.json" in error and "contains developer path" in error for error in errors),
+                errors,
+            )
+
     @staticmethod
     def _load_importer():
         path = ROOT / "tools/import_macwin_source_pack.py"
@@ -2451,6 +2584,14 @@ class MacWinSourcePackTests(unittest.TestCase):
     @staticmethod
     def _first_object(source_root: Path) -> Path:
         return sorted((source_root / "objects/sha256").glob("*/*"))[0]
+
+    @staticmethod
+    def _developer_path_object(source_root: Path) -> Path:
+        needle = b"/Users/" + b"a1-6/"
+        for path in sorted((source_root / "objects/sha256").glob("*/*")):
+            if needle in path.read_bytes():
+                return path
+        raise AssertionError("source pack has no developer-path evidence object")
 
     def _make_binding_repository(
         self, root: Path, scenario: str
