@@ -12,7 +12,9 @@ import json
 import os
 import random
 import re
+import runpy
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -21,6 +23,7 @@ import threading
 import time
 import tracemalloc
 import unittest
+import urllib.request
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
@@ -8247,6 +8250,485 @@ class MacWinSourcePackTests(unittest.TestCase):
                 for relative in paths
             }
             return staged, checked, semantics
+
+
+class MacWinMigrationSideEffectTests(unittest.TestCase):
+    DOCUMENT_PATHS = (
+        "migration/macwin/generated/catalog.json",
+        "migration/macwin/generated/index.json",
+        "migration/macwin/generated/mappings/bottle-schemas.json",
+        "migration/macwin/generated/mappings/patches.json",
+        "migration/macwin/generated/quarantine.json",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.result = cls.converter.build_conversion(ROOT)
+        cls.documents = cls.converter.render_documents(cls.result)
+
+    def test_all_normal_modes_and_two_writes_preserve_external_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "external-sentinel"
+            sentinel.write_bytes(b"must remain unchanged\n")
+            before = self._snapshot_boundary(sentinel)
+
+            commands = (
+                self._converter_command(),
+                self._converter_command("--check"),
+                self._converter_command("--explain", "7zip"),
+                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
+                self._converter_command("--write"),
+                self._converter_command("--write"),
+            )
+            for command in commands:
+                completed = self._run_audited(command)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            self.assertEqual(self._snapshot_boundary(sentinel), before)
+            self.assertEqual(
+                tuple(self.converter.read_generated_documents(ROOT)),
+                self.DOCUMENT_PATHS,
+            )
+            self.assertEqual(
+                self.converter.read_generated_documents(ROOT), self.documents
+            )
+
+    def test_in_process_modes_obey_the_guarded_external_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "external-sentinel"
+            sentinel.write_bytes(b"guarded\n")
+            before = self._snapshot_boundary(sentinel)
+            validator = MigrationLayoutTests._load_repository_validator()
+            with self._guard_external_effects(sentinel):
+                for arguments in ((), ("--check",), ("--explain", "7zip")):
+                    with self.subTest(arguments=arguments):
+                        code, stdout, stderr = self._run_main(arguments)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(stderr, b"")
+                        if arguments == ("--check",):
+                            self.assertEqual(stdout, b"")
+                        else:
+                            self.assertTrue(stdout.endswith(b"\n"))
+
+                for _ in range(2):
+                    code, stdout, stderr = self._run_main(("--write",))
+                    self.assertEqual((code, stdout, stderr), (0, b"", b""))
+
+                def audited_check(argv, **options):
+                    self.assertEqual(
+                        argv,
+                        [
+                            sys.executable,
+                            "-B",
+                            "-c",
+                            validator.MIGRATION_CONVERTER_BOOTSTRAP,
+                            str(ROOT / "tools/convert_macwin_assets.py"),
+                            "--check",
+                        ],
+                    )
+                    self.assertFalse(options["shell"])
+                    self.assertIsNone(options["executable"])
+                    self.assertEqual(options["cwd"], ROOT)
+                    self.assertIs(options["stdout"], subprocess.DEVNULL)
+                    self.assertIs(options["stderr"], subprocess.DEVNULL)
+                    self.assertEqual(
+                        options["input"],
+                        (ROOT / "tools/convert_macwin_assets.py").read_bytes(),
+                    )
+                    return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+                with mock.patch.object(validator.subprocess, "run", audited_check):
+                    self.assertEqual(validator.validate_macwin_asset_migration(), [])
+
+            self.assertEqual(self._snapshot_boundary(sentinel), before)
+
+    def test_controlled_mutants_turn_every_guard_family_red(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "external-sentinel"
+            sentinel.write_bytes(b"guarded\n")
+            bottle = ROOT / "examples/bottles/7zip-default.json"
+            forbidden_locator = self._forbidden_locator()
+            mutants = {
+                "dns": lambda: socket.getaddrinfo("example.invalid", 443),
+                "socket": lambda: socket.socket(),
+                "urlopen": lambda: urllib.request.urlopen("https://example.invalid"),
+                "subprocess": lambda: subprocess.run(["asset"], check=False),
+                "environment": lambda: os.getenv("HOME"),
+                "environment-mapping": lambda: self.converter.os.environ["HOME"],
+                "home-expansion": lambda: os.path.expanduser("~/asset"),
+                "locator-probe": lambda: Path(forbidden_locator).exists(),
+                "locator-stat": lambda: Path(forbidden_locator).stat(),
+                "locator-open": lambda: Path(forbidden_locator).open("rb"),
+                "dynamic-import": lambda: importlib.util.spec_from_file_location(
+                    "migrated_asset", forbidden_locator
+                ),
+                "asset-execution": lambda: os.system("asset"),
+                "bottle-access": lambda: bottle.read_bytes(),
+                "external-write": lambda: sentinel.write_bytes(b"mutated\n"),
+            }
+            with self._guard_external_effects(sentinel):
+                for family, mutant in mutants.items():
+                    with self.subTest(family=family), mock.patch.object(
+                        self.converter,
+                        "build_conversion",
+                        side_effect=lambda *_args, _mutant=mutant, **_kwargs: _mutant(),
+                    ), self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                        self.converter.main(("--check",))
+
+                code, stdout, stderr = self._run_main(("--check",))
+                self.assertEqual((code, stdout, stderr), (0, b"", b""))
+
+    def test_approved_write_scope_is_exact_and_repeat_is_a_no_op(self) -> None:
+        before_repository = self._snapshot_tree(ROOT, exclude_generated=True)
+        before_source = self._snapshot_tree(ROOT / "migration/macwin/source")
+        first = self.converter.read_generated_documents(ROOT)
+        self.converter.write_generated_documents(ROOT, self.documents)
+        second = self.converter.read_generated_documents(ROOT)
+        self.converter.write_generated_documents(ROOT, self.documents)
+        third = self.converter.read_generated_documents(ROOT)
+        self.assertEqual(first, self.documents)
+        self.assertEqual(second, first)
+        self.assertEqual(third, first)
+        self.assertEqual(self._snapshot_tree(ROOT, exclude_generated=True), before_repository)
+        self.assertEqual(self._snapshot_tree(ROOT / "migration/macwin/source"), before_source)
+        self.assertFalse(
+            any(
+                ".compatforge-transaction" in path.as_posix()
+                for path in (ROOT / "migration/macwin/generated").rglob("*")
+            )
+        )
+
+    @contextlib.contextmanager
+    def _guard_external_effects(self, sentinel: Path):
+        real_open = Path.open
+        real_stat = Path.stat
+        real_exists = Path.exists
+        real_read_bytes = Path.read_bytes
+        real_write_bytes = Path.write_bytes
+        forbidden_roots = (
+            (ROOT / "examples/bottles").absolute(),
+            (ROOT / "examples/runtime-packs").absolute(),
+            (ROOT / "tests/fixtures/runtime-packs").absolute(),
+        )
+        forbidden_values = frozenset(
+            {str(sentinel.absolute()), self._forbidden_locator()}
+        )
+
+        def blocked(*_args, **_kwargs):
+            raise AssertionError("side effect blocked")
+
+        class GuardedOs:
+            @property
+            def environ(self):
+                blocked()
+
+            def __getattr__(self, name: str):
+                if name == "getenv":
+                    return blocked
+                return getattr(os, name)
+
+        def path_is_forbidden(path: Path) -> bool:
+            value = str(path)
+            portable_value = path.as_posix()
+            if value in forbidden_values or portable_value in forbidden_values:
+                return True
+            absolute = path.absolute()
+            return any(
+                absolute == root or root in absolute.parents for root in forbidden_roots
+            )
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if path_is_forbidden(path):
+                blocked()
+            return real_open(path, *args, **kwargs)
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if path_is_forbidden(path):
+                blocked()
+            return real_stat(path, *args, **kwargs)
+
+        def guarded_exists(path: Path, *args, **kwargs):
+            if path_is_forbidden(path):
+                blocked()
+            return real_exists(path, *args, **kwargs)
+
+        def guarded_read_bytes(path: Path):
+            if path_is_forbidden(path):
+                blocked()
+            return real_read_bytes(path)
+
+        def guarded_write_bytes(path: Path, data: bytes):
+            if path_is_forbidden(path):
+                blocked()
+            return real_write_bytes(path, data)
+
+        patches = (
+            mock.patch.object(socket, "socket", side_effect=blocked),
+            mock.patch.object(socket, "create_connection", side_effect=blocked),
+            mock.patch.object(socket, "getaddrinfo", side_effect=blocked),
+            mock.patch.object(socket, "gethostbyname", side_effect=blocked),
+            mock.patch.object(urllib.request, "urlopen", side_effect=blocked),
+            mock.patch.object(urllib.request, "urlretrieve", side_effect=blocked),
+            mock.patch.object(subprocess, "Popen", side_effect=blocked),
+            mock.patch.object(subprocess, "run", side_effect=blocked),
+            mock.patch.object(subprocess, "check_call", side_effect=blocked),
+            mock.patch.object(subprocess, "check_output", side_effect=blocked),
+            mock.patch.object(os, "getenv", side_effect=blocked),
+            mock.patch.object(os.path, "expanduser", side_effect=blocked),
+            mock.patch.object(Path, "expanduser", side_effect=blocked),
+            mock.patch.object(importlib.util, "spec_from_file_location", side_effect=blocked),
+            mock.patch.object(importlib, "import_module", side_effect=blocked),
+            mock.patch.object(runpy, "run_path", side_effect=blocked),
+            mock.patch.object(os, "system", side_effect=blocked),
+            mock.patch.object(self.converter, "os", GuardedOs()),
+            mock.patch.object(Path, "open", guarded_open),
+            mock.patch.object(Path, "stat", guarded_stat),
+            mock.patch.object(Path, "exists", guarded_exists),
+            mock.patch.object(Path, "read_bytes", guarded_read_bytes),
+            mock.patch.object(Path, "write_bytes", guarded_write_bytes),
+        )
+        with contextlib.ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            yield
+
+    def _snapshot_boundary(self, sentinel: Path) -> dict[str, object]:
+        return {
+            "source": self._snapshot_tree(ROOT / "migration/macwin/source"),
+            "generated": self._snapshot_tree(ROOT / "migration/macwin/generated"),
+            "runtime": self._snapshot_tree(ROOT / "examples/runtime-packs"),
+            "runtime-fixtures": self._snapshot_tree(ROOT / "tests/fixtures/runtime-packs"),
+            "bottles": self._snapshot_tree(ROOT / "examples/bottles"),
+            "git": self._snapshot_git_metadata(),
+            "git-status": self._git_status(),
+            "sentinel": sentinel.read_bytes(),
+            "environment": tuple(sorted(os.environ.items())),
+            "cwd": os.getcwd(),
+            "argv": tuple(sys.argv),
+            "caches": tuple(
+                sorted(
+                    path.relative_to(ROOT).as_posix()
+                    for path in ROOT.rglob("*")
+                    if path.name == "__pycache__"
+                    or path.suffix in {".pyc", ".pyo"}
+                )
+            ),
+        }
+
+    def _snapshot_git_metadata(self) -> dict[str, object]:
+        names = (
+            "index",
+            "refs",
+            "packed-refs",
+            "objects",
+            "config",
+            "config.worktree",
+            "HEAD",
+        )
+        result: dict[str, object] = {}
+        for name in names:
+            completed = self._run_audited(
+                ("git", "rev-parse", "--path-format=absolute", "--git-path", name)
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            path = Path(completed.stdout.decode("utf-8").strip())
+            if not path.exists():
+                result[name] = None
+            else:
+                result[name] = self._snapshot_tree(path) if path.is_dir() else path.read_bytes()
+        return result
+
+    @staticmethod
+    def _snapshot_tree(root: Path, *, exclude_generated: bool = False):
+        if not root.exists():
+            return ()
+        if root.is_file():
+            return ((root.name, len(root.read_bytes()), hashlib.sha256(root.read_bytes()).hexdigest()),)
+        records = []
+        generated = (ROOT / "migration/macwin/generated").absolute()
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if exclude_generated:
+                absolute = path.absolute()
+                if absolute == generated or generated in absolute.parents:
+                    continue
+            raw = path.read_bytes()
+            records.append(
+                (path.relative_to(root).as_posix(), len(raw), hashlib.sha256(raw).hexdigest())
+            )
+        return tuple(sorted(records))
+
+    @staticmethod
+    def _run_audited(command: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in IMPORT_PROBE_ENVIRONMENT_NAMES
+        }
+        environment.update(
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+        )
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            env=environment,
+            executable=None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            timeout=180,
+        )
+
+    @staticmethod
+    def _converter_command(*arguments: str) -> tuple[str, ...]:
+        return (
+            sys.executable,
+            "-B",
+            str(ROOT / "tools/convert_macwin_assets.py"),
+            *arguments,
+        )
+
+    def _git_status(self) -> bytes:
+        completed = self._run_audited(
+            (
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            )
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout
+
+    def _forbidden_locator(self) -> str:
+        return next(
+            locator
+            for record in self.result.records
+            for locator in record.evidence_locators
+            if locator.startswith("/") or re.match(r"^[A-Za-z]:", locator)
+        )
+
+    def _run_main(self, arguments: tuple[str, ...]) -> tuple[int, bytes, bytes]:
+        stdout = mock.Mock()
+        stdout.buffer = io.BytesIO()
+        stderr = mock.Mock()
+        stderr.buffer = io.BytesIO()
+        with mock.patch.object(self.converter.sys, "stdout", stdout), mock.patch.object(
+            self.converter.sys, "stderr", stderr
+        ):
+            code = self.converter.main(arguments)
+        return code, stdout.buffer.getvalue(), stderr.buffer.getvalue()
+
+
+class MacWinMigrationDocumentationTests(unittest.TestCase):
+    DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
+    MAX_DOCUMENT_BYTES = 1024 * 1024
+    REQUIRED_FACTS = (
+        "repository: `a1112/Mac-Win`",
+        "source tag: `mw-migration-baseline-db12d5e`",
+        "source commit: `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`",
+        "inventory commit: `97f8423094d25325d8f864eb6f49a9e8628dbb93`",
+        "90 = 19 catalog + 11 patches + 26 probes + 30 fixtures + 4 bottle-schema",
+        "2 converted + 15 deferred + 73 quarantined",
+        "0 Recipes, 0 portable probes, and 0 portable fixtures",
+        "`MW-ASSET-002`",
+        "`MW-ASSET-003`",
+        "1 MiB",
+        "owner: `compatforge/migration`",
+        "python -B tools/convert_macwin_assets.py",
+        "python -B tools/convert_macwin_assets.py --check",
+        "python -B tools/convert_macwin_assets.py --write",
+        "python -B tools/convert_macwin_assets.py --explain 7zip",
+        "python -B scripts/validate_repository.py",
+        "does not claim application compatibility",
+        "does not claim patch readiness",
+        "does not migrate or mutate Bottles",
+        "is not consumed by the CompatForge runtime",
+    )
+
+    def test_migration_document_seals_the_reviewed_boundary(self) -> None:
+        raw = self.DOCUMENT.read_bytes()
+        text = self._validate_document(raw)
+        self.assertIn("# Mac-Win portable asset migration boundary", text)
+        for path, digest in self._generated_digests().items():
+            self.assertIn(f"`{path}`", text)
+            self.assertIn(f"`{digest}`", text)
+
+    def test_readme_and_testing_docs_link_the_visible_boundary(self) -> None:
+        readme = (ROOT / "README.md").read_bytes()
+        testing = (ROOT / "docs/testing.md").read_bytes()
+        for label, raw in (("README", readme), ("testing", testing)):
+            with self.subTest(document=label):
+                text = raw.decode("utf-8", "strict")
+                self.assertNotIn("\r", text)
+                self.assertIn("macwin-portable-assets.md", text)
+        self.assertIn(b"> \xe5\xbd\x93\xe5\x89\x8d\xe7\x8a\xb6\xe6\x80\x81", readme)
+
+    def test_document_attributes_pin_exact_lf_text(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_bytes()
+        self.assertNotIn(b"\r", attributes)
+        for line in (
+            b"/README.md text eol=lf\n",
+            b"/docs/testing.md text eol=lf\n",
+            b"/docs/migration/macwin-portable-assets.md text eol=lf\n",
+        ):
+            self.assertIn(line, attributes)
+
+    def test_raw_document_seal_rejects_transport_and_semantic_decoys(self) -> None:
+        raw = self.DOCUMENT.read_bytes()
+        mutants = {
+            "crlf": raw.replace(b"\n", b"\r\n", 1),
+            "mixed": raw[:20] + b"\r\n" + raw[20:],
+            "lone-cr": raw[:20] + b"\r" + raw[20:],
+            "comment": b"<!-- hidden semantic copy\n" + raw + b"-->\n",
+            "non-utf8": raw + b"\xff",
+            "oversize": raw + b"x" * (self.MAX_DOCUMENT_BYTES + 1 - len(raw)),
+            "semantic-decoy": raw.replace(
+                self.REQUIRED_FACTS[0].encode("utf-8"),
+                b"<!-- repository: `a1112/Mac-Win` -->",
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), self.assertRaises(ValueError):
+                self._validate_document(mutant)
+        self.assertEqual(self._validate_document(raw).encode("utf-8"), raw)
+
+    def _validate_document(self, raw: bytes) -> str:
+        if len(raw) > self.MAX_DOCUMENT_BYTES:
+            raise ValueError("migration document is too large")
+        if b"\r" in raw or b"<!--" in raw or b"-->" in raw:
+            raise ValueError("migration document transport is invalid")
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError as error:
+            raise ValueError("migration document is not UTF-8") from error
+        if not text.endswith("\n") or text.startswith("\ufeff"):
+            raise ValueError("migration document framing is invalid")
+        if any(fact not in text for fact in self.REQUIRED_FACTS):
+            raise ValueError("migration document facts are incomplete")
+        return text
+
+    @staticmethod
+    def _generated_digests() -> dict[str, str]:
+        return {
+            path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((ROOT / "migration/macwin/generated").rglob("*.json"))
+        }
 
 
 if __name__ == "__main__":

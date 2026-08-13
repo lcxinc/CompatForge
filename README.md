@@ -110,6 +110,7 @@ C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、Cont
 - [Inspection-bound Guest Artifact 决策](docs/decisions/0011-inspection-bound-guest-artifacts.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
+- [Mac-Win portable asset 迁移边界与离线结果](docs/migration/macwin-portable-assets.md)
 - [安全模型](docs/security.md)
 - [测试策略](docs/testing.md)
 
