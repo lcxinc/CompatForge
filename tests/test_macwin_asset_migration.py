@@ -2488,6 +2488,81 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
         MigrationSchemaTests._assert_schema_instance_valid(recipe, schema, schema)
 
+    def test_installer_network_url_contract_is_closed_and_unambiguous(self) -> None:
+        invalid = (
+            "https://",
+            "http://",
+            " https://example.invalid/setup.exe",
+            "https://example.invalid/setup.exe ",
+            "https://example.invalid/set up.exe",
+            "https://example.invalid/setup.exe\n",
+            "https://example.invalid/setup.exe\x1f",
+            "https://[::1/setup.exe",
+            "https://::1/setup.exe",
+            "https:///setup.exe",
+            "https://.example.invalid/setup.exe",
+            "https://example..invalid/setup.exe",
+            "https://-example.invalid/setup.exe",
+            "https://example-.invalid/setup.exe",
+            "https://example.invalid:0/setup.exe",
+            "https://example.invalid:65536/setup.exe",
+            "https://example.invalid:notaport/setup.exe",
+            "https://example.invalid:/setup.exe",
+            "https://example.invalid:0443/setup.exe",
+            "https://user@example.invalid/setup.exe",
+            "https://user:secret@example.invalid/setup.exe",
+            "https://example.invalid\\setup.exe",
+            "https:\\example.invalid\\setup.exe",
+            "https://example.invalid/setup.exe#fragment",
+            "https://example.invalid/setup.exe#",
+            "https://example.invalid/setup.exe?",
+            "https://example.invalid//setup.exe",
+            "https://example.invalid/%2e%2e/setup.exe",
+            "https://example.invalid/%5csetup.exe",
+            "https://example.invalid/%zz/setup.exe",
+            "https://example.invalid/set|up.exe",
+            "https://café.invalid/setup.exe",
+            "https://example.invalid./setup.exe",
+            "https://256.1.1.1/setup.exe",
+            "https://example.invalid/" + ("a" * 2049),
+            "https://example.invalid/setup.exe?" + ("a" * 2049),
+            "ftp://example.invalid/setup.exe",
+        )
+        valid = (
+            "https://example.invalid/setup.exe",
+            "HTTP://example.invalid/setup.exe",
+            "https://127.0.0.1/setup.exe",
+            "https://[2001:db8::1]/setup.exe",
+            "https://example.invalid:8443/path/setup.exe?channel=stable",
+        )
+        for value in invalid:
+            with self.subTest(invalid=value[:40]):
+                self.assertFalse(self.converter._is_safe_installer_url(value))
+                asset = self._recipe_asset("7zip")
+                source = self.converter._parse_json_object(asset)
+                source["installer"]["url"] = value
+                finding = self.converter.RecipeFinding(
+                    reason="unresolved-external-reference",
+                    evidence_locator=f"{asset.source_path}#installer.url",
+                )
+                self.assertIn(finding, self.converter._recipe_findings(asset, source))
+        for value in valid:
+            with self.subTest(valid=value):
+                self.assertTrue(self.converter._is_safe_installer_url(value))
+
+        result = self._synthetic_reviewed_recipe_result(
+            lambda source, asset: source["installer"].__setitem__(
+                "url", valid[-1]
+            )
+        )
+        documents = self.converter.render_documents(result)
+        recipe = self.common.parse_json_bytes(
+            documents["migration/macwin/generated/recipes/7zip.json"],
+            label="safe URL recipe",
+        )
+        schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
+        MigrationSchemaTests._assert_schema_instance_valid(recipe, schema, schema)
+
     def test_every_rejection_rule_is_detected_with_fixed_precedence(self) -> None:
         asset = self._recipe_asset("7zip")
         base = self.converter._parse_json_object(asset)

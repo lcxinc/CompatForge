@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,7 @@ import sys
 import threading
 import types
 from typing import NoReturn
+from urllib.parse import unquote_to_bytes, urlsplit
 
 
 if os.name == "nt":
@@ -1071,6 +1073,135 @@ def _is_safe_guest_executable(value: object) -> bool:
     return _COMMON.is_safe_guest_executable(value)
 
 
+_INSTALLER_URL_MAX_LENGTH = 4096
+_INSTALLER_URL_COMPONENT_MAX_LENGTH = 2048
+_DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_URL_PATH = re.compile(r"(?:[A-Za-z0-9._~!$&'()*+,;=:@/%-])*")
+_URL_QUERY = re.compile(r"(?:[A-Za-z0-9._~!$&'()*+,;=:@/?%-])*")
+
+
+def _has_well_formed_percent_escapes(value: str) -> bool:
+    index = 0
+    while index < len(value):
+        if value[index] != "%":
+            index += 1
+            continue
+        if index + 2 >= len(value) or re.fullmatch(
+            r"[0-9A-Fa-f]{2}", value[index + 1 : index + 3]
+        ) is None:
+            return False
+        index += 3
+    return True
+
+
+def _is_safe_url_component(value: str, *, path: bool) -> bool:
+    if len(value) > _INSTALLER_URL_COMPONENT_MAX_LENGTH:
+        return False
+    if (path and _URL_PATH.fullmatch(value) is None) or (
+        not path and _URL_QUERY.fullmatch(value) is None
+    ):
+        return False
+    if not _has_well_formed_percent_escapes(value):
+        return False
+    try:
+        decoded = unquote_to_bytes(value)
+    except (UnicodeEncodeError, ValueError):
+        return False
+    if any(byte <= 0x20 or byte == 0x7F or byte == ord("\\") for byte in decoded):
+        return False
+    if path:
+        if (value and not value.startswith("/")) or value.startswith("//"):
+            return False
+        if any(part in {b".", b".."} for part in decoded.split(b"/")):
+            return False
+    return True
+
+
+def _is_safe_installer_url(value: object) -> bool:
+    """Accept one bounded, unambiguous HTTP(S) download locator."""
+
+    if type(value) is not str or not value or len(value) > _INSTALLER_URL_MAX_LENGTH:
+        return False
+    try:
+        raw = value.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    if any(byte <= 0x20 or byte == 0x7F for byte in raw) or "\\" in value:
+        return False
+    if "#" in value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (UnicodeError, ValueError):
+        return False
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    if (
+        not parsed.netloc
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+        or "%" in parsed.netloc
+        or parsed.fragment
+    ):
+        return False
+    if port is not None and not 1 <= port <= 65535:
+        return False
+
+    authority = parsed.netloc
+    if authority.startswith("["):
+        close = authority.find("]")
+        if close < 0:
+            return False
+        host_text = authority[1:close]
+        suffix = authority[close + 1 :]
+        if suffix and (
+            not suffix.startswith(":")
+            or not suffix[1:].isdigit()
+            or str(int(suffix[1:])) != suffix[1:]
+        ):
+            return False
+        try:
+            address = ipaddress.IPv6Address(host_text)
+            if str(address) != host_text.lower():
+                return False
+        except ValueError:
+            return False
+    else:
+        if authority.count(":") > 1:
+            return False
+        host_text, separator, port_text = authority.partition(":")
+        if separator and (
+            not port_text.isdigit() or str(int(port_text)) != port_text
+        ):
+            return False
+        if not host_text or hostname.lower() != host_text.lower():
+            return False
+        if re.fullmatch(r"[0-9.]+", host_text):
+            try:
+                if str(ipaddress.IPv4Address(host_text)) != host_text:
+                    return False
+            except ipaddress.AddressValueError:
+                return False
+        else:
+            if len(host_text) > 253:
+                return False
+            labels = host_text.split(".")
+            if any(_DNS_LABEL.fullmatch(label) is None for label in labels):
+                return False
+
+    if not _is_safe_url_component(parsed.path, path=True) or not _is_safe_url_component(
+        parsed.query, path=False
+    ):
+        return False
+    scheme_end = value.find(":")
+    normalized_input = value[:scheme_end].lower() + value[scheme_end:]
+    return parsed.geturl() == normalized_input
+
+
 def _recipe_findings(
     asset: SourceAsset, source: dict[str, object]
 ) -> tuple[RecipeFinding, ...]:
@@ -1171,17 +1302,13 @@ def _recipe_findings(
                 "unresolved-external-reference",
                 f"{source_locator}#installer.url",
             )
-        elif mode == "download" and not installer["url"].casefold().startswith(
-            ("https://", "http://")
-        ):
+        elif mode == "download" and not _is_safe_installer_url(installer["url"]):
             _add_recipe_finding(
                 findings,
                 "absolute-path"
                 if _is_host_absolute_locator(installer["url"])
                 else "unresolved-external-reference",
-                installer["url"]
-                if _is_host_absolute_locator(installer["url"])
-                else f"{source_locator}#installer.url",
+                f"{source_locator}#installer.url",
             )
         file_name = installer.get("fileName")
         if mode == "download" and not _COMMON.is_safe_portable_basename(file_name):
@@ -1375,7 +1502,7 @@ def _map_recipe_structure(source: dict[str, object]) -> dict[str, object]:
         if (
             type(installer.get("url")) is not str
             or not installer["url"]
-            or not installer["url"].casefold().startswith(("https://", "http://"))
+            or not _is_safe_installer_url(installer["url"])
             or type(installer.get("fileName")) is not str
             or not installer["fileName"]
             or not _COMMON.is_safe_portable_basename(installer["fileName"])
