@@ -2510,6 +2510,60 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 self.skipTest(f"hardlink unavailable: {error}")
             self.assertEqual(validator.validate_no_developer_paths(), [])
 
+    def test_repository_validator_stably_accepts_complete_fixture_twenty_times(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            cargo = temporary_root / "target/debug/build/example"
+            cargo.mkdir(parents=True)
+            executable = cargo / "build-script-build.exe"
+            executable.write_bytes(b"MZ-stable-build-output")
+            try:
+                os.link(executable, cargo / "build_script_build.exe")
+            except OSError as error:
+                self.skipTest(f"hardlink unavailable: {error}")
+
+            validator.ROOT = temporary_root
+            for iteration in range(20):
+                with self.subTest(iteration=iteration):
+                    self.assertEqual(validator.validate_no_developer_paths(), [])
+
+    def test_repository_validator_accepts_stable_tree_directory_timestamp_drift(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            ordinary = temporary_root / "ordinary-directory"
+            ordinary.mkdir()
+            original_revalidate = validator._OrdinaryFileBinding.revalidate
+            injected = False
+
+            def drift_directory_timestamp(binding) -> None:
+                nonlocal injected
+                if not injected:
+                    metadata = ordinary.stat()
+                    os.utime(
+                        ordinary,
+                        ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000),
+                    )
+                    injected = True
+                original_revalidate(binding)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator._OrdinaryFileBinding,
+                "revalidate",
+                drift_directory_timestamp,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(errors, [])
+
     def test_repository_validator_rejects_ordinary_hardlink_alias_mutation(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(
@@ -2634,6 +2688,43 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 errors,
                 ["Repository developer-path validation failed"],
             )
+
+    def test_repository_validator_rejects_scanned_child_deletion_and_type_change(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        for case in ("delete", "type-change"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-task5-validator-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                self._copy_validator_fixture(temporary_root)
+                ordinary = temporary_root / "ordinary-directory"
+                ordinary.mkdir()
+                child = ordinary / "child.txt"
+                child.write_text("stable\n", encoding="utf-8", newline="\n")
+                original_revalidate = validator._OrdinaryFileBinding.revalidate
+                injected = False
+
+                def mutate_child(binding) -> None:
+                    nonlocal injected
+                    if not injected:
+                        child.unlink()
+                        if case == "type-change":
+                            child.mkdir()
+                        injected = True
+                    original_revalidate(binding)
+
+                validator.ROOT = temporary_root
+                with mock.patch.object(
+                    validator._OrdinaryFileBinding,
+                    "revalidate",
+                    mutate_child,
+                ):
+                    errors = validator.validate_no_developer_paths()
+                self.assertTrue(injected)
+                self.assertEqual(
+                    errors,
+                    ["Repository developer-path validation failed"],
+                )
 
     def test_repository_validator_rejects_task5_replacement_before_scan(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()

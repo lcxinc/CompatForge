@@ -356,10 +356,16 @@ def _ordinary_entry_kind(metadata: os.stat_result) -> str:
     raise _DeveloperPathScanError()
 
 
+def _directory_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """Return the stable volume/file identity, excluding mutable metadata."""
+
+    return (metadata.st_dev, metadata.st_ino)
+
+
 def _read_bound_directory(
     path: Path,
 ) -> tuple[
-    tuple[int, int, int, int, int, int],
+    tuple[int, int],
     tuple[tuple[str, str], ...],
 ]:
     try:
@@ -367,7 +373,7 @@ def _read_bound_directory(
         before = path.lstat()
         if _ordinary_entry_kind(before) != "directory":
             raise _DeveloperPathScanError()
-        identity = _filesystem_identity(before)
+        identity = _directory_identity(before)
         entries: list[tuple[str, str]] = []
         with os.scandir(path) as iterator:
             for entry in iterator:
@@ -376,7 +382,9 @@ def _read_bound_directory(
                 metadata = entry.stat(follow_symlinks=False)
                 entries.append((entry.name, _ordinary_entry_kind(metadata)))
         after = path.lstat()
-        if _filesystem_identity(after) != identity:
+        if _ordinary_entry_kind(after) != "directory" or _directory_identity(
+            after
+        ) != identity:
             raise _DeveloperPathScanError()
         _validate_bound_path_chain(path)
     except _DeveloperPathScanError:
@@ -395,7 +403,7 @@ class _OrdinaryFileBinding:
         self.directories: dict[
             Path,
             tuple[
-                tuple[int, int, int, int, int, int],
+                tuple[int, int],
                 tuple[tuple[str, str], ...],
             ],
         ] = {}
