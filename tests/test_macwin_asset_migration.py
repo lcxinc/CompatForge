@@ -8293,64 +8293,69 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 self.converter.read_generated_documents(ROOT), self.documents
             )
 
-    def test_in_process_modes_obey_the_guarded_external_boundary(self) -> None:
+    def test_normal_modes_run_in_independent_isolated_processes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"guarded\n")
             before = self._snapshot_boundary(sentinel)
-            validator = MigrationLayoutTests._load_repository_validator()
-            for arguments in ((), ("--check",), ("--explain", "7zip")):
-                with self.subTest(arguments=arguments):
+            commands = (
+                self._converter_command(),
+                self._converter_command("--check"),
+                self._converter_command("--explain", "7zip"),
+                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
+            )
+            process_ids = []
+            for command in commands:
+                with self.subTest(command=command):
                     mode_before = self._snapshot_boundary(sentinel)
-                    with self._guard_external_effects(sentinel), self._guard_read_only_writes():
-                        code, stdout, stderr = self._run_main(arguments)
-                    self.assertEqual(code, 0)
-                    self.assertEqual(stderr, b"")
-                    if arguments == ("--check",):
-                        self.assertEqual(stdout, b"")
-                    else:
-                        self.assertTrue(stdout.endswith(b"\n"))
+                    completed = self._run_audited(command, report_process_id=True)
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    child_pid, _, child_stdout = completed.stdout.partition(b"\n")
+                    self.assertRegex(child_pid, rb"\A[1-9][0-9]*\Z")
+                    process_ids.append(int(child_pid))
+                    if command[-1] == "--check":
+                        self.assertEqual(child_stdout, b"")
                     self.assertEqual(self._snapshot_boundary(sentinel), mode_before)
-
-            for _ in range(2):
-                write_before = self._snapshot_boundary(sentinel)
-                with self._guard_external_effects(sentinel):
-                    code, stdout, stderr = self._run_main(("--write",))
-                self.assertEqual((code, stdout, stderr), (0, b"", b""))
-                self.assertEqual(self._snapshot_boundary(sentinel), write_before)
-
-            def audited_check(argv, **options):
-                self.assertEqual(
-                    argv,
-                    [
-                        sys.executable,
-                        "-B",
-                        "-c",
-                        validator.MIGRATION_CONVERTER_BOOTSTRAP,
-                        str(ROOT / "tools/convert_macwin_assets.py"),
-                        "--check",
-                    ],
-                )
-                self.assertFalse(options["shell"])
-                self.assertIsNone(options["executable"])
-                self.assertEqual(options["cwd"], ROOT)
-                self.assertIs(options["stdout"], subprocess.DEVNULL)
-                self.assertIs(options["stderr"], subprocess.DEVNULL)
-                self.assertEqual(
-                    options["input"],
-                    (ROOT / "tools/convert_macwin_assets.py").read_bytes(),
-                )
-                return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-            validator_before = self._snapshot_boundary(sentinel)
-            with self._guard_external_effects(
-                sentinel, allow_audited_environment_items=True
-            ), self._guard_read_only_writes():
-                with mock.patch.object(validator.subprocess, "run", audited_check):
-                    self.assertEqual(validator.validate_macwin_asset_migration(), [])
-            self.assertEqual(self._snapshot_boundary(sentinel), validator_before)
-
+            self.assertEqual(len(process_ids), len(set(process_ids)))
             self.assertEqual(self._snapshot_boundary(sentinel), before)
+
+    def test_isolated_runner_seals_the_process_launch_contract(self) -> None:
+        command = self._converter_command("--check")
+        completed = subprocess.CompletedProcess(command, 0, b"", b"")
+        with mock.patch.object(subprocess, "run", return_value=completed) as run:
+            self.assertIs(self._run_audited(command), completed)
+        arguments, options = run.call_args
+        self.assertEqual(arguments, (command,))
+        self.assertEqual(options["cwd"], ROOT)
+        self.assertFalse(options["check"])
+        self.assertIsNone(options["executable"])
+        self.assertIs(options["stdin"], subprocess.DEVNULL)
+        self.assertIs(options["stdout"], subprocess.PIPE)
+        self.assertIs(options["stderr"], subprocess.PIPE)
+        self.assertFalse(options["shell"])
+        self.assertEqual(options["timeout"], 180)
+        self.assertTrue(options["close_fds"])
+        self.assertEqual(
+            set(options["env"]),
+            {
+                name
+                for name in os.environ
+                if name.upper() in IMPORT_PROBE_ENVIRONMENT_NAMES
+            }
+            | {
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_NOSYSTEM",
+                "GIT_CONFIG_SYSTEM",
+                "GIT_NO_LAZY_FETCH",
+                "GIT_OPTIONAL_LOCKS",
+                "GIT_TERMINAL_PROMPT",
+                "PYTHONDONTWRITEBYTECODE",
+            },
+        )
+        if os.name == "nt":
+            self.assertEqual(
+                options["startupinfo"].lpAttributeList, {"handle_list": []}
+            )
 
     def test_controlled_mutants_turn_every_guard_family_red(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -8711,6 +8716,141 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 finally:
                     os.close(descriptor)
                 self.assertEqual(outside.read_bytes(), b"original")
+
+    def test_isolated_check_cannot_execute_parent_mapping_or_raw_handle_mutants(self) -> None:
+        import mmap
+
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "native-sentinel"
+            sentinel.write_bytes(b"original")
+            descriptor = os.open(sentinel, os.O_RDWR)
+            try:
+                mapping = mmap.mmap(descriptor, 0, access=mmap.ACCESS_WRITE)
+            finally:
+                os.close(descriptor)
+            mapping_evidence = []
+
+            def mapping_mutant(*_args, **_kwargs):
+                mapping.seek(0)
+                mapping.write(b"mutated!")
+                mapping.flush()
+                mapping_evidence.append(sentinel.read_bytes())
+                mapping.seek(0)
+                mapping.write(b"original")
+                mapping.flush()
+                return self.result
+
+            try:
+                mapping_mutant()
+                self.assertEqual(mapping_evidence, [b"mutated!"])
+                self.assertEqual(sentinel.read_bytes(), b"original")
+                mapping_evidence.clear()
+                before = self._snapshot_boundary(sentinel)
+                with mock.patch.object(
+                    self.converter, "build_conversion", side_effect=mapping_mutant
+                ):
+                    completed = self._run_audited(
+                        self._converter_command("--check"), report_process_id=True
+                    )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(mapping_evidence, [])
+                self.assertEqual(self._snapshot_boundary(sentinel), before)
+            finally:
+                mapping.close()
+
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+
+                class SecurityAttributes(ctypes.Structure):
+                    _fields_ = (
+                        ("nLength", wintypes.DWORD),
+                        ("lpSecurityDescriptor", ctypes.c_void_p),
+                        ("bInheritHandle", wintypes.BOOL),
+                    )
+
+                security = SecurityAttributes()
+                security.nLength = ctypes.sizeof(security)
+                security.bInheritHandle = True
+                create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+                create_file.argtypes = (
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    ctypes.POINTER(SecurityAttributes),
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                )
+                create_file.restype = wintypes.HANDLE
+                handle = create_file(
+                    str(sentinel),
+                    0x80000000 | 0x40000000,
+                    0x1 | 0x2 | 0x4,
+                    ctypes.byref(security),
+                    3,
+                    0x80,
+                    None,
+                )
+                self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                write_file = kernel32.WriteFile
+                write_file.argtypes = (
+                    wintypes.HANDLE,
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                    ctypes.POINTER(wintypes.DWORD),
+                    ctypes.c_void_p,
+                )
+                write_file.restype = wintypes.BOOL
+                set_pointer = kernel32.SetFilePointer
+                set_pointer.argtypes = (
+                    wintypes.HANDLE,
+                    wintypes.LONG,
+                    ctypes.c_void_p,
+                    wintypes.DWORD,
+                )
+                set_pointer.restype = wintypes.DWORD
+                handle_evidence = []
+
+                def handle_write(raw: bytes) -> None:
+                    self.assertNotEqual(set_pointer(handle, 0, None, 0), 0xFFFFFFFF)
+                    buffer = ctypes.create_string_buffer(raw)
+                    written = wintypes.DWORD()
+                    self.assertTrue(
+                        write_file(
+                            handle,
+                            buffer,
+                            len(raw),
+                            ctypes.byref(written),
+                            None,
+                        )
+                    )
+                    self.assertEqual(written.value, len(raw))
+
+                def handle_mutant(*_args, **_kwargs):
+                    handle_write(b"mutated!")
+                    handle_evidence.append(sentinel.read_bytes())
+                    handle_write(b"original")
+                    return self.result
+
+                try:
+                    handle_mutant()
+                    self.assertEqual(handle_evidence, [b"mutated!"])
+                    self.assertEqual(sentinel.read_bytes(), b"original")
+                    handle_evidence.clear()
+                    before = self._snapshot_boundary(sentinel)
+                    with mock.patch.object(
+                        self.converter, "build_conversion", side_effect=handle_mutant
+                    ):
+                        completed = self._run_audited(
+                            self._converter_command("--check"), report_process_id=True
+                        )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(handle_evidence, [])
+                    self.assertEqual(self._snapshot_boundary(sentinel), before)
+                finally:
+                    kernel32.CloseHandle(handle)
 
     def test_snapshot_rejects_a_directory_swap_before_external_content_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -9474,7 +9614,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             raise AssertionError("snapshot entry is a reparse point")
 
     @staticmethod
-    def _run_audited(command: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
+    def _run_audited(
+        command: tuple[str, ...], *, report_process_id: bool = False
+    ) -> subprocess.CompletedProcess[bytes]:
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -9491,17 +9633,54 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
+        isolated_command = command
+        if report_process_id:
+            if command[:2] != (sys.executable, "-B") or len(command) < 3:
+                raise AssertionError("isolated process command is not approved")
+            script = Path(command[2])
+            if script not in {
+                ROOT / "tools/convert_macwin_assets.py",
+                ROOT / "scripts/validate_repository.py",
+            }:
+                raise AssertionError("isolated process command is not approved")
+            bootstrap = (
+                "import os,runpy,sys\n"
+                "os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
+                "sys.argv=sys.argv[1:]\n"
+                "try:\n"
+                " runpy.run_path(sys.argv[0],run_name='__main__')\n"
+                "except SystemExit:\n"
+                " raise\n"
+                "except BaseException:\n"
+                " os.write(2,b'isolated process failed\\n')\n"
+                " raise SystemExit(1)\n"
+            )
+            isolated_command = (
+                sys.executable,
+                "-B",
+                "-c",
+                bootstrap,
+                *command[2:],
+            )
+        options = {
+            "cwd": ROOT,
+            "check": False,
+            "env": environment,
+            "executable": None,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "shell": False,
+            "timeout": 180,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            startup = subprocess.STARTUPINFO()
+            startup.lpAttributeList = {"handle_list": []}
+            options["startupinfo"] = startup
         return subprocess.run(
-            command,
-            cwd=ROOT,
-            check=False,
-            env=environment,
-            executable=None,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            timeout=180,
+            isolated_command,
+            **options,
         )
 
     @staticmethod
