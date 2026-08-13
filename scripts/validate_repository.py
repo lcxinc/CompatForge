@@ -35,6 +35,8 @@ if os.name == "nt":
     )
     _VALIDATOR_CREATE_FILE.restype = wintypes.HANDLE
     _VALIDATOR_CLOSE_HANDLE = _VALIDATOR_KERNEL32.CloseHandle
+    _VALIDATOR_CLOSE_HANDLE.argtypes = (wintypes.HANDLE,)
+    _VALIDATOR_CLOSE_HANDLE.restype = wintypes.BOOL
     _VALIDATOR_INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 

@@ -3187,6 +3187,7 @@ def _open_bound_child(
     path = parent.path / name
     if os.name == "nt":
         return _hold_generated_directories([path])[0]
+    descriptor: int | None = None
     try:
         descriptor = os.open(
             name,
@@ -3200,9 +3201,18 @@ def _open_bound_child(
         if not stat.S_ISDIR(metadata.st_mode):
             raise OSError
         _verify_held_generated_directories([parent])
-        return _HeldGeneratedDirectory(path, _generated_identity(metadata), descriptor)
+        result = _HeldGeneratedDirectory(
+            path, _generated_identity(metadata), descriptor
+        )
+        descriptor = None
+        return result
+    except ConversionError:
+        raise
     except OSError:
         _fail("generated output directory could not be bound")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _ensure_bound_directory_tree(
@@ -3733,8 +3743,16 @@ def _validate_output_document_map(documents: dict[str, bytes]) -> None:
         if total > _MAX_GENERATED_TREE_BYTES:
             _fail("generated output document map exceeds the byte limit")
     implied_directories = _expected_output_directories(documents)
+    generated_root = PurePosixPath(GENERATED_ROOT)
+    leaf_tails = {
+        PurePosixPath(path).relative_to(generated_root).as_posix()
+        for path in documents
+    }
+    union = [*leaf_tails, *implied_directories]
     if (
         len(documents) + len(implied_directories) > _MAX_GENERATED_ENTRIES
+        or leaf_tails & implied_directories
+        or len({path.casefold() for path in union}) != len(union)
         or any(
             len(PurePosixPath(path).parts) > _MAX_GENERATED_DEPTH
             for path in implied_directories
@@ -3897,23 +3915,23 @@ def _posix_rename(
         destination_descriptor = held_by_path.get(destination.parent.absolute())
         close_source = source_descriptor is None
         close_destination = destination_descriptor is None
-        if source_descriptor is None:
-            source_descriptor = os.open(
-                source.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
-        if destination_descriptor is None:
-            destination_descriptor = os.open(
-                destination.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
         try:
+            if source_descriptor is None:
+                source_descriptor = os.open(
+                    source.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
+            if destination_descriptor is None:
+                destination_descriptor = os.open(
+                    destination.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
             flag = 0x2 if exchange else 0x1
             result = renameat2(
                 source_descriptor,
@@ -3927,9 +3945,9 @@ def _posix_rename(
             os.fsync(source_descriptor)
             os.fsync(destination_descriptor)
         finally:
-            if close_destination:
+            if close_destination and destination_descriptor is not None:
                 os.close(destination_descriptor)
-            if close_source:
+            if close_source and source_descriptor is not None:
                 os.close(source_descriptor)
         return
     if sys.platform == "darwin":
@@ -3953,24 +3971,24 @@ def _posix_rename(
         destination_descriptor = held_by_path.get(destination.parent.absolute())
         close_source = source_descriptor is None
         close_destination = destination_descriptor is None
-        if source_descriptor is None:
-            source_descriptor = os.open(
-                source.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
-        if destination_descriptor is None:
-            destination_descriptor = os.open(
-                destination.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
         flag = 0x00000002 if exchange else 0x00000004
         try:
+            if source_descriptor is None:
+                source_descriptor = os.open(
+                    source.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
+            if destination_descriptor is None:
+                destination_descriptor = os.open(
+                    destination.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
             if renameatx(
                 source_descriptor,
                 os.fsencode(source.name),
@@ -3982,9 +4000,9 @@ def _posix_rename(
             os.fsync(source_descriptor)
             os.fsync(destination_descriptor)
         finally:
-            if close_destination:
+            if close_destination and destination_descriptor is not None:
                 os.close(destination_descriptor)
-            if close_source:
+            if close_source and source_descriptor is not None:
                 os.close(source_descriptor)
         return
     _fail("atomic generated output replacement is unsupported")

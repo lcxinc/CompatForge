@@ -5133,6 +5133,95 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
         with self.assertRaises(self.converter.ConversionError):
             self.converter._validate_output_document_map(excessive_union)
 
+    def test_output_map_rejects_leaf_directory_and_union_case_collisions_prewrite(self) -> None:
+        root_path = "migration/macwin/generated"
+        invalid = (
+            {
+                f"{root_path}/A": b"leaf\n",
+                f"{root_path}/A/x.json": b"child\n",
+            },
+            {
+                f"{root_path}/A/x.json": b"one\n",
+                f"{root_path}/a/y.json": b"two\n",
+            },
+            {
+                f"{root_path}/a": b"leaf\n",
+                f"{root_path}/A/x.json": b"child\n",
+            },
+        )
+        for documents in invalid:
+            with self.subTest(paths=tuple(documents)), tempfile.TemporaryDirectory() as directory:
+                repository = Path(directory)
+                generated = repository / root_path
+                generated.mkdir(parents=True)
+                (generated / "existing.json").write_bytes(b"existing\n")
+                before = self._metadata_snapshot(repository)
+                with mock.patch.object(
+                    self.converter, "_bind_generated_root"
+                ) as bind, mock.patch.object(
+                    self.converter, "_stage_document_map"
+                ) as stage, mock.patch.object(
+                    self.converter, "_install_staged_leaf"
+                ) as install, self.assertRaises(self.converter.ConversionError):
+                    self.converter.write_generated_documents(repository, documents)
+                bind.assert_not_called()
+                stage.assert_not_called()
+                install.assert_not_called()
+                self.assertEqual(self._metadata_snapshot(repository), before)
+
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor ownership contract")
+    def test_open_bound_child_closes_descriptor_on_every_post_open_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent_path = Path(directory)
+            (parent_path / "child").mkdir()
+            parent_descriptor = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY)
+            parent = self.converter._HeldGeneratedDirectory(
+                parent_path,
+                self.converter._generated_identity(os.fstat(parent_descriptor)),
+                parent_descriptor,
+            )
+            try:
+                before = len(os.listdir("/proc/self/fd"))
+                with mock.patch.object(
+                    self.converter.os,
+                    "fstat",
+                    side_effect=OSError("injected post-open failure"),
+                ), self.assertRaises(self.converter.ConversionError):
+                    self.converter._open_bound_child(parent, "child")
+                self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+            finally:
+                os.close(parent_descriptor)
+
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor ownership contract")
+    def test_posix_rename_closes_source_parent_when_destination_open_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_parent = root / "source"
+            destination_parent = root / "destination"
+            source_parent.mkdir()
+            destination_parent.mkdir()
+            (source_parent / "value").write_bytes(b"value")
+            original_open = os.open
+            calls = 0
+
+            def fail_destination(path, *args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected destination parent open failure")
+                return original_open(path, *args, **kwargs)
+
+            before = len(os.listdir("/proc/self/fd"))
+            with mock.patch.object(
+                self.converter.os, "open", side_effect=fail_destination
+            ), self.assertRaises(OSError):
+                self.converter._posix_rename(
+                    source_parent / "value",
+                    destination_parent / "value",
+                    exchange=False,
+                )
+            self.assertEqual(len(os.listdir("/proc/self/fd")), before)
+
     def test_every_install_failure_restores_the_exact_mixed_tree(self) -> None:
         initial = {
             path: b"old:" + raw
@@ -6535,6 +6624,28 @@ class MigrationLayoutTests(unittest.TestCase):
                 )
             self.assertTrue(attacked)
             self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Win32 validator handle declaration")
+    def test_repository_validator_declares_and_closes_win32_directory_handles(self) -> None:
+        validator = self._load_repository_validator()
+        self.assertEqual(
+            validator._VALIDATOR_CLOSE_HANDLE.argtypes,
+            (validator.wintypes.HANDLE,),
+        )
+        self.assertIs(
+            validator._VALIDATOR_CLOSE_HANDLE.restype,
+            validator.wintypes.BOOL,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            descriptor, _identity = validator._bind_validator_directory(path)
+            with mock.patch.object(
+                validator,
+                "_VALIDATOR_CLOSE_HANDLE",
+                wraps=validator._VALIDATOR_CLOSE_HANDLE,
+            ) as close:
+                validator._close_validator_directory(descriptor)
+            close.assert_called_once_with(descriptor)
 
     def test_repository_validation_rejects_a_nonregular_converter(self) -> None:
         validator = self._load_repository_validator()
