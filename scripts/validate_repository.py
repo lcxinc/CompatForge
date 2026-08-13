@@ -43,6 +43,8 @@ TASK5_DOCUMENT_PATHS = frozenset(
     }
 )
 MAX_TASK5_DOCUMENT_BYTES = 1024 * 1024
+MAX_ORDINARY_SCAN_BYTES = 32 * 1024 * 1024
+DEVELOPER_PATH_VALIDATION_ERROR = "Repository developer-path validation failed"
 
 
 def validate_macwin_asset_migration() -> list[str]:
@@ -229,15 +231,20 @@ def _validate_bound_path_chain(path: Path) -> None:
 
 
 def _read_bound_regular_file(
-    path: Path, maximum: int
+    path: Path,
+    maximum: int,
+    *,
+    require_single_link: bool = True,
 ) -> tuple[bytes, tuple[int, int, int, int, int, int]]:
+    if type(require_single_link) is not bool:
+        raise TypeError("regular-file link policy is invalid")
     _validate_bound_path_chain(path)
     before = path.lstat()
     if (
         not stat.S_ISREG(before.st_mode)
         or stat.S_ISLNK(before.st_mode)
         or getattr(before, "st_reparse_tag", 0)
-        or before.st_nlink != 1
+        or (require_single_link and before.st_nlink != 1)
         or before.st_size > maximum
     ):
         raise ValueError("generated evidence leaf is invalid")
@@ -335,6 +342,47 @@ class _GeneratedEvidenceBinding:
             raise ValueError("generated evidence root changed")
 
 
+class _DeveloperPathScanError(ValueError):
+    """Signal an untrusted ordinary repository path without reflecting it."""
+
+
+class _OrdinaryFileBinding:
+    """Retain exact ordinary leaf identities and digests through validation."""
+
+    def __init__(self) -> None:
+        self.leaves: dict[
+            Path, tuple[bytes, tuple[int, int, int, int, int, int]]
+        ] = {}
+
+    def add(
+        self,
+        path: Path,
+        raw: bytes,
+        identity: tuple[int, int, int, int, int, int],
+    ) -> None:
+        absolute = path.absolute()
+        if absolute in self.leaves:
+            raise _DeveloperPathScanError()
+        self.leaves[absolute] = (hashlib.sha256(raw).digest(), identity)
+
+    def revalidate(self) -> None:
+        for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
+            expected_digest, expected_identity = self.leaves[path]
+            try:
+                raw, identity = _read_bound_regular_file(
+                    path,
+                    MAX_ORDINARY_SCAN_BYTES,
+                    require_single_link=False,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                raise _DeveloperPathScanError() from None
+            if (
+                identity != expected_identity
+                or hashlib.sha256(raw).digest() != expected_digest
+            ):
+                raise _DeveloperPathScanError()
+
+
 def _load_task5_converter() -> tuple[
     object,
     Path,
@@ -414,59 +462,91 @@ def _validated_macwin_generated_evidence_binding() -> tuple[
 def _scan_developer_paths(
     source_binding: object | None,
     generated_binding: _GeneratedEvidenceBinding | None = None,
-) -> list[str]:
+) -> tuple[list[str], _OrdinaryFileBinding]:
     errors: list[str] = []
+    ordinary_binding = _OrdinaryFileBinding()
     forbidden = ("/Users/a1-6/", "/home/a1-6/")
-    for path in sorted(ROOT.rglob("*")):
+    try:
+        paths = sorted(ROOT.rglob("*"))
+    except OSError:
+        raise _DeveloperPathScanError() from None
+    for path in paths:
         if source_binding is not None and source_binding.contains(path):
             source_binding.verify_path(path)
             continue
         if generated_binding is not None and generated_binding.contains(path):
             generated_binding.verify_path(path)
             continue
+        if ".git" in path.parts or path.absolute() == Path(__file__).absolute():
+            continue
         try:
             metadata = path.lstat()
         except OSError:
+            raise _DeveloperPathScanError() from None
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+            raise _DeveloperPathScanError()
+        if stat.S_ISDIR(metadata.st_mode):
             continue
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or getattr(metadata, "st_reparse_tag", 0)
-            or ".git" in path.parts
-        ):
-            continue
-        if path.absolute() == Path(__file__).absolute():
-            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise _DeveloperPathScanError()
         try:
-            content = path.read_text(encoding="utf-8")
+            raw, identity = _read_bound_regular_file(
+                path,
+                MAX_ORDINARY_SCAN_BYTES,
+                require_single_link=False,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            raise _DeveloperPathScanError() from None
+        ordinary_binding.add(path, raw, identity)
+        try:
+            content = raw.decode("utf-8")
         except UnicodeDecodeError:
             continue
         for value in forbidden:
             if value in content:
                 errors.append(f"{path.relative_to(ROOT)}: contains developer path {value}")
+    return errors, ordinary_binding
+
+
+def _unbound_developer_path_scan() -> list[str]:
+    try:
+        errors, binding = _scan_developer_paths(None, None)
+        binding.revalidate()
+    except _DeveloperPathScanError:
+        return [DEVELOPER_PATH_VALIDATION_ERROR]
     return errors
 
 
 def validate_no_developer_paths() -> list[str]:
     source_binding, errors = _validated_macwin_source_pack_binding()
     if source_binding is None:
-        return [*errors, *_scan_developer_paths(None, None)]
+        return [*errors, *_unbound_developer_path_scan()]
     generated_binding, generated_errors = (
         _validated_macwin_generated_evidence_binding()
     )
     if generated_binding is None:
         try:
-            scanned_errors = _scan_developer_paths(source_binding, None)
+            scanned_errors, ordinary_binding = _scan_developer_paths(
+                source_binding, None
+            )
             source_binding.revalidate()
+            ordinary_binding.revalidate()
+            source_binding.revalidate()
+        except _DeveloperPathScanError:
+            return [*generated_errors, DEVELOPER_PATH_VALIDATION_ERROR]
         except (OSError, RuntimeError, TypeError, ValueError):
             return [
                 "Mac-Win source pack validation failed",
                 *generated_errors,
-                *_scan_developer_paths(None, None),
+                *_unbound_developer_path_scan(),
             ]
         return [*generated_errors, *scanned_errors]
     try:
-        scanned_errors = _scan_developer_paths(source_binding, generated_binding)
+        scanned_errors, ordinary_binding = _scan_developer_paths(
+            source_binding, generated_binding
+        )
+    except _DeveloperPathScanError:
+        return [DEVELOPER_PATH_VALIDATION_ERROR]
     except (OSError, RuntimeError, TypeError, ValueError):
         try:
             source_binding.revalidate()
@@ -474,27 +554,41 @@ def validate_no_developer_paths() -> list[str]:
             return [
                 "Mac-Win source pack validation failed",
                 "Mac-Win generated evidence validation failed",
-                *_scan_developer_paths(None, None),
+                *_unbound_developer_path_scan(),
             ]
         return [
             "Mac-Win generated evidence validation failed",
-            *_scan_developer_paths(source_binding, None),
+            *_unbound_developer_path_scan(),
         ]
+    try:
+        ordinary_binding.revalidate()
+    except _DeveloperPathScanError:
+        return [DEVELOPER_PATH_VALIDATION_ERROR]
     try:
         source_binding.revalidate()
     except (OSError, RuntimeError, TypeError, ValueError):
-        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None, None)]
+        return [
+            "Mac-Win source pack validation failed",
+            *_unbound_developer_path_scan(),
+        ]
     try:
         generated_binding.revalidate()
     except (OSError, RuntimeError, TypeError, ValueError):
         return [
             "Mac-Win generated evidence validation failed",
-            *_scan_developer_paths(source_binding, None),
+            *_unbound_developer_path_scan(),
         ]
     try:
         source_binding.revalidate()
     except (OSError, RuntimeError, TypeError, ValueError):
-        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None, None)]
+        return [
+            "Mac-Win source pack validation failed",
+            *_unbound_developer_path_scan(),
+        ]
+    try:
+        ordinary_binding.revalidate()
+    except _DeveloperPathScanError:
+        return [DEVELOPER_PATH_VALIDATION_ERROR]
     return scanned_errors
 
 

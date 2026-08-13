@@ -2417,6 +2417,148 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 errors,
             )
 
+    def test_repository_validator_rejects_an_ordinary_external_symlink_without_following_it(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory, tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-external-", dir=ROOT
+        ) as external_directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            external = Path(external_directory) / "hostile.json"
+            external.write_text(
+                '{"path":"/Users/' + 'a1-6/external"}\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+            linked = temporary_root / "migration/macwin/generated/unreferenced.json"
+            try:
+                linked.symlink_to(external)
+            except OSError as error:
+                self.skipTest(f"file symlink unavailable: {error}")
+
+            validator.ROOT = temporary_root
+            self.assertEqual(
+                validator.validate_no_developer_paths(),
+                ["Repository developer-path validation failed"],
+            )
+
+    def test_repository_validator_rejects_ordinary_post_read_same_size_mutation(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            target = temporary_root / "ordinary.txt"
+            hostile = b"/Users/" + b"a1-6/owned\n"
+            benign = b"x" * (len(hostile) - 1) + b"\n"
+            target.write_bytes(benign)
+            metadata = target.stat()
+            original_reader = validator._read_bound_regular_file
+            injected = False
+
+            def mutate_after_read(
+                path: Path, maximum: int, *, require_single_link: bool = True
+            ):
+                nonlocal injected
+                if require_single_link:
+                    result = original_reader(path, maximum)
+                else:
+                    result = original_reader(
+                        path, maximum, require_single_link=False
+                    )
+                if path.absolute() == target.absolute() and not injected:
+                    target.write_bytes(hostile)
+                    os.utime(
+                        target,
+                        ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                    )
+                    injected = True
+                return result
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator, "_read_bound_regular_file", mutate_after_read
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(target.stat().st_size, metadata.st_size)
+            self.assertEqual(target.stat().st_mtime_ns, metadata.st_mtime_ns)
+            self.assertEqual(
+                errors,
+                ["Repository developer-path validation failed"],
+            )
+
+    def test_repository_validator_accepts_safe_regular_and_stable_hardlinks(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            safe = temporary_root / "ordinary-safe.txt"
+            safe.write_text("portable evidence\n", encoding="utf-8", newline="\n")
+            validator.ROOT = temporary_root
+            self.assertEqual(validator.validate_no_developer_paths(), [])
+
+            linked = temporary_root / "ordinary-hardlink.txt"
+            try:
+                os.link(safe, linked)
+            except OSError as error:
+                self.skipTest(f"hardlink unavailable: {error}")
+            self.assertEqual(validator.validate_no_developer_paths(), [])
+
+    def test_repository_validator_rejects_ordinary_hardlink_alias_mutation(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            alias = temporary_root / "ordinary-alias.txt"
+            target = temporary_root / "ordinary-hardlink.txt"
+            hostile = b"/Users/" + b"a1-6/owned\n"
+            alias.write_bytes(b"x" * (len(hostile) - 1) + b"\n")
+            try:
+                os.link(alias, target)
+            except OSError as error:
+                self.skipTest(f"hardlink unavailable: {error}")
+            metadata = target.stat()
+            original_reader = validator._read_bound_regular_file
+            injected = False
+
+            def mutate_alias_after_read(
+                path: Path, maximum: int, *, require_single_link: bool = True
+            ):
+                nonlocal injected
+                if require_single_link:
+                    result = original_reader(path, maximum)
+                else:
+                    result = original_reader(
+                        path, maximum, require_single_link=False
+                    )
+                if path.absolute() == target.absolute() and not injected:
+                    alias.write_bytes(hostile)
+                    os.utime(
+                        alias,
+                        ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                    )
+                    injected = True
+                return result
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator, "_read_bound_regular_file", mutate_alias_after_read
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(
+                errors,
+                ["Repository developer-path validation failed"],
+            )
+
     def test_repository_validator_rejects_task5_replacement_before_scan(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(
