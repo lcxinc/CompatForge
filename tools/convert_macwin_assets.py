@@ -118,6 +118,64 @@ RECIPE_RELEASE_CONDITIONS = {
     "unsupported-behavior": "Remove or review unsupported source behavior and regenerate the migration.",
     "unsupported-schema": "Publish complete reviewed Recipe fields and regenerate the migration.",
 }
+PORTABLE_ASSET_TABLE = {
+    "MacWinManager/Tools/build-native-ui-probe.sh": ("macwinmanager-tools-build-native-ui-probe-sh", "shell", "text/x-shellscript"),
+    "MacWinManager/Tools/native-ui-probe.c": ("macwinmanager-tools-native-ui-probe-c", "source", "text/x-c"),
+    "MacWinManager/Tools/native-ui-probe.manifest": ("macwinmanager-tools-native-ui-probe-manifest", "data", "application/manifest+xml"),
+    "MacWinManager/Tools/native-ui-probe.rc": ("macwinmanager-tools-native-ui-probe-rc", "data", "text/plain"),
+    "scripts/analyze-window-image.py": ("scripts-analyze-window-image-py", "source", "text/x-python"),
+    "scripts/bootstrap-jasp-conan.sh": ("scripts-bootstrap-jasp-conan-sh", "shell", "text/x-shellscript"),
+    "scripts/build-game-dll-coverage.sh": ("scripts-build-game-dll-coverage-sh", "shell", "text/x-shellscript"),
+    "scripts/build-rosettax87.sh": ("scripts-build-rosettax87-sh", "shell", "text/x-shellscript"),
+    "scripts/capture-macos-region.swift": ("scripts-capture-macos-region-swift", "source", "text/x-swift"),
+    "scripts/capture-macos-window.swift": ("scripts-capture-macos-window-swift", "source", "text/x-swift"),
+    "scripts/configure-jasp-compat-build.sh": ("scripts-configure-jasp-compat-build-sh", "shell", "text/x-shellscript"),
+    "scripts/download-software-samples.sh": ("scripts-download-software-samples-sh", "shell", "text/x-shellscript"),
+    "scripts/drag-pointer.swift": ("scripts-drag-pointer-swift", "source", "text/x-swift"),
+    "scripts/dwsim-gdiplus-image-probe.cs": ("scripts-dwsim-gdiplus-image-probe-cs", "source", "text/x-csharp"),
+    "scripts/find-macos-window.swift": ("scripts-find-macos-window-swift", "source", "text/x-swift"),
+    "scripts/fixtures/SwingFontProbe.java": ("scripts-fixtures-swingfontprobe-java", "source", "text/x-java-source"),
+    "scripts/fixtures/beekeeper-sqlite-smoke.js": ("scripts-fixtures-beekeeper-sqlite-smoke-js", "source", "text/javascript"),
+    "scripts/fixtures/brave-browser-smoke.html": ("scripts-fixtures-brave-browser-smoke-html", "data", "text/html"),
+    "scripts/fixtures/dbeaver-jdbc-smoke.java": ("scripts-fixtures-dbeaver-jdbc-smoke-java", "source", "text/x-java-source"),
+    "scripts/fixtures/firefox-browser-smoke.py": ("scripts-fixtures-firefox-browser-smoke-py", "source", "text/x-python"),
+    "scripts/fixtures/freeoffice-automation-probe.c": ("scripts-fixtures-freeoffice-automation-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/freeoffice-bootstrap.c": ("scripts-fixtures-freeoffice-bootstrap-c", "source", "text/x-c"),
+    "scripts/fixtures/freeoffice-typeinfo-probe.c": ("scripts-fixtures-freeoffice-typeinfo-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/freeoffice-ui-probe.c": ("scripts-fixtures-freeoffice-ui-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/godot-vulkan-smoke/main.gd": ("scripts-fixtures-godot-vulkan-smoke-main-gd", "data", "text/plain"),
+    "scripts/fixtures/godot-vulkan-smoke/main.tscn": ("scripts-fixtures-godot-vulkan-smoke-main-tscn", "data", "text/plain"),
+    "scripts/fixtures/godot-vulkan-smoke/project.godot": ("scripts-fixtures-godot-vulkan-smoke-project-godot", "data", "text/plain"),
+    "scripts/fixtures/inkscape-smoke.svg": ("scripts-fixtures-inkscape-smoke-svg", "data", "image/svg+xml"),
+    "scripts/fixtures/jabref-smoke.bib": ("scripts-fixtures-jabref-smoke-bib", "data", "application/x-bibtex"),
+    "scripts/fixtures/libreoffice-smoke.html": ("scripts-fixtures-libreoffice-smoke-html", "data", "text/html"),
+    "scripts/fixtures/meshlab-cube.obj": ("scripts-fixtures-meshlab-cube-obj", "data", "text/plain"),
+    "scripts/fixtures/openplc-smoke-main.cpp": ("scripts-fixtures-openplc-smoke-main-cpp", "source", "text/x-c++"),
+    "scripts/fixtures/openplc-smoke.xml": ("scripts-fixtures-openplc-smoke-xml", "data", "application/xml"),
+    "scripts/fixtures/pdfarranger-page-one.txt": ("scripts-fixtures-pdfarranger-page-one-txt", "data", "text/plain"),
+    "scripts/fixtures/pdfarranger-page-two.txt": ("scripts-fixtures-pdfarranger-page-two-txt", "data", "text/plain"),
+    "scripts/fixtures/pdfarranger-qpdf-probe.c": ("scripts-fixtures-pdfarranger-qpdf-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/pgadmin-backend-smoke.py": ("scripts-fixtures-pgadmin-backend-smoke-py", "source", "text/x-python"),
+    "scripts/fixtures/projectlibre-mpxj-smoke.java": ("scripts-fixtures-projectlibre-mpxj-smoke-java", "source", "text/x-java-source"),
+    "scripts/fixtures/qelectrotech-smoke.qet": ("scripts-fixtures-qelectrotech-smoke-qet", "data", "application/xml"),
+    "scripts/fixtures/r-statistics-smoke.R": ("scripts-fixtures-r-statistics-smoke-r", "source", "text/x-r-source"),
+    "scripts/fixtures/special-folder-probe.c": ("scripts-fixtures-special-folder-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/sqlitebrowser-probe.c": ("scripts-fixtures-sqlitebrowser-probe-c", "source", "text/x-c"),
+    "scripts/fixtures/wow64-debug-exception.c": ("scripts-fixtures-wow64-debug-exception-c", "source", "text/x-c"),
+    "scripts/fixtures/wow64-read-memory.c": ("scripts-fixtures-wow64-read-memory-c", "source", "text/x-c"),
+    "scripts/fixtures/wps-smoke.rtf": ("scripts-fixtures-wps-smoke-rtf", "data", "application/rtf"),
+    "scripts/inspect-chromium-page.swift": ("scripts-inspect-chromium-page-swift", "source", "text/x-swift"),
+    "scripts/macos-session-state.swift": ("scripts-macos-session-state-swift", "source", "text/x-swift"),
+    "scripts/prepare-jasp-compat-source.sh": ("scripts-prepare-jasp-compat-source-sh", "shell", "text/x-shellscript"),
+    "scripts/repair-jasp-conan-cache.sh": ("scripts-repair-jasp-conan-cache-sh", "shell", "text/x-shellscript"),
+    "scripts/repair-lenovo-app-store-page.swift": ("scripts-repair-lenovo-app-store-page-swift", "source", "text/x-swift"),
+    "scripts/run-powertoys-quick-access-probe.sh": ("scripts-run-powertoys-quick-access-probe-sh", "shell", "text/x-shellscript"),
+    "scripts/run-software-smoke.sh": ("scripts-run-software-smoke-sh", "shell", "text/x-shellscript"),
+    "scripts/validate-chromium-page-report.py": ("scripts-validate-chromium-page-report-py", "source", "text/x-python"),
+    "scripts/validate-pgadmin-page-report.py": ("scripts-validate-pgadmin-page-report-py", "source", "text/x-python"),
+    "scripts/visual-acceptance-macwin.sh": ("scripts-visual-acceptance-macwin-sh", "shell", "text/x-shellscript"),
+    "scripts/wic-codecs-minimal.reg": ("scripts-wic-codecs-minimal-reg", "registry", "text/x-ms-regedit"),
+}
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 _LOADER_IDENTITY = object()
@@ -736,7 +794,7 @@ def build_conversion(repository_root: Path) -> ConversionResult:
 
 
 def render_documents(result: ConversionResult) -> dict[str, bytes]:
-    """Render the closed Task 5 catalog outputs without writing output files."""
+    """Render the closed Task 5/6 outputs without writing output files."""
 
     _bootstrap_dependencies()
     _validate_conversion_result(result)
@@ -790,6 +848,46 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
             _fail("catalog candidate status is invalid")
         candidates.append(entry)
 
+    portable_records = tuple(
+        record
+        for record in result.records
+        if record.output_kind in {"portable-probe", "portable-fixture"}
+    )
+    for record in portable_records:
+        asset = assets[record.source_path]
+        if record.status == "quarantined":
+            quarantine_records.append(_quarantine_document(record))
+            continue
+        if record.status != "converted":
+            _fail("portable asset status is invalid")
+        document = _portable_document(asset, record)
+        category = "probes" if record.category == "probes" else "fixtures"
+        manifest_path = (
+            f"migration/macwin/generated/{category}/{document['id']}.json"
+        )
+        content_path = document["contentPath"]
+        if manifest_path in documents or content_path in documents:
+            _fail("portable asset output identity is duplicated")
+        try:
+            documents[manifest_path] = _COMMON.canonical_json_bytes(document)
+        except _COMMON.MigrationError:
+            _fail("portable asset cannot be rendered")
+        documents[content_path] = asset.raw
+
+    mapping_documents: dict[str, dict[str, object]] = {}
+    for category, output_name in (
+        ("patches", "patches.json"),
+        ("bottle-schema", "bottle-schemas.json"),
+    ):
+        mapping_records = [
+            _deferred_document(record, assets[record.source_path])
+            for record in result.records
+            if record.category == category
+        ]
+        mapping_documents[
+            f"migration/macwin/generated/mappings/{output_name}"
+        ] = {"schemaVersion": "1", "records": mapping_records}
+
     catalog_assets = {
         asset.source_path: asset
         for asset in source_pack.assets
@@ -821,6 +919,7 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
         "records": quarantine_records,
     }
     _validate_task5_documents(catalog_document, quarantine_document, result)
+    _validate_task6_documents(mapping_documents, documents, result)
     try:
         documents["migration/macwin/generated/catalog.json"] = (
             _COMMON.canonical_json_bytes(catalog_document)
@@ -828,9 +927,81 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
         documents["migration/macwin/generated/quarantine.json"] = (
             _COMMON.canonical_json_bytes(quarantine_document)
         )
+        for relative, document in mapping_documents.items():
+            documents[relative] = _COMMON.canonical_json_bytes(document)
     except _COMMON.MigrationError:
         _fail("catalog outputs cannot be rendered")
     return documents
+
+
+def _portable_document(
+    asset: SourceAsset, record: ConversionRecord
+) -> dict[str, object]:
+    """Build one explicitly typed inert portable asset manifest."""
+
+    if (
+        record.status != "converted"
+        or record.category not in {"probes", "fixtures"}
+        or record.source_path != asset.source_path
+        or record.source_sha256 != asset.sha256
+        or asset.source_path not in PORTABLE_ASSET_TABLE
+        or asset.external_refs
+        or asset.development_dependencies
+    ):
+        _fail("portable asset evidence is incomplete")
+    identifier, kind, media_type = PORTABLE_ASSET_TABLE[asset.source_path]
+    category = "probes" if record.category == "probes" else "fixtures"
+    content_path = (
+        f"migration/macwin/generated/{category}/content/sha256/"
+        f"{asset.sha256[:2]}/{asset.sha256[2:]}"
+    )
+    return {
+        "schemaVersion": "1",
+        "id": identifier,
+        "kind": kind,
+        "source": {
+            "sourceRepository": record.source_repository,
+            "sourceCommit": record.source_commit,
+            "sourcePath": record.source_path,
+            "sourceSha256": record.source_sha256,
+            "gitBlobOid": asset.git_blob_oid,
+            "gitMode": asset.git_mode,
+        },
+        "contentPath": content_path,
+        "contentSha256": asset.sha256,
+        "mediaType": media_type,
+        "executable": False,
+        "referencedAssetIds": [],
+        "intendedOwner": record.intended_owner,
+        "license": {"status": asset.license_status},
+        "provenance": {"status": asset.provenance_status},
+    }
+
+
+def _deferred_document(
+    record: ConversionRecord, asset: SourceAsset
+) -> dict[str, object]:
+    if (
+        record.status != "deferred"
+        or record.category not in {"patches", "bottle-schema"}
+        or record.source_path != asset.source_path
+        or record.source_sha256 != asset.sha256
+    ):
+        _fail("deferred migration evidence is incomplete")
+    return {
+        "sourceRepository": record.source_repository,
+        "sourcePath": record.source_path,
+        "sourceCommit": record.source_commit,
+        "gitBlobOid": asset.git_blob_oid,
+        "gitMode": asset.git_mode,
+        "sourceSha256": record.source_sha256,
+        "category": record.category,
+        "status": "deferred",
+        "targetIssue": record.target_issue,
+        "intendedOwner": record.intended_owner,
+        "license": {"status": asset.license_status},
+        "provenance": {"status": asset.provenance_status},
+    }
 
 
 def _is_exact_string_tuple(value: object) -> bool:
@@ -1734,6 +1905,17 @@ def _classify_publishable(
     output_kind: str,
     converted_action: str,
 ) -> ConversionRecord:
+    evidence = tuple(
+        sorted(
+            {
+                *((f"{asset.source_path}#license",) if asset.license_status == "unresolved" else ()),
+                *((f"{asset.source_path}#provenance",) if asset.provenance_status == "unresolved" else ()),
+                *asset.external_refs,
+                *asset.development_dependencies,
+            },
+            key=lambda value: value.encode("utf-8"),
+        )
+    )
     if asset.license_status == "unresolved":
         return ConversionRecord(
             **base,
@@ -1742,7 +1924,7 @@ def _classify_publishable(
             action="quarantine",
             target_issue=None,
             reason="missing-license",
-            evidence_locators=(f"{asset.source_path}#license",),
+            evidence_locators=evidence,
             release_condition=(
                 "Record a reviewed source license and regenerate the migration."
             ),
@@ -1755,10 +1937,22 @@ def _classify_publishable(
             action="quarantine",
             target_issue=None,
             reason="missing-provenance",
-            evidence_locators=(f"{asset.source_path}#provenance",),
+            evidence_locators=evidence,
             release_condition=(
                 "Record reviewed source provenance and regenerate the migration."
             ),
+        )
+    dependency_reason = _portable_dependency_reason(asset)
+    if dependency_reason is not None:
+        return ConversionRecord(
+            **base,
+            output_kind=output_kind,
+            status="quarantined",
+            action="quarantine",
+            target_issue=None,
+            reason=dependency_reason,
+            evidence_locators=evidence,
+            release_condition=RECIPE_RELEASE_CONDITIONS[dependency_reason],
         )
     return ConversionRecord(
         **base,
@@ -1770,6 +1964,29 @@ def _classify_publishable(
         evidence_locators=(),
         release_condition=None,
     )
+
+
+def _portable_dependency_reason(asset: SourceAsset) -> str | None:
+    """Classify reviewed locator strings as inert data without probing them."""
+
+    locators = (*asset.external_refs, *asset.development_dependencies)
+    if any(
+        value.startswith(("/", "\\"))
+        or re.match(r"[A-Za-z]:[/\\]", value) is not None
+        for value in locators
+    ):
+        return "absolute-path"
+    if asset.external_refs:
+        return "unresolved-external-reference"
+    if any(
+        re.search(r"\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*", value) is not None
+        or re.fullmatch(r"[A-Z][A-Z0-9_]*", value) is not None
+        for value in asset.development_dependencies
+    ):
+        return "unresolved-environment-path"
+    if asset.development_dependencies:
+        return "unresolved-external-reference"
+    return None
 
 
 def _validate_conversion_record_field_types(record: ConversionRecord) -> None:
@@ -2012,9 +2229,9 @@ def _validate_task5_documents(
     if quarantine["schemaVersion"] != "1" or type(quarantine_records) is not list:
         _fail("generated quarantine contract is invalid")
     expected_quarantine = [
-        _quarantine_document(recipe_records[path])
-        for path in candidate_paths
-        if recipe_records[path].status == "quarantined"
+        _quarantine_document(record)
+        for record in result.records
+        if record.status == "quarantined"
     ]
     if quarantine_records != expected_quarantine:
         _fail("generated quarantine records are invalid")
@@ -2031,6 +2248,69 @@ def _validate_task5_documents(
             "releaseCondition",
         }:
             _fail("generated quarantine record fields are invalid")
+
+
+def _validate_task6_documents(
+    mappings: dict[str, dict[str, object]],
+    portable_documents: dict[str, bytes],
+    result: ConversionResult,
+) -> None:
+    """Validate Task 6 coverage independently from its serializers."""
+
+    expected_paths = {
+        "migration/macwin/generated/mappings/patches.json": "patches",
+        "migration/macwin/generated/mappings/bottle-schemas.json": "bottle-schema",
+    }
+    if type(mappings) is not dict or set(mappings) != set(expected_paths):
+        _fail("deferred mapping set is invalid")
+    assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    for relative, category in expected_paths.items():
+        document = mappings[relative]
+        if (
+            type(document) is not dict
+            or set(document) != {"schemaVersion", "records"}
+            or document["schemaVersion"] != "1"
+            or type(document["records"]) is not list
+        ):
+            _fail("deferred mapping contract is invalid")
+        expected = [
+            _deferred_document(record, assets[record.source_path])
+            for record in result.records
+            if record.category == category
+        ]
+        if document["records"] != expected:
+            _fail("deferred mapping coverage is invalid")
+
+    portable_records = tuple(
+        record
+        for record in result.records
+        if record.category in {"probes", "fixtures"}
+    )
+    if len(portable_records) != 56 or set(PORTABLE_ASSET_TABLE) != {
+        record.source_path for record in portable_records
+    }:
+        _fail("portable asset table is incomplete")
+    for record in portable_records:
+        asset = assets[record.source_path]
+        if record.status == "quarantined":
+            continue
+        manifest = _portable_document(asset, record)
+        category = "probes" if record.category == "probes" else "fixtures"
+        manifest_path = (
+            f"migration/macwin/generated/{category}/{manifest['id']}.json"
+        )
+        content_path = manifest["contentPath"]
+        try:
+            expected_manifest = _COMMON.canonical_json_bytes(manifest)
+        except _COMMON.MigrationError:
+            _fail("portable asset contract is invalid")
+        if (
+            portable_documents.get(manifest_path) != expected_manifest
+            or portable_documents.get(content_path) != asset.raw
+            or hashlib.sha256(asset.raw).hexdigest() != manifest["contentSha256"]
+            or manifest["executable"] is not False
+        ):
+            _fail("portable asset output is invalid")
 
 
 def _git_blob_oid(raw: bytes) -> str:

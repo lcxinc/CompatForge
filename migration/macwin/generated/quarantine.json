@@ -293,6 +293,1139 @@
       "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json",
       "sourceSha256": "35eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
       "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MacWinManager/Tools/build-native-ui-probe.sh#license",
+        "MacWinManager/Tools/build-native-ui-probe.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/build-native-ui-probe.sh",
+      "sourceSha256": "56eff0a25defb887f16c017d96cb0a70a67c1ebfacd7da31bd4835c764977acc",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MacWinManager/Tools/native-ui-probe.c#license",
+        "MacWinManager/Tools/native-ui-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.c",
+      "sourceSha256": "1a772a44e1d35808e972d8a091bd8f7447c2957d691967423b34c76e8f6b7987",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MacWinManager/Tools/native-ui-probe.manifest#license",
+        "MacWinManager/Tools/native-ui-probe.manifest#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.manifest",
+      "sourceSha256": "1d9924dbd257c74ba1505e089afe79215f80372dbd3fac4c856b69ebfd71c85f",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MacWinManager/Tools/native-ui-probe.rc#license",
+        "MacWinManager/Tools/native-ui-probe.rc#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.rc",
+      "sourceSha256": "328256afd5718d643d8f00a5d36b6241b301d0183bc4f2ba7a5dffb547bd6058",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/analyze-window-image.py#license",
+        "scripts/analyze-window-image.py#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/analyze-window-image.py",
+      "sourceSha256": "cf1625202400f71a87e84b8bd5dceeb4735b7f29b8c913ce0908d840e765786d",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_CONAN_VENV",
+        "scripts/bootstrap-jasp-conan.sh#license",
+        "scripts/bootstrap-jasp-conan.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/bootstrap-jasp-conan.sh",
+      "sourceSha256": "b7d47d891e4f1d8805f104c620e753409d2aafcfc27402952b293976cfe16ee9",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$ROOT_DIR/refs/Whisky-wow64-game-build",
+        "MACWIN_WINE_BUILD_DIR",
+        "scripts/build-game-dll-coverage.sh#license",
+        "scripts/build-game-dll-coverage.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-game-dll-coverage.sh",
+      "sourceSha256": "37d9e078efc8fcdf0b21910d76ca488b74bf62d21dcf709a0137031029979816",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$ROOT/refs/Whisky-wow64-game-build/loader/wine",
+        "$ROOT/refs/rosettax87",
+        "MACWIN_ROSETTA_X87_BUILD",
+        "MACWIN_ROSETTA_X87_SOURCE",
+        "MACWIN_WINE_LOADER",
+        "scripts/build-rosettax87.sh#license",
+        "scripts/build-rosettax87.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-rosettax87.sh",
+      "sourceSha256": "467b86085224fd0334872e118c2942e878a595919d066ecdc0b4873e4372c34c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/capture-macos-region.swift#license",
+        "scripts/capture-macos-region.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-region.swift",
+      "sourceSha256": "4384c5d92f65833533e18c244790651e3079058e7ca29d9309619314de59d26f",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/capture-macos-window.swift#license",
+        "scripts/capture-macos-window.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-window.swift",
+      "sourceSha256": "2d10afa6b54b95f78ca1f8d6f1a40c1ab8b146af26dac771f1976fe414674096",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MACWIN_JASP_CONAN_BIN",
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_PATCHED_BUILD_DIR",
+        "MACWIN_JASP_PATCHED_CONFIGURE_LOG",
+        "MACWIN_JASP_PATCHED_SOURCE_DIR",
+        "MACWIN_JASP_RENV_PACKAGE",
+        "MACWIN_JASP_RENV_PACKAGE_URL",
+        "https://packagemanager.posit.co/cran/latest/bin/macosx/big-sur-arm64/contrib/4.5/renv_1.2.3.tgz",
+        "https://zlib\\.net/fossils/zlib-1\\.2\\.13\\.tar\\.gz",
+        "scripts/configure-jasp-compat-build.sh#license",
+        "scripts/configure-jasp-compat-build.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/configure-jasp-compat-build.sh",
+      "sourceSha256": "c0bb1d776e4e484c3f2d4f6f10cb3555a53d47a1a565e5570f394a2d0baa821a",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$HOME/Library/Application Support/MacWin",
+        "MACWIN_ROOT",
+        "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse?project=jdk",
+        "https://archive.apache.org/dist/netbeans/netbeans-installers/25/Apache-NetBeans-25-bin-windows-x64.exe",
+        "https://archive.seamonkey-project.org/releases/2.53.21/win32/zh-CN/seamonkey-2.53.21.zh-CN.win32.installer.exe",
+        "https://archive.seamonkey-project.org/releases/2.53.23/win64/zh-CN/seamonkey-2.53.23.zh-CN.win64.installer.exe",
+        "https://build.openmodelica.org/omc/builds/windows/releases/1.26/9/64bit/OpenModelica-v1.26.9-64bit.exe",
+        "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.9/dotnet-runtime-10.0.9-win-x64.zip",
+        "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.9/windowsdesktop-runtime-10.0.9-win-x64.zip",
+        "https://cdn.mysql.com/Downloads/MySQLGUITools/mysql-workbench-community-8.0.44-winx64.msi",
+        "https://cdn.waterfox.com/waterfox/releases/6.6.15/WINNT_x86_64/Waterfox%20Setup%206.6.15.exe",
+        "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-archive",
+        "https://cran.r-project.org/bin/windows/base/R-4.6.0-win.exe",
+        "https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl-installer.exe",
+        "https://dbeaver.io/files/dbeaver-ce-latest-win32.win32.x86_64.zip",
+        "https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise64.msi",
+        "https://dl.librewolf.net/librewolf/152.0.1-2/librewolf-152.0.1-2-windows-x86_64-portable.zip",
+        "https://dl.librewolf.net/librewolf/152.0.1-2/librewolf-152.0.1-2-windows-x86_64-setup.exe",
+        "https://dl.pstmn.io/download/latest/win64",
+        "https://download-installer.cdn.mozilla.net/pub/firefox/releases/152.0.1/win64/zh-CN/Firefox%20Setup%20152.0.1.msi",
+        "https://download.biolab.si/download/files/Orange3-3.40.0-x86_64.exe",
+        "https://download.blender.org/release/Blender4.1/blender-4.1.0-windows-x64.msi",
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi",
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64_helppack_zh-CN.msi",
+        "https://download.geogebra.org/package/win",
+        "https://download.geogebra.org/package/win-autoupdate",
+        "https://download.gimp.org/gimp/v2.10/windows/gimp-2.10.38-setup-1.exe",
+        "https://download.gimp.org/gimp/v2.10/windows/gimp-2.10.38-setup.exe",
+        "https://download.kde.org/stable/krita/5.2.9/krita-x64-5.2.9-setup.exe",
+        "https://download.kde.org/stable/labplot/labplot-2.12.1-x86_64-setup.exe",
+        "https://download.librepcb.org/releases/2.1.1/librepcb-installer-2.1.1-windows-x86_64.exe",
+        "https://download.mozilla.org/?product=firefox-devedition-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=firefox-esr-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=zh-CN",
+        "https://download.onlyoffice.com/install/desktop/editors/windows/distrib/onlyoffice/DesktopEditors_x64.exe",
+        "https://download.osgeo.org/osgeo4w/v2/osgeo4w-setup.exe",
+        "https://download.pdf24.org/pdf24-creator.exe",
+        "https://download.qgis.org/downloads/QGIS-OSGeo4W-3.44.11-1.msi",
+        "https://download.typora.io/windows/typora-setup-x64.exe",
+        "https://download1.rstudio.org/electron/windows/RStudio-2025.09.0-387.exe",
+        "https://download3.operacdn.com/pub/opera/desktop/132.0.5905.73/win/Opera_132.0.5905.73_Setup_x64.exe",
+        "https://downloads.pdf-xchange.com/EditorV11.x64.msi",
+        "https://downloads.sourceforge.net/project/codeblocks/Binaries/20.03/Windows/codeblocks-20.03mingw-setup.exe",
+        "https://downloads.vivaldi.com/stable/Vivaldi.7.9.3970.47.x64.exe",
+        "https://epa.gov/system/files/other-files/2023-08/swmm524%28x64%29_setup.exe",
+        "https://files.openscad.org/OpenSCAD-2021.01-x86-64-Installer.exe",
+        "https://ftp.postgresql.org/pub/pgadmin/pgadmin4/v9.16/windows/pgadmin4-9.16-x64.exe",
+        "https://ftpmirror.gnu.org/octave/windows/octave-11.3.0-w64-installer.exe",
+        "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.26/AutoHotkey_2.0.26_setup.exe",
+        "https://github.com/Autonomy-Logic/openplc-editor/releases/download/v4.2.7/OpenPLC.Editor_4.2.7.exe",
+        "https://github.com/BRL-CAD/brlcad/releases/download/rel-7-42-2/BRL-CAD_7.42.2_win64.msi",
+        "https://github.com/Floorp-Projects/Floorp/releases/download/v12.15.2/floorp-windows-x86_64.installer.exe",
+        "https://github.com/FreeCAD/FreeCAD/releases/download/1.1.1/FreeCAD_1.1.1-Windows-x86_64-py311-installer.exe",
+        "https://github.com/HeidiSQL/HeidiSQL/releases/download/v12.19/HeidiSQL_12.19.0.7314_Setup.exe",
+        "https://github.com/HeidiSQL/HeidiSQL/releases/download/v12.19/HeidiSQL_12.19_64_Portable.zip",
+        "https://github.com/JabRef/jabref/releases/download/v5.15/JabRef-5.15-portable_windows.zip",
+        "https://github.com/JabRef/jabref/releases/download/v5.15/JabRef-5.15.msi",
+        "https://github.com/KiCad/kicad-source-mirror/releases/download/10.0.3/kicad-10.0.3-x86_64.exe",
+        "https://github.com/KiCad/kicad-source-mirror/releases/download/10.0.4/kicad-10.0.4-x86_64.exe",
+        "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.msi",
+        "https://github.com/LibreCAD/LibreCAD/releases/download/v2.2.1.5/LibreCAD-v2.2.1.5-win64-msvc.exe",
+        "https://github.com/NatLabRockies/EnergyPlus/releases/download/v26.1.0/EnergyPlus-26.1.0-6f2e40d102-Windows-x86_64.exe",
+        "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.4.2_build/ghidra_11.4.2_PUBLIC_20250826.zip",
+        "https://github.com/OpenBoard-org/OpenBoard/releases/download/v1.7.3/OpenBoard_Installer_1.7.3.exe",
+        "https://github.com/OpenCPN/OpenCPN/releases/download/Release_5.14.0/opencpn_5.14.0-0%2B4418.91f3b67_setup.exe",
+        "https://github.com/OpenShot/openshot-qt/releases/download/v3.3.0/OpenShot-v3.3.0-x86_64.exe",
+        "https://github.com/OrcaSlicer/OrcaSlicer/releases/download/v2.4.0/OrcaSlicer_Windows_Installer_V2.4.0.exe",
+        "https://github.com/Sigil-Ebook/Sigil/releases/download/2.8.0/Sigil-2.8.0-Windows-x64-Setup.exe",
+        "https://github.com/Stellarium/stellarium/releases/download/v26.1/stellarium-26.1-qt6-win64.exe",
+        "https://github.com/TeXworks/texworks/releases/download/release-0.6.11/TeXworks-win7-setup-0.6.11-202602100855-git_7951fd8.exe",
+        "https://github.com/USEPA/EPANET2.2/releases/download/2.2.0/epanet2.2_setup.exe",
+        "https://github.com/Ultimaker/Cura/releases/download/5.13.0/UltiMaker-Cura-5.13.0-win64-X64.exe",
+        "https://github.com/Ultimaker/Cura/releases/download/5.13.0/UltiMaker-Cura-5.13.0-win64-X64.msi",
+        "https://github.com/WinMerge/winmerge/releases/download/v2.16.50/WinMerge-2.16.50-x64-Setup.exe",
+        "https://github.com/Zettlr/Zettlr/releases/download/v4.6.0/Zettlr-4.6.0-x64.exe",
+        "https://github.com/arduino/arduino-ide/releases/download/2.3.10/arduino-ide_2.3.10_Windows_64bit.exe",
+        "https://github.com/arkypita/LaserGRBL/releases/download/v7.14.1/install.exe",
+        "https://github.com/audacity/audacity/releases/download/Audacity-3.7.8/audacity-win-3.7.8-64bit.exe",
+        "https://github.com/bambulab/BambuStudio/releases/download/v02.07.01.62/Bambu_Studio_win-v02.07.01.62-20260616174358.exe",
+        "https://github.com/bambulab/BambuStudio/releases/download/v02.07.01.62/Bambu_Studio_win-v02.07.01.62-20260616174358.zip",
+        "https://github.com/bardsoftware/ganttproject/releases/download/ganttproject-3.3.3316/ganttproject-3.3.3316.exe",
+        "https://github.com/beekeeper-studio/beekeeper-studio/releases/download/v5.8.1/Beekeeper-Studio-Setup-5.8.1.exe",
+        "https://github.com/brave/brave-browser/releases/download/v1.91.175/BraveBrowserStandaloneSetup.exe",
+        "https://github.com/brave/brave-browser/releases/download/v1.91.175/BraveBrowserStandaloneSetup32.exe",
+        "https://github.com/cncjs/cncjs/releases/download/v1.11.1/cncjs-app-1.11.1-windows-x64.exe",
+        "https://github.com/cnr-isti-vclab/meshlab/releases/download/MeshLab-2025.07/MeshLab2025.07-windows_x86_64.exe",
+        "https://github.com/cyanfish/naps2/releases/download/v8.2.1/naps2-8.2.1-win-x64.exe",
+        "https://github.com/espanso/espanso/releases/download/v2.3.0/Espanso-Win-Installer-x86_64.exe",
+        "https://github.com/esphome/esphome-flasher/releases/download/1.4.0/ESPHome-Flasher-1.4.0-Windows-x64.exe",
+        "https://github.com/esphome/esphome-flasher/releases/download/1.4.0/ESPHome-Flasher-1.4.0-Windows-x86.exe",
+        "https://github.com/flameshot-org/flameshot/releases/download/v14.0.0/Flameshot-14.0.0-win64.msi",
+        "https://github.com/freeplane/freeplane/releases/download/release-1.13.2/Freeplane-Setup-1.13.2.exe",
+        "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/Git-2.54.0-64-bit.exe",
+        "https://github.com/gitextensions/gitextensions/releases/download/v7.0.1/GitExtensions-x64-7.0.1.86-c119a52.msi",
+        "https://github.com/giuspen/cherrytree/releases/download/v1.7.0/cherrytree_1.7.0.0_win64_setup.exe",
+        "https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_win32.exe.zip",
+        "https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_win64.exe.zip",
+        "https://github.com/jasp-stats/jasp-desktop/releases/download/v0.97.1/JASP-0.97.1-Windows-Community.msi",
+        "https://github.com/jgm/pandoc/releases/download/3.10/pandoc-3.10-windows-x86_64.msi",
+        "https://github.com/jgraph/drawio-desktop/releases/download/v30.2.4/draw.io-30.2.4.msi",
+        "https://github.com/keepassxreboot/keepassxc/releases/download/2.7.12/KeePassXC-2.7.12-Win64.msi",
+        "https://github.com/kovidgoyal/calibre/releases/download/v9.9.0/calibre-64bit-9.9.0.msi",
+        "https://github.com/laurent22/joplin/releases/download/v3.6.15/Joplin-Setup-3.6.15.exe",
+        "https://github.com/lmms/lmms/releases/download/v1.2.2/lmms-1.2.2-win64.exe",
+        "https://github.com/logisim-evolution/logisim-evolution/releases/download/v4.1.0/logisim-evolution-4.1.0-amd64.msi",
+        "https://github.com/mRemoteNG/mRemoteNG/releases/download/20260222-v1.78.2-NB-%283405%29/mRemoteNG-20260222-v1.78.2-NB-3405-x64.rar",
+        "https://github.com/mRemoteNG/mRemoteNG/releases/download/v1.76.20/mRemoteNG-Installer-1.76.20.24615.msi",
+        "https://github.com/mapeditor/tiled/releases/download/v1.12.2/Tiled-1.12.2_Windows-10%2B_x86_64.msi",
+        "https://github.com/marktext/marktext/releases/download/v0.19.1/marktext-win-x64-0.19.1-setup.exe",
+        "https://github.com/microsoft/PowerToys/releases/download/v0.100.0/PowerToysUserSetup-0.100.0-x64.exe",
+        "https://github.com/minbrowser/min/releases/download/v1.35.5/Min-v1.35.5-windows.zip",
+        "https://github.com/minbrowser/min/releases/download/v1.35.5/min-1.35.5-setup.exe",
+        "https://github.com/moonlight-stream/moonlight-qt/releases/download/v6.1.0/MoonlightSetup-6.1.0.exe",
+        "https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-x86_64-latest.exe",
+        "https://github.com/mullvad/mullvad-browser/releases/download/15.0.16/mullvad-browser-windows-x86_64-15.0.16.exe",
+        "https://github.com/musescore/MuseScore/releases/download/v4.7.3/MuseScore-Studio-4.7.3.260608135-x86_64.msi",
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.4/npp.8.9.6.4.Installer.exe",
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.4/npp.8.9.6.4.Installer.x64.exe",
+        "https://github.com/npackd/npackd-cpp/releases/download/version_1.26.9/Npackd64-1.26.9.zip",
+        "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.12.7/Obsidian-1.12.7.exe",
+        "https://github.com/obsproject/obs-studio/releases/download/32.1.2/OBS-Studio-32.1.2-Windows-x64-Installer.exe",
+        "https://github.com/openrocket/openrocket/releases/download/release-24.12/OpenRocket-24.12-installer-Windows-x86_64.exe",
+        "https://github.com/pal1000/mesa-dist-win/releases/download/26.1.2/mesa3d-26.1.2-release-msvc.7z",
+        "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe",
+        "https://github.com/pbatard/rufus/releases/download/v4.11/rufus-4.11.exe",
+        "https://github.com/pbek/QOwnNotes/releases/download/v26.6.7/QOwnNotes.zip",
+        "https://github.com/pdfarranger/pdfarranger/releases/download/1.14.0/pdfarranger-1.14.0-windows-installer.msi",
+        "https://github.com/pdfarranger/pdfarranger/releases/download/1.14.0/pdfarranger-1.14.0-windows-portable.zip",
+        "https://github.com/portapps/brave-portable/releases/download/1.89.132-99/brave-portable-win64-1.89.132-99.7z",
+        "https://github.com/processing/processing4/releases/download/processing-1313-4.5.2/processing-4.5.2-windows-x64.msi",
+        "https://github.com/prusa3d/PrusaSlicer/releases/download/version_2.9.5/PrusaSlicer-2.9.5-setup.exe",
+        "https://github.com/qbittorrent/qBittorrent/releases/download/release-5.2.2/qbittorrent_5.2.2_x64_setup.exe",
+        "https://github.com/qelectrotech/qelectrotech-source-mirror/releases/download/0.100/Installer_QElectroTech-0.100.0_x86_64-win64%2Bgit8590-1.exe",
+        "https://github.com/quarto-dev/quarto-cli/releases/download/v1.9.38/quarto-1.9.38-win.msi",
+        "https://github.com/qutebrowser/qutebrowser/releases/download/v3.7.0/qutebrowser-3.7.0-amd64.exe",
+        "https://github.com/qutebrowser/qutebrowser/releases/download/v3.7.0/qutebrowser-3.7.0-windows-standalone.zip",
+        "https://github.com/ra3xdh/qucs_s/releases/download/26.1.1/Qucs-S-26.1.1-win64-setup.exe",
+        "https://github.com/ra3xdh/qucs_s/releases/download/26.1.1/Qucs-S-26.1.1-win64.zip",
+        "https://github.com/slic3r/Slic3r/releases/download/1.3.0/Slic3r-1.3.0.32bit.zip",
+        "https://github.com/slic3r/Slic3r/releases/download/1.3.0/Slic3r-1.3.0.64bit.zip",
+        "https://github.com/solvespace/solvespace/releases/download/v3.2/solvespace_x64.exe",
+        "https://github.com/sqlitebrowser/sqlitebrowser/releases/download/v3.13.1/DB.Browser.for.SQLite-v3.13.1-win64.msi",
+        "https://github.com/standardnotes/app/releases/download/%40standardnotes/desktop%403.201.21/standard-notes-3.201.21-win-x64.exe",
+        "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/texstudio-4.9.5-win-qt6-signed.exe",
+        "https://github.com/thomasnordquist/MQTT-Explorer/releases/download/v0.4.0-beta.6/MQTT-Explorer-Setup-0.4.0-beta.6.exe",
+        "https://github.com/thonny/thonny/releases/download/v5.0.0/thonny-5.0.0-windows-portable-x64.zip",
+        "https://github.com/thonny/thonny/releases/download/v5.0.0/thonny-5.0.0-x64.exe",
+        "https://github.com/torakiki/pdfsam/releases/download/v6.0.1/pdfsam-basic-6.0.1-windows-x64.msi",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_installer_x64.exe",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_installer_x86.exe",
+        "https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/download/149.0.7827.155-1.1/ungoogled-chromium_149.0.7827.155-1.1_windows_x64.zip",
+        "https://github.com/win32ss/supermium/releases/download/v144-r4_01/supermium_144_32_setup.exe",
+        "https://github.com/win32ss/supermium/releases/download/v144-r4_01/supermium_144_64_setup_win10_11.exe",
+        "https://github.com/winder/Universal-G-Code-Sender/releases/download/v2.1.23/ugs-2.1.23-x64.msi",
+        "https://github.com/wixtoolset/wix/releases/download/v7.0.0/wix-cli-x64.msi",
+        "https://github.com/wxMaxima-developers/wxmaxima/releases/download/Version-26.06.2/wxMaxima-26.06.2-win64.exe",
+        "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/snapshot_2026-05-27_12-11.zip",
+        "https://github.com/xournalpp/xournalpp/releases/download/v1.3.5/xournalpp-1.3.5-windows-setup-AMD64.exe",
+        "https://github.com/zen-browser/desktop/releases/download/1.21.3b/zen.installer.exe",
+        "https://gitlab.com/api/v4/projects/4207231/packages/generic/graphviz-releases/15.0.0/windows_10_cmake_Release_graphviz-install-15.0.0-win64.exe",
+        "https://gmsh.info/bin/Windows/gmsh-4.14.1-Windows64.zip",
+        "https://go.microsoft.com/fwlink/?LinkID=2093437",
+        "https://gottcode.org/focuswriter/download/?os=windows",
+        "https://gottcode.org/focuswriter/download/?os=windowsportable",
+        "https://julialang-s3.julialang.org/bin/winnt/x64/1.12/julia-1.12.2-win64.exe",
+        "https://ltspice.analog.com/software/LTspice64.msi",
+        "https://lyx.mirror.garr.it/bin/2.5.1/LyX-251-Installer-1-x64.exe",
+        "https://miktex.org/download/win/basic-miktex-x64.exe",
+        "https://mirror.ctan.org/systems/texlive/tlnet/install-tl-windows.exe",
+        "https://net.geo.opera.com/opera/stable/windows",
+        "https://net.geo.opera.com/opera_gx/stable/windows",
+        "https://nodejs.org/dist/v26.3.1/node-v26.3.1-x64.msi",
+        "https://portableapps.com/redirect/?a=K-MeleonPortable&s=s&p=&d=pa&f=K-MeleonPortable_76.5.5-2024-12-21.paf.exe",
+        "https://smath.com/en-US/files/Download/kTH2c/SMathStudioDesktop.1_4_0_9654.Setup.msi",
+        "https://sourceforge.net/projects/dia-installer/files/dia-win32-installer/0.97.2/dia-setup-0.97.2-2-unsigned.exe/download",
+        "https://sourceforge.net/projects/dwsim/files/DWSIM/DWSIM%209.0/9.0.5/DWSIM_v905_win64_setup.exe/download",
+        "https://sourceforge.net/projects/electricdss/files/OpenDSS/OpenDSSInstaller_1100_1.exe/download",
+        "https://sourceforge.net/projects/freemind/files/freemind/1.0.1/FreeMind-Windows-Installer-1.0.1-max.exe/download",
+        "https://sourceforge.net/projects/gnuplot/files/gnuplot/6.0.4/gp604-win64-clang.exe/download",
+        "https://sourceforge.net/projects/inkscape/files/inkscape-1.4.2_2025-05-13_f4327f4-x64.msi/download",
+        "https://sourceforge.net/projects/jump-pilot/files/OpenJUMP/2.4.0/OpenJUMP-Portable-2.4.0-r5303%5B6c9a02d%5D-PLUS.zip/download",
+        "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.59/KeePass-2.59-Setup.exe/download",
+        "https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2032%20bits/Lazarus%204.8/lazarus-4.8-fpc-3.2.2-win32.exe/download",
+        "https://sourceforge.net/projects/lazarus/files/Lazarus%20Windows%2064%20bits/Lazarus%204.8/lazarus-4.8-fpc-3.2.2-win64.exe/download",
+        "https://sourceforge.net/projects/maxima/files/Maxima-Windows/5.49.0-Windows/maxima-5.49.0-win64.exe/download",
+        "https://sourceforge.net/projects/openofficeorg.mirror/files/4.1.16/binaries/zh-CN/Apache_OpenOffice_4.1.16_Win_x86_install_zh-CN.exe/download",
+        "https://sourceforge.net/projects/otter-browser/files/otter-browser-weekly120/otter-browser-win64-weekly120.zip/download",
+        "https://sourceforge.net/projects/portableapps/files/PortableApps.com%20Platform/PortableApps.com_Platform_Setup_30.4.1.paf.exe/download",
+        "https://sourceforge.net/projects/projectlibre/files/ProjectLibre/1.9.8/ProjectLibre-1.9.8.msi/download",
+        "https://sourceforge.net/projects/qcadbin-win/files/qcadbin-win-2.0.5.0-1_rel-0.3/QCad%202.0.5.0%20Installer.exe/download",
+        "https://sourceforge.net/projects/qmodmaster/files/qModMaster-Win32-exe-0.5.2-3.zip/download",
+        "https://sourceforge.net/projects/qmodmaster/files/qModMaster-Win64-exe-0.5.3-beta.zip/download",
+        "https://sourceforge.net/projects/saga-gis/files/SAGA%20-%209/SAGA%20-%209.9.1/saga-9.9.1_x64_setup.exe/download",
+        "https://sourceforge.net/projects/scribus/files/scribus/1.4.8/scribus-1.4.8-windows-x64.exe/download",
+        "https://sourceforge.net/projects/sweethome3d/files/SweetHome3D/SweetHome3D-7.5/SweetHome3D-7.5-windows.exe/download",
+        "https://sourceforge.net/projects/tor-browser.mirror/files/15.0.16/tor-browser-windows-x86_64-portable-15.0.16.exe/download",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/ComPorts.ini",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/DSSProgress.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/DSSView.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/IndMach012a.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/KLUSolve.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/License.txt",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSS.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSS.rsm",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSDirect.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSDirect.h",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSScmd.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSScmd.rsm",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/OpenDSSengine.dll",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/kmetis.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/pmetis.exe",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/readme.txt",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/testcommandline.bat",
+        "https://svn.code.sf.net/p/electricdss/code/trunk/Version8/Distrib/x64/testcommandline.dss",
+        "https://the.earth.li/~sgtatham/putty/latest/w64/putty-64bit-installer.msi",
+        "https://update.code.visualstudio.com/latest/win32-x64-user/stable",
+        "https://wdl1.pcfg.cache.wpscdn.com/wpsdl/wpsoffice/onlinesetup/distsrc/601.1042/wpsinst/wps_office_inst.exe",
+        "https://winscp.net/download/WinSCP-6.5.6-Setup.exe/download",
+        "https://winscp.net/download/WinSCP-6.6.2.RC-Portable-x64-Experimental.zip/download",
+        "https://www.7-zip.org/a/7z2601-x64.exe",
+        "https://www.cloudcompare.org/release/CloudCompare_v2.13.2_setup_x64.exe",
+        "https://www.cloudcompare.org/release/CloudCompare_v2.6.2_setup_x86.exe",
+        "https://www.eclipse.org/downloads/download.php?file=/oomph/epp/2026-03/R/eclipse-inst-jre-win64.exe&r=1",
+        "https://www.palemoon.org/download.php?bits=32&mirror=us&type=installer",
+        "https://www.palemoon.org/download.php?bits=64&mirror=us&type=installer",
+        "https://www.paraview.org/paraview-downloads/download.php?submit=Download&version=v6.1&type=binary&os=Windows&downloadFile=ParaView-6.1.0-Windows-Python3.12-msvc2017-AMD64.msi",
+        "https://www.python.org/ftp/python/3.14.2/python-3.14.2-amd64.exe",
+        "https://www.scilab.org/download/2026.1.0/scilab-2026.1.0.bin.x64.exe",
+        "https://www.softmaker.net/down/freeoffice2024.msi",
+        "https://www.softmaker.net/down/softmaker-office-2024-64.msi",
+        "https://www.softwareok.com/Download/Q-Dir_Installer_x64.zip",
+        "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe",
+        "https://www.voidtools.com/Everything-1.4.1.1028.x64-Setup.exe",
+        "https://www.wireshark.org/download/win64/Wireshark-latest-x64.exe",
+        "https://www.zotero.org/download/client/dl?channel=release&platform=win32",
+        "scripts/download-software-samples.sh#license",
+        "scripts/download-software-samples.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/download-software-samples.sh",
+      "sourceSha256": "d95f4ae744145cb3ebc4478e5b3f3c493e06f2f891ee90b85c73e916f45dd58c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/drag-pointer.swift#license",
+        "scripts/drag-pointer.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/drag-pointer.swift",
+      "sourceSha256": "2580e090ad1ab9b797e2aaf4724853348e7d6c41f73c35448c3d5bd6319a2974",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/dwsim-gdiplus-image-probe.cs#license",
+        "scripts/dwsim-gdiplus-image-probe.cs#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/dwsim-gdiplus-image-probe.cs",
+      "sourceSha256": "db443f3cbfd379d02777595bac62092a757777baaffc5b361a4a07e1927dc01e",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/find-macos-window.swift#license",
+        "scripts/find-macos-window.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/find-macos-window.swift",
+      "sourceSha256": "a59ffd5ac37cd4209485941c0a7f3dc54565b2191e17a18e6a456c1fd0e101e3",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/SwingFontProbe.java#license",
+        "scripts/fixtures/SwingFontProbe.java#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/SwingFontProbe.java",
+      "sourceSha256": "f7fbf8f875bf27bd8ca708e754e171d02f73a8a9820a61c89c21bf7fd69ea933",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/beekeeper-sqlite-smoke.js#license",
+        "scripts/fixtures/beekeeper-sqlite-smoke.js#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/beekeeper-sqlite-smoke.js",
+      "sourceSha256": "a988d68ed33be49550375af51644f883b6d3a40935402c14a71ac2aa89fc3b86",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/brave-browser-smoke.html#license",
+        "scripts/fixtures/brave-browser-smoke.html#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/brave-browser-smoke.html",
+      "sourceSha256": "1581709a916b579b36280a1ea77351a5bcf388319369fe3b9010b6b8727bfe55",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/dbeaver-jdbc-smoke.java#license",
+        "scripts/fixtures/dbeaver-jdbc-smoke.java#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/dbeaver-jdbc-smoke.java",
+      "sourceSha256": "3664b5f7183ba7896208b8a173398d3fb68f91722a4453b6f8f74168a8839f0d",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/firefox-browser-smoke.py#license",
+        "scripts/fixtures/firefox-browser-smoke.py#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/firefox-browser-smoke.py",
+      "sourceSha256": "818f9aeba35071a88302f15c20389e80486bc0aeef57e0aeb8da40df265aa0d8",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/freeoffice-automation-probe.c#license",
+        "scripts/fixtures/freeoffice-automation-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-automation-probe.c",
+      "sourceSha256": "e22d1399fc0d48597e443c015b4120a68ff399e1c4798400c6e867679b446d0b",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/freeoffice-bootstrap.c#license",
+        "scripts/fixtures/freeoffice-bootstrap.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-bootstrap.c",
+      "sourceSha256": "2e6795bf4a47c51a9191f6d4ecbfcf23407381f2c458d2f4d36fcd3a3f477d78",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/freeoffice-typeinfo-probe.c#license",
+        "scripts/fixtures/freeoffice-typeinfo-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-typeinfo-probe.c",
+      "sourceSha256": "ece4259bce39b26dd0216d130ef1e14575173f9d6532bf59729ec32a12d6735b",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/freeoffice-ui-probe.c#license",
+        "scripts/fixtures/freeoffice-ui-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-ui-probe.c",
+      "sourceSha256": "662ae50e5e88783712e0008b37d3a12214520fe7a5870987bd9fd1c64a21df36",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/godot-vulkan-smoke/main.gd#license",
+        "scripts/fixtures/godot-vulkan-smoke/main.gd#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.gd",
+      "sourceSha256": "7358542c9358d7e3a8cb88c12f91619c06c414569faa3d6b8fc4241ad8ca85e0",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/godot-vulkan-smoke/main.tscn#license",
+        "scripts/fixtures/godot-vulkan-smoke/main.tscn#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.tscn",
+      "sourceSha256": "fc63a5292fe558d8827916e59226387e1afc40c7e4d5f1286fca2b0e102b1dbb",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/godot-vulkan-smoke/project.godot#license",
+        "scripts/fixtures/godot-vulkan-smoke/project.godot#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/project.godot",
+      "sourceSha256": "2596de6cf2968cc32d489e95de21dea1a44083a21f12fc468184dfe2fed9367f",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "http://www.w3.org/2000/svg",
+        "scripts/fixtures/inkscape-smoke.svg#license",
+        "scripts/fixtures/inkscape-smoke.svg#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/inkscape-smoke.svg",
+      "sourceSha256": "05835a44e6d4a758c67dfb852570e04768dc41db6adccc7e6cc2351ebda9c353",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/jabref-smoke.bib#license",
+        "scripts/fixtures/jabref-smoke.bib#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/jabref-smoke.bib",
+      "sourceSha256": "a6078de66c705a3bba94bc59871ec16de0d82f1c41a4fb2a2f3d28b8fabb8797",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/libreoffice-smoke.html#license",
+        "scripts/fixtures/libreoffice-smoke.html#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/libreoffice-smoke.html",
+      "sourceSha256": "b01a9b4aa59d79aa20a5f7487e2fb6313b88c6563005af25bb4f209886095e7c",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/meshlab-cube.obj#license",
+        "scripts/fixtures/meshlab-cube.obj#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/meshlab-cube.obj",
+      "sourceSha256": "3d2130de327358b8089671b0f16f51c0013ae2ddf8c04c2be6d29f27e8165aaf",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/openplc-smoke-main.cpp#license",
+        "scripts/fixtures/openplc-smoke-main.cpp#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke-main.cpp",
+      "sourceSha256": "d9ed2a6fd6c139bc3033674fb158d1b6f15fb0a9ad90aaa98a1652e62fe7aab4",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "http://www.plcopen.org/xml/tc6_0201",
+        "http://www.w3.org/1999/xhtml",
+        "http://www.w3.org/2001/XMLSchema-instance",
+        "scripts/fixtures/openplc-smoke.xml#license",
+        "scripts/fixtures/openplc-smoke.xml#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke.xml",
+      "sourceSha256": "08c936c8d0b54fdea9b9a45c823185183f00594b69655f4a572fe09cf2b1db47",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/pdfarranger-page-one.txt#license",
+        "scripts/fixtures/pdfarranger-page-one.txt#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-one.txt",
+      "sourceSha256": "08f044fb5cb6767db2d3a4184a33a14a4a21174d1d2c84d82973d1cbec5ab523",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/pdfarranger-page-two.txt#license",
+        "scripts/fixtures/pdfarranger-page-two.txt#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-two.txt",
+      "sourceSha256": "ab402e8be5f8ed8756e1f3106d64c1d2a2000f51cd2a49fdb5b82ef31906154d",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/pdfarranger-qpdf-probe.c#license",
+        "scripts/fixtures/pdfarranger-qpdf-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-qpdf-probe.c",
+      "sourceSha256": "bc9ef0ce2c14361453edd863913757cf53d9ccb8c1e8b634267d5ef214996cf5",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/pgadmin-backend-smoke.py#license",
+        "scripts/fixtures/pgadmin-backend-smoke.py#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pgadmin-backend-smoke.py",
+      "sourceSha256": "0b1506acda7edffc073b2c09e78ffdae02c168522e5f230706f834767454971e",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/projectlibre-mpxj-smoke.java#license",
+        "scripts/fixtures/projectlibre-mpxj-smoke.java#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/projectlibre-mpxj-smoke.java",
+      "sourceSha256": "4f5bd5a85ddc3fcd91c20792134378ea0ccea1e50cdff4f200f14cc8517339a5",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/qelectrotech-smoke.qet#license",
+        "scripts/fixtures/qelectrotech-smoke.qet#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/qelectrotech-smoke.qet",
+      "sourceSha256": "857201f1ebd305febb075688c2f4d2d9848a0acf05961303400eff39d590a35c",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/r-statistics-smoke.R#license",
+        "scripts/fixtures/r-statistics-smoke.R#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/r-statistics-smoke.R",
+      "sourceSha256": "38a8961d578f5530cca8d25a6d628eeab008ffd258fe20b4d444924accdeea6e",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/special-folder-probe.c#license",
+        "scripts/fixtures/special-folder-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/special-folder-probe.c",
+      "sourceSha256": "da8d6f6ff447e5c3a3231079177ed4d4d59e2c4be3ee15f8ebcdca01def2e389",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/sqlitebrowser-probe.c#license",
+        "scripts/fixtures/sqlitebrowser-probe.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/sqlitebrowser-probe.c",
+      "sourceSha256": "1d3914f98ea2876b427630c829d703782d022905b219262f27d5020ac48de554",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/wow64-debug-exception.c#license",
+        "scripts/fixtures/wow64-debug-exception.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-debug-exception.c",
+      "sourceSha256": "27e761c2e1ff71f0ec9f63d5f0ef0246428ed587a971384c0a470f4b0556cc4f",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/wow64-read-memory.c#license",
+        "scripts/fixtures/wow64-read-memory.c#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-read-memory.c",
+      "sourceSha256": "2283a901b0a719cce30c40ad22cee1f143dbdd974946d925ae5b8bfbca19ee20",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "evidenceLocators": [
+        "scripts/fixtures/wps-smoke.rtf#license",
+        "scripts/fixtures/wps-smoke.rtf#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wps-smoke.rtf",
+      "sourceSha256": "4dd86eb7c10a2fde695edb0c420a51a9aae1d0ac07bc3ff919bbd1ac734140f3",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "http://127.0.0.1:",
+        "http://127.0.0.1:\\(port)/json/list",
+        "scripts/inspect-chromium-page.swift#license",
+        "scripts/inspect-chromium-page.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/inspect-chromium-page.swift",
+      "sourceSha256": "2b06065d1cdec8316f4b7b1576aa53862c8a43301d9a41f4bdd6b4b69878af6b",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/macos-session-state.swift#license",
+        "scripts/macos-session-state.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/macos-session-state.swift",
+      "sourceSha256": "a95f6ab519edb51fede9740917e5135e8cccbbcc8c18635f72278a14afaa66c6",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$PROJECT_ROOT/refs/jasp-desktop-v0.97.1",
+        "MACWIN_JASP_CONAN_BIN",
+        "MACWIN_JASP_CONAN_HOME",
+        "MACWIN_JASP_WINDOWS_QT_PREFIX",
+        "MACWIN_JASP_WINDOWS_R_HOME",
+        "scripts/prepare-jasp-compat-source.sh#license",
+        "scripts/prepare-jasp-compat-source.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/prepare-jasp-compat-source.sh",
+      "sourceSha256": "60184629596f9ab50bb4285d61da9eb0e5f5f9bba6d98de460fd8d7aa30d86d9",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MACWIN_JASP_CONAN_HOME",
+        "https://github.com/madler/zlib/releases/download/v1.2.13/zlib-1.2.13.tar.gz",
+        "https://zlib.net/fossils/zlib-1.2.13.tar.gz",
+        "scripts/repair-jasp-conan-cache.sh#license",
+        "scripts/repair-jasp-conan-cache.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-jasp-conan-cache.sh",
+      "sourceSha256": "d7c41c2963c75cf366984bf3ed2e9e8fb45395f602788ddf5d610c7e1a0cdc06",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "http://127.0.0.1:\\(port)/json/list",
+        "scripts/repair-lenovo-app-store-page.swift#license",
+        "scripts/repair-lenovo-app-store-page.swift#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-lenovo-app-store-page.swift",
+      "sourceSha256": "7de42c42c85e1d5ed91311e88e5b7ef4dcbf6e93720e808c801258df7400e0da",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$HOME/Library/Application Support/MacWin",
+        "$PROJECT_ROOT/refs/exe-tests/bin/101_named_event_signal_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/103_window_inventory_probe.exe",
+        "MACWIN_POWETOYS_EVENT_PROBE",
+        "MACWIN_POWETOYS_EXE",
+        "MACWIN_POWETOYS_PREFIX",
+        "MACWIN_POWETOYS_WINDOW_PROBE",
+        "MACWIN_ROOT",
+        "scripts/run-powertoys-quick-access-probe.sh#license",
+        "scripts/run-powertoys-quick-access-probe.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-powertoys-quick-access-probe.sh",
+      "sourceSha256": "b80390dc217c5a5641d56f46c0a011719d73ddfbb72ec23b66ee3d74a7b84d4c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$HOME/.cache/wine/wine-mono-11.1.0-x86.msi",
+        "$HOME/Library/Application Support/MacWin",
+        "$HOME/Library/Fonts",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/mscoree/i386-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/odbc32/i386-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-wow64-game-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/$module/x86_64-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-build/programs/${tool%.exe}/x86_64-windows/$tool",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/i386-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/$module/x86_64-windows/$dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/mscoree/x86_64-windows/mscoree.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/ntdll/i386-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/ntdll/x86_64-windows/ntdll.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/dlls/odbc32/x86_64-windows/odbc32.dll",
+        "$PROJECT_ROOT/refs/Whisky-x86_64-game-build/programs/${tool%.exe}/x86_64-windows/$tool",
+        "$PROJECT_ROOT/refs/dxvk-macos-full-build/install/x64",
+        "$PROJECT_ROOT/refs/exe-tests/bin/94_opendss_com_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/97_jasp_createprocess_probe.exe",
+        "$PROJECT_ROOT/refs/exe-tests/bin/98_window_capture_probe.exe",
+        "$PROJECT_ROOT/refs/jasp-desktop-v0.97.1",
+        "$PROJECT_ROOT/refs/rosettax87/build/rosettax87",
+        "$PROJECT_ROOT/refs/testdata/ltspice/rc-transient.cir",
+        "MACWIN_DXVK_MACOS_DIR",
+        "MACWIN_JASP_DESKTOP_EXE_OVERRIDE",
+        "MACWIN_LENOVO_APPSTORE_SOURCE_DIR",
+        "MACWIN_ONLYOFFICE_ALLFONTS_SOURCE",
+        "MACWIN_PDFINFO_BIN",
+        "MACWIN_QET_FIXTURE_PATH",
+        "MACWIN_ROOT",
+        "MACWIN_ROSETTA_X87_PATH",
+        "MACWIN_SMOKE_PREFIX",
+        "MACWIN_VISUAL_PROBE",
+        "MACWIN_WINE_MONO_MSI",
+        "http://127.0.0.1:$port/",
+        "http://127.0.0.1:$port/health",
+        "http://127.0.0.1:$port/misc/ping?key=$key",
+        "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet",
+        "http://schemas.openxmlformats.org/package/2006/content-types",
+        "http://schemas.openxmlformats.org/package/2006/relationships",
+        "http://schemas.openxmlformats.org/presentationml/2006/main",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "https://doi.org/10.1234/macwin.2026.17",
+        "https://example.com/",
+        "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.46.0/ecj-3.46.0.jar",
+        "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.13/postgresql-42.7.13.jar",
+        "refs/exe-tests/build.sh",
+        "scripts/run-software-smoke.sh#license",
+        "scripts/run-software-smoke.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-software-smoke.sh",
+      "sourceSha256": "5d0f2ba9eeef78acd447bcbc1ea886eb1ca6cd970aeb2b12ed53ca76a05fc340",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/validate-chromium-page-report.py#license",
+        "scripts/validate-chromium-page-report.py#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-chromium-page-report.py",
+      "sourceSha256": "0e483aede37c39f02f8ad489984ac88f56a207a4e2ca2b525ca9a6c85bfff19d",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "MACWIN_PGADMIN_RESOURCES",
+        "http://127.0.0.1:",
+        "scripts/validate-pgadmin-page-report.py#license",
+        "scripts/validate-pgadmin-page-report.py#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-pgadmin-page-report.py",
+      "sourceSha256": "6fc2e1b7dbe5b936bcaf20d55b0b581986c60c8b41316cd566163dd130b321f4",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "$HOME/Desktop/MacWinVisualAcceptance",
+        "/Users/a1-6/project/Mac-Win/MacWinManager/.build/arm64-apple-macosx/debug/MacWinManagerApp",
+        "MACWIN_APP_PATH",
+        "MACWIN_VISUAL_ANALYSIS_JSON",
+        "MACWIN_VISUAL_OUTPUT_DIR",
+        "MACWIN_VISUAL_RESULT_JSON",
+        "MACWIN_VISUAL_SCREENSHOT",
+        "scripts/visual-acceptance-macwin.sh#license",
+        "scripts/visual-acceptance-macwin.sh#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/visual-acceptance-macwin.sh",
+      "sourceSha256": "e561ec745a5739769b02e3b3ceef759b68417f1914f99069b0bc297dfd17efd7",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "evidenceLocators": [
+        "scripts/wic-codecs-minimal.reg#license",
+        "scripts/wic-codecs-minimal.reg#provenance"
+      ],
+      "intendedOwner": "compatforge/probes",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/wic-codecs-minimal.reg",
+      "sourceSha256": "995611128bc4a3833e273590f678cfa32e3fbb06fec8d2eff7b54e05aee42381",
+      "status": "quarantined"
     }
   ],
   "schemaVersion": "1"

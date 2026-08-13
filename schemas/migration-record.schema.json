@@ -45,8 +45,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "sourceRepository",
         "sourcePath",
         "sourceCommit",
+        "gitBlobOid",
+        "gitMode",
         "sourceSha256",
         "category",
         "status",
@@ -56,8 +59,11 @@
         "provenance"
       ],
       "properties": {
+        "sourceRepository": { "const": "a1112/Mac-Win" },
         "sourcePath": { "$ref": "#/$defs/relativePath" },
         "sourceCommit": { "$ref": "#/$defs/commit" },
+        "gitBlobOid": { "$ref": "#/$defs/commit" },
+        "gitMode": { "enum": ["100644", "100755"] },
         "sourceSha256": { "$ref": "#/$defs/sha256" },
         "category": { "enum": ["patches", "bottle-schema"] },
         "status": { "const": "deferred" },

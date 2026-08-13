@@ -42,9 +42,20 @@ TASK5_DOCUMENT_PATHS = frozenset(
         "migration/macwin/generated/quarantine.json",
     }
 )
+TASK6_DOCUMENT_PATHS = frozenset(
+    {
+        "migration/macwin/generated/mappings/patches.json",
+        "migration/macwin/generated/mappings/bottle-schemas.json",
+    }
+)
+GENERATED_EVIDENCE_PATHS = TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS
 TASK5_DOCUMENT_SHA256 = {
     "migration/macwin/generated/catalog.json": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
-    "migration/macwin/generated/quarantine.json": "855102faa9e2a72f25c354fde6fe0e8a4fd7c52743650fbd02684d5c973cfee7",
+    "migration/macwin/generated/quarantine.json": "cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b",
+}
+TASK6_DOCUMENT_SHA256 = {
+    "migration/macwin/generated/mappings/patches.json": "c4505c787005d962af5fae3f715f2e7856bbbe790283a21bde75cf214f8a61e2",
+    "migration/macwin/generated/mappings/bottle-schemas.json": "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb",
 }
 TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
 TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
@@ -696,10 +707,10 @@ def _independent_task5_oracle(
         set(quarantine) != {"schemaVersion", "records"}
         or quarantine.get("schemaVersion") != "1"
         or type(records) is not list
-        or len(records) != 17
+        or len(records) < 17
     ):
         raise ValueError("generated quarantine semantics are invalid")
-    for actual, expected in zip(records, expected_records, strict=True):
+    for actual, expected in zip(records[:17], expected_records, strict=True):
         if (
             type(actual) is not dict
             or set(actual)
@@ -719,19 +730,120 @@ def _independent_task5_oracle(
             raise ValueError("generated quarantine record is invalid")
 
 
+def _independent_task6_oracle(
+    source_binding: object,
+    documents: dict[str, bytes],
+) -> None:
+    """Independently close every real Task 6 mapping and quarantine decision."""
+
+    if type(documents) is not dict or set(documents) != GENERATED_EVIDENCE_PATHS:
+        raise ValueError("generated evidence set is invalid")
+    for relative, expected_digest in TASK6_DOCUMENT_SHA256.items():
+        raw = documents.get(relative)
+        if type(raw) is not bytes or hashlib.sha256(raw).hexdigest() != expected_digest:
+            raise ValueError("Task 6 generated evidence digest is invalid")
+    manifest = source_binding.manifest
+    assets = manifest.get("assets") if type(manifest) is dict else None
+    if type(assets) is not list:
+        raise ValueError("source evidence identity is invalid")
+    by_category: dict[str, list[dict[str, object]]] = {
+        "patches": [],
+        "bottle-schema": [],
+        "probes": [],
+        "fixtures": [],
+    }
+    for asset in assets:
+        if type(asset) is not dict:
+            raise ValueError("source evidence identity is invalid")
+        category = asset.get("category")
+        if category in by_category:
+            by_category[category].append(asset)
+    if {key: len(value) for key, value in by_category.items()} != {
+        "patches": 11,
+        "bottle-schema": 4,
+        "probes": 26,
+        "fixtures": 30,
+    }:
+        raise ValueError("Task 6 source coverage is invalid")
+
+    for category, relative, issue, owner in (
+        ("patches", "migration/macwin/generated/mappings/patches.json", "MW-ASSET-002", "compatforge/patches"),
+        ("bottle-schema", "migration/macwin/generated/mappings/bottle-schemas.json", "MW-ASSET-003", "compatforge/bottle-schema"),
+    ):
+        value = _canonical_task5_json(documents[relative])
+        expected = [
+            {
+                "sourceRepository": TASK5_SOURCE_REPOSITORY,
+                "sourcePath": asset["sourcePath"],
+                "sourceCommit": asset["sourceCommit"],
+                "gitBlobOid": asset["gitBlobOid"],
+                "gitMode": asset["gitMode"],
+                "sourceSha256": asset["sha256"],
+                "category": category,
+                "status": "deferred",
+                "targetIssue": issue,
+                "intendedOwner": owner,
+                "license": asset["license"],
+                "provenance": asset["provenance"],
+            }
+            for asset in by_category[category]
+        ]
+        if (
+            set(value) != {"schemaVersion", "records"}
+            or value.get("schemaVersion") != "1"
+            or value.get("records") != expected
+        ):
+            raise ValueError("deferred mapping semantics are invalid")
+
+    quarantine = _canonical_task5_json(
+        documents["migration/macwin/generated/quarantine.json"]
+    )
+    records = quarantine.get("records")
+    if type(records) is not list or len(records) != 73:
+        raise ValueError("Task 6 quarantine coverage is invalid")
+    task6_records = records[17:]
+    task6_assets = sorted(
+        (*by_category["probes"], *by_category["fixtures"]),
+        key=lambda asset: asset["sourcePath"].encode("ascii"),
+    )
+    for record, asset in zip(task6_records, task6_assets, strict=True):
+        evidence = sorted(
+            {
+                f'{asset["sourcePath"]}#license',
+                f'{asset["sourcePath"]}#provenance',
+                *asset["externalRefs"],
+                *asset["developmentDependencies"],
+            },
+            key=lambda value: value.encode("utf-8"),
+        )
+        expected = {
+            "sourcePath": asset["sourcePath"],
+            "sourceCommit": asset["sourceCommit"],
+            "sourceSha256": asset["sha256"],
+            "category": asset["category"],
+            "status": "quarantined",
+            "reason": "missing-license",
+            "evidenceLocators": evidence,
+            "intendedOwner": asset["intendedOwner"],
+            "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+        }
+        if record != expected:
+            raise ValueError("Task 6 quarantine semantics are invalid")
+
+
 def _validated_macwin_generated_evidence_binding(source_binding: object) -> tuple[
     _GeneratedEvidenceBinding | None, list[str]
 ]:
-    """Rebuild, compare, and bind only the two approved Task 5 leaves."""
+    """Rebuild, compare, and bind the additive Task 5/6 evidence leaves."""
 
     try:
         converter, converter_path, converter_raw, converter_identity = (
             _load_task5_converter()
         )
         expected = converter.render_documents(converter.build_conversion(ROOT))
-        if type(expected) is not dict or not TASK5_DOCUMENT_PATHS.issubset(expected):
+        if type(expected) is not dict or not GENERATED_EVIDENCE_PATHS.issubset(expected):
             raise ValueError("generated evidence set is invalid")
-        selected = {relative: expected[relative] for relative in TASK5_DOCUMENT_PATHS}
+        selected = {relative: expected[relative] for relative in GENERATED_EVIDENCE_PATHS}
         if any(
             type(raw) is not bytes or len(raw) > MAX_TASK5_DOCUMENT_BYTES
             for raw in selected.values()
@@ -757,8 +869,12 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
                 raise ValueError("generated evidence bytes do not match")
             leaves[path] = (raw, identity)
             committed[relative] = raw
-        _independent_task5_oracle(source_binding, committed)
-        if len(leaves) != 2:
+        _independent_task5_oracle(
+            source_binding,
+            {relative: committed[relative] for relative in TASK5_DOCUMENT_PATHS},
+        )
+        _independent_task6_oracle(source_binding, committed)
+        if len(leaves) != 4:
             raise ValueError("generated evidence leaf set is invalid")
         binding = _GeneratedEvidenceBinding(
             generated_root,

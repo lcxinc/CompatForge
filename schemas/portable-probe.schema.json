@@ -77,18 +77,20 @@
       "additionalProperties": false,
       "required": ["status"],
       "properties": {
-        "status": { "const": "unresolved" }
+        "status": { "enum": ["reviewed", "unresolved"] }
       }
     },
     "sourceIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sourceRepository", "sourceCommit", "sourcePath", "sourceSha256"],
+      "required": ["sourceRepository", "sourceCommit", "sourcePath", "sourceSha256", "gitBlobOid", "gitMode"],
       "properties": {
         "sourceRepository": { "const": "a1112/Mac-Win" },
         "sourceCommit": { "$ref": "#/$defs/commit" },
         "sourcePath": { "$ref": "#/$defs/relativePath" },
-        "sourceSha256": { "$ref": "#/$defs/sha256" }
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "gitBlobOid": { "$ref": "#/$defs/commit" },
+        "gitMode": { "enum": ["100644", "100755"] }
       }
     }
   }

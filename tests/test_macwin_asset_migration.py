@@ -659,6 +659,9 @@ class MigrationSchemaTests(unittest.TestCase):
             set(record["properties"]["category"]["enum"]),
             {"patches", "bottle-schema"},
         )
+        self.assertTrue(
+            {"sourceRepository", "gitBlobOid", "gitMode"}.issubset(record["required"])
+        )
 
     def test_quarantine_has_fixed_reasons_and_release_evidence(self) -> None:
         schema = self._schema("quarantine.schema.json")
@@ -728,6 +731,8 @@ class MigrationSchemaTests(unittest.TestCase):
                         "sourceCommit",
                         "sourcePath",
                         "sourceSha256",
+                        "gitBlobOid",
+                        "gitMode",
                     },
                 )
                 self.assertEqual(properties["source"], {"$ref": "#/$defs/sourceIdentity"})
@@ -921,6 +926,8 @@ class MigrationSchemaTests(unittest.TestCase):
             "sourceCommit": "d" * 40,
             "sourcePath": "scripts/example.sh",
             "sourceSha256": "a" * 64,
+            "gitBlobOid": "b" * 40,
+            "gitMode": "100755",
         }
         review = {"status": "unresolved"}
         asset = {
@@ -940,8 +947,11 @@ class MigrationSchemaTests(unittest.TestCase):
             "objectPath": "objects/sha256/aa/" + ("a" * 62),
         }
         deferred = {
+            "sourceRepository": "a1112/Mac-Win",
             "sourcePath": "patches/example.patch",
             "sourceCommit": "d" * 40,
+            "gitBlobOid": "b" * 40,
+            "gitMode": "100644",
             "sourceSha256": "a" * 64,
             "category": "patches",
             "status": "deferred",
@@ -1846,6 +1856,8 @@ class MacWinConversionModelTests(unittest.TestCase):
             {
                 "migration/macwin/generated/catalog.json",
                 "migration/macwin/generated/quarantine.json",
+                "migration/macwin/generated/mappings/patches.json",
+                "migration/macwin/generated/mappings/bottle-schemas.json",
             },
         )
 
@@ -2098,6 +2110,8 @@ class MacWinConversionModelTests(unittest.TestCase):
             {
                 "migration/macwin/generated/catalog.json",
                 "migration/macwin/generated/quarantine.json",
+                "migration/macwin/generated/mappings/patches.json",
+                "migration/macwin/generated/mappings/bottle-schemas.json",
             },
         )
         common = _load_macwin_asset_common()
@@ -2112,6 +2126,308 @@ class MacWinConversionModelTests(unittest.TestCase):
             replacement if existing is record else existing for existing in result.records
         )
         return dataclasses.replace(result, records=records)
+
+
+class MacWinPortableAssetTests(unittest.TestCase):
+    EXPECTED_COUNTS = {
+        "probes": 26,
+        "fixtures": 30,
+        "patches": 11,
+        "bottle-schema": 4,
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.common = _load_macwin_asset_common()
+        cls.result = cls.converter.build_conversion(ROOT)
+        cls.assets = {
+            asset.source_path: asset for asset in cls.result.source_pack.assets
+        }
+
+    def test_real_probe_and_fixture_decisions_are_complete_and_exact(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        quarantine = self.common.parse_json_bytes(
+            documents["migration/macwin/generated/quarantine.json"],
+            label="generated quarantine",
+        )
+        records = {
+            record["sourcePath"]: record for record in quarantine["records"]
+        }
+        for category in ("probes", "fixtures"):
+            source_paths = {
+                asset.source_path
+                for asset in self.result.source_pack.assets
+                if asset.category == category
+            }
+            portable_paths = {
+                record.source_path
+                for record in self.result.records
+                if record.category == category and record.status == "converted"
+            }
+            quarantined_paths = {
+                path for path in source_paths if path in records
+            }
+            self.assertEqual(len(source_paths), self.EXPECTED_COUNTS[category])
+            self.assertEqual(portable_paths | quarantined_paths, source_paths)
+            self.assertFalse(portable_paths & quarantined_paths)
+            self.assertEqual(len(portable_paths), 0)
+            self.assertEqual(len(quarantined_paths), len(source_paths))
+            for path in sorted(source_paths):
+                self.assertEqual(records[path]["reason"], "missing-license")
+                self.assertEqual(records[path]["sourceSha256"], self.assets[path].sha256)
+                self.assertEqual(records[path]["sourceCommit"], self.assets[path].source_commit)
+                self.assertEqual(records[path]["intendedOwner"], self.assets[path].intended_owner)
+                expected_evidence = sorted(
+                    {
+                        f"{path}#license",
+                        f"{path}#provenance",
+                        *self.assets[path].external_refs,
+                        *self.assets[path].development_dependencies,
+                    },
+                    key=lambda value: value.encode("utf-8"),
+                )
+                self.assertEqual(records[path]["evidenceLocators"], expected_evidence)
+
+    def test_deferred_patch_and_bottle_mappings_are_closed_and_exact(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        cases = (
+            ("patches", "MW-ASSET-002", "patches.json"),
+            ("bottle-schema", "MW-ASSET-003", "bottle-schemas.json"),
+        )
+        schema = json.loads(
+            (ROOT / "schemas/migration-record.schema.json").read_bytes()
+        )
+        forbidden = {"apply", "runtime", "convert", "write", "executable", "contentPath"}
+        for category, target, name in cases:
+            relative = f"migration/macwin/generated/mappings/{name}"
+            value = self.common.parse_json_bytes(documents[relative], label=relative)
+            self.assertEqual(self.common.canonical_json_bytes(value), documents[relative])
+            MigrationSchemaTests._assert_schema_instance_valid(value, schema, schema)
+            source = [
+                asset
+                for asset in self.result.source_pack.assets
+                if asset.category == category
+            ]
+            self.assertEqual(len(value["records"]), self.EXPECTED_COUNTS[category])
+            self.assertEqual(
+                [record["sourcePath"] for record in value["records"]],
+                [asset.source_path for asset in source],
+            )
+            for record, asset in zip(value["records"], source, strict=True):
+                self.assertEqual(set(record) & forbidden, set())
+                self.assertEqual(record["status"], "deferred")
+                self.assertEqual(record["targetIssue"], target)
+                self.assertEqual(record["sourceCommit"], asset.source_commit)
+                self.assertEqual(record["sourceSha256"], asset.sha256)
+                self.assertEqual(record["sourceRepository"], self.result.source_pack.repository)
+                self.assertEqual(record["gitBlobOid"], asset.git_blob_oid)
+                self.assertEqual(record["gitMode"], asset.git_mode)
+                self.assertEqual(record["intendedOwner"], asset.intended_owner)
+                self.assertEqual(record["license"], {"status": asset.license_status})
+                self.assertEqual(record["provenance"], {"status": asset.provenance_status})
+
+    def test_portable_renderer_is_explicit_non_executable_and_content_addressed(self) -> None:
+        asset = next(
+            asset for asset in self.result.source_pack.assets if asset.category == "probes"
+        )
+        record = next(
+            record for record in self.result.records if record.source_path == asset.source_path
+        )
+        portable = self.converter._portable_document(
+            asset,
+            dataclasses.replace(
+                record,
+                status="converted",
+                action="export-portable-probe",
+                reason=None,
+                evidence_locators=(),
+                release_condition=None,
+            ),
+        )
+        self.assertFalse(portable["executable"])
+        self.assertEqual(portable["source"]["sourceSha256"], asset.sha256)
+        self.assertEqual(portable["source"]["gitBlobOid"], asset.git_blob_oid)
+        self.assertEqual(portable["source"]["gitMode"], asset.git_mode)
+        self.assertEqual(portable["contentSha256"], asset.sha256)
+        self.assertTrue(portable["contentPath"].startswith("migration/macwin/generated/probes/content/sha256/"))
+        self.assertEqual(portable["referencedAssetIds"], [])
+        self.assertEqual(portable["license"], {"status": asset.license_status})
+        self.assertEqual(portable["provenance"], {"status": asset.provenance_status})
+        self.assertEqual(asset.git_mode, "100755")
+        schema = json.loads(
+            (ROOT / "schemas/portable-probe.schema.json").read_bytes()
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(portable, schema, schema)
+
+    def test_rendering_never_executes_or_imports_asset_bytes(self) -> None:
+        with mock.patch.object(
+            subprocess, "run", side_effect=AssertionError("asset executed")
+        ), mock.patch.object(
+            subprocess, "Popen", side_effect=AssertionError("asset executed")
+        ), mock.patch.object(
+            importlib.util, "spec_from_file_location", side_effect=AssertionError("asset imported")
+        ), mock.patch.object(
+            os, "system", side_effect=AssertionError("asset executed")
+        ):
+            documents = self.converter.render_documents(self.result)
+        self.assertIn("migration/macwin/generated/mappings/patches.json", documents)
+        self.assertIn("migration/macwin/generated/mappings/bottle-schemas.json", documents)
+
+    def test_modified_source_rejects_before_any_task6_output_construction(self) -> None:
+        asset = next(
+            asset for asset in self.result.source_pack.assets if asset.category == "probes"
+        )
+        replacement = dataclasses.replace(asset, raw=asset.raw + b"x")
+        source_pack = dataclasses.replace(
+            self.result.source_pack,
+            assets=tuple(
+                replacement if existing is asset else existing
+                for existing in self.result.source_pack.assets
+            ),
+        )
+        with mock.patch.object(
+            self.converter,
+            "_portable_document",
+            side_effect=AssertionError("output constructed before authentication"),
+        ), self.assertRaises(self.converter.ConversionError):
+            self.converter.classify_source_pack(source_pack)
+
+    def test_repository_oracle_closes_task6_leaves_and_scans_extra_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task6-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            self.assertEqual(validator.validate_no_developer_paths(), [])
+
+            mapping = temporary_root / "migration/macwin/generated/mappings/patches.json"
+            original = mapping.read_bytes()
+            mapping.write_bytes(original[:-2] + b" \n")
+            self.assertIn(
+                "Mac-Win generated evidence validation failed",
+                validator.validate_no_developer_paths(),
+            )
+            mapping.write_bytes(original)
+
+            extra = temporary_root / "migration/macwin/generated/probes/extra.json"
+            extra.parent.mkdir()
+            extra.write_bytes(b'{"path":"/Users/' + b'a1-6/unsafe"}\n')
+            errors = validator.validate_no_developer_paths()
+            self.assertTrue(
+                any("contains developer path" in error for error in errors), errors
+            )
+
+    def test_repository_oracle_rejects_self_consistent_forged_task6_mapping(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task6-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            mapping_path = temporary_root / "migration/macwin/generated/mappings/patches.json"
+            mapping = self.common.parse_json_bytes(
+                mapping_path.read_bytes(), label="patch mapping"
+            )
+            mapping["records"][0]["targetIssue"] = "MW-ASSET-003"
+            forged = self.common.canonical_json_bytes(mapping)
+            mapping_path.write_bytes(forged)
+
+            real_loader = validator._load_task5_converter
+            real_converter, path, raw, identity = real_loader()
+
+            class ForgedConverter:
+                @staticmethod
+                def build_conversion(root):
+                    return real_converter.build_conversion(root)
+
+                @staticmethod
+                def render_documents(result):
+                    documents = real_converter.render_documents(result)
+                    documents["migration/macwin/generated/mappings/patches.json"] = forged
+                    return documents
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator,
+                "_load_task5_converter",
+                return_value=(ForgedConverter(), path, raw, identity),
+            ):
+                self.assertIn(
+                    "Mac-Win generated evidence validation failed",
+                    validator.validate_no_developer_paths(),
+                )
+
+    def test_reviewed_portable_assets_quarantine_unclosed_dependency_classes(self) -> None:
+        cases = (
+            ("scripts/inspect-chromium-page.swift", "unresolved-external-reference"),
+            ("scripts/bootstrap-jasp-conan.sh", "unresolved-environment-path"),
+            ("scripts/visual-acceptance-macwin.sh", "absolute-path"),
+        )
+        for path, reason in cases:
+            with self.subTest(path=path):
+                asset = self.assets[path]
+                replacement = dataclasses.replace(
+                    asset, license_status="reviewed", provenance_status="reviewed"
+                )
+                source_pack = dataclasses.replace(
+                    self.result.source_pack,
+                    assets=tuple(
+                        replacement if existing is asset else existing
+                        for existing in self.result.source_pack.assets
+                    ),
+                )
+                result = self.converter.classify_source_pack(source_pack)
+                record = next(
+                    item for item in result.records if item.source_path == path
+                )
+                self.assertEqual(record.status, "quarantined")
+                self.assertEqual(record.reason, reason)
+                self.assertEqual(
+                    record.evidence_locators,
+                    tuple(
+                        sorted(
+                            {*asset.external_refs, *asset.development_dependencies},
+                            key=lambda value: value.encode("utf-8"),
+                        )
+                    ),
+                )
+
+    def test_reviewed_closed_fixture_converts_to_a_schema_valid_inert_manifest(self) -> None:
+        asset = self.assets["scripts/fixtures/meshlab-cube.obj"]
+        replacement = dataclasses.replace(
+            asset, license_status="reviewed", provenance_status="reviewed"
+        )
+        source_pack = dataclasses.replace(
+            self.result.source_pack,
+            assets=tuple(
+                replacement if existing is asset else existing
+                for existing in self.result.source_pack.assets
+            ),
+        )
+        result = self.converter.classify_source_pack(source_pack)
+        record = next(item for item in result.records if item.source_path == asset.source_path)
+        self.assertEqual(record.status, "converted")
+        manifest = self.converter._portable_document(replacement, record)
+        schema = json.loads(
+            (ROOT / "schemas/portable-fixture.schema.json").read_bytes()
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(manifest, schema, schema)
+        self.assertFalse(manifest["executable"])
+        self.assertEqual(manifest["license"], {"status": "reviewed"})
+        self.assertEqual(manifest["provenance"], {"status": "reviewed"})
+        documents = self.converter.render_documents(result)
+        manifest_path = (
+            "migration/macwin/generated/fixtures/"
+            "scripts-fixtures-meshlab-cube-obj.json"
+        )
+        self.assertEqual(
+            self.common.parse_json_bytes(documents[manifest_path], label=manifest_path),
+            manifest,
+        )
+        self.assertEqual(documents[manifest["contentPath"]], replacement.raw)
 
 
 class MacWinRecipeConversionTests(unittest.TestCase):
@@ -2148,7 +2464,15 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         documents = self.converter.render_documents(self.result)
         catalog_path = "migration/macwin/generated/catalog.json"
         quarantine_path = "migration/macwin/generated/quarantine.json"
-        self.assertEqual(set(documents), {catalog_path, quarantine_path})
+        self.assertEqual(
+            set(documents),
+            {
+                catalog_path,
+                quarantine_path,
+                "migration/macwin/generated/mappings/patches.json",
+                "migration/macwin/generated/mappings/bottle-schemas.json",
+            },
+        )
         catalog = self.common.parse_json_bytes(
             documents[catalog_path], label="generated catalog"
         )
@@ -2172,9 +2496,12 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 key=lambda value: value.encode("ascii"),
             ),
         )
-        self.assertEqual(len(quarantine["records"]), 17)
+        catalog_quarantine = [
+            record for record in quarantine["records"] if record["category"] == "catalog"
+        ]
+        self.assertEqual(len(catalog_quarantine), 17)
         self.assertEqual(
-            {record["sourcePath"] for record in quarantine["records"]},
+            {record["sourcePath"] for record in catalog_quarantine},
             {entry["sourcePath"] for entry in catalog["candidates"]},
         )
 
@@ -2238,6 +2565,8 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             {
                 "migration/macwin/generated/catalog.json",
                 "migration/macwin/generated/quarantine.json",
+                "migration/macwin/generated/mappings/patches.json",
+                "migration/macwin/generated/mappings/bottle-schemas.json",
                 recipe_path,
             },
         )
@@ -2705,6 +3034,9 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         quarantine_schema = json.loads(
             (ROOT / "schemas/quarantine.schema.json").read_bytes()
         )
+        mapping_schema = json.loads(
+            (ROOT / "schemas/migration-record.schema.json").read_bytes()
+        )
         for relative, raw in documents.items():
             with self.subTest(path=relative):
                 value = self.common.parse_json_bytes(raw, label=relative)
@@ -2717,12 +3049,16 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                     MigrationSchemaTests._assert_schema_instance_valid(
                         value, quarantine_schema, quarantine_schema
                     )
+                elif "/mappings/" in relative:
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, mapping_schema, mapping_schema
+                    )
                 elif "/recipes/" in relative:
                     MigrationSchemaTests._assert_schema_instance_valid(
                         value, recipe_schema, recipe_schema
                     )
 
-    def test_catalog_digest_traceability_and_task5_scope_are_exact(self) -> None:
+    def test_catalog_digest_traceability_and_task6_scope_are_exact(self) -> None:
         documents = self.converter.render_documents(self.result)
         catalog = self.common.parse_json_bytes(
             documents["migration/macwin/generated/catalog.json"],
@@ -2739,10 +3075,16 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             any(
                 "/probes/" in path
                 or "/fixtures/" in path
-                or "/mappings/" in path
                 or path.endswith("/index.json")
                 for path in documents
             )
+        )
+        self.assertEqual(
+            {path for path in documents if "/mappings/" in path},
+            {
+                "migration/macwin/generated/mappings/patches.json",
+                "migration/macwin/generated/mappings/bottle-schemas.json",
+            },
         )
 
     def test_repository_validator_exempts_only_exact_rebuilt_task5_evidence(self) -> None:
@@ -3370,6 +3712,13 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         generated.mkdir()
         for name in ("catalog.json", "quarantine.json"):
             shutil.copyfile(ROOT / "migration/macwin/generated" / name, generated / name)
+        mappings = generated / "mappings"
+        mappings.mkdir()
+        for name in ("patches.json", "bottle-schemas.json"):
+            shutil.copyfile(
+                ROOT / "migration/macwin/generated/mappings" / name,
+                mappings / name,
+            )
         tools = temporary_root / "tools"
         tools.mkdir()
         for name in (
