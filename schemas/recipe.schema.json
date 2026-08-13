@@ -127,13 +127,41 @@
       "properties": {
         "source": { "type": "string", "format": "uri" },
         "maintainer": { "type": "string" },
-        "reviewedAt": { "type": "string", "format": "date-time" }
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "sourceRepository": { "const": "a1112/Mac-Win" },
+        "sourceCommit": { "$ref": "#/$defs/sourceCommit" },
+        "sourcePath": { "$ref": "#/$defs/relativePath" },
+        "sourceSha256": { "$ref": "#/$defs/sourceSha256" }
+      },
+      "dependentRequired": {
+        "sourceCommit": ["sourcePath", "sourceRepository", "sourceSha256"],
+        "sourcePath": ["sourceCommit", "sourceRepository", "sourceSha256"],
+        "sourceRepository": ["sourceCommit", "sourcePath", "sourceSha256"],
+        "sourceSha256": ["sourceCommit", "sourcePath", "sourceRepository"]
       }
     }
   },
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
     "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "sourceCommit": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sourceSha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!.*(?:^|/)\\.\\.?(?:/|$))[\\x20-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]+(?:/[\\x20-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]+)*$"
+    },
     "action": {
       "type": "object",
       "additionalProperties": false,

@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,465 @@ IMPORT_PROBE_ENVIRONMENT_NAMES = frozenset(
         "WINDIR",
     }
 )
+
+
+def _load_macwin_asset_common():
+    path = ROOT / "tools/macwin_asset_common.py"
+    if not path.is_file():
+        raise AssertionError("Mac-Win migration JSON boundary module is missing")
+    spec = importlib.util.spec_from_file_location("macwin_asset_common_contract", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load Mac-Win migration JSON boundary module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class MigrationJsonBoundaryTests(unittest.TestCase):
+    def test_metadata_limit_is_enforced_before_decoding(self) -> None:
+        common = _load_macwin_asset_common()
+        self.assertEqual(common.MAX_METADATA_BYTES, 1024 * 1024)
+        maximum = common.MAX_METADATA_BYTES
+        exact = b'"' + (b"a" * (maximum - 2)) + b'"'
+        self.assertEqual(len(exact), maximum)
+        self.assertEqual(len(common.parse_json_bytes(exact, "index")), maximum - 2)
+
+        oversized = b"\xff" + (b" " * maximum)
+        self.assertEqual(len(oversized), maximum + 1)
+        with mock.patch.object(common.json, "loads") as loads:
+            with self.assertRaises(common.MigrationError) as caught:
+                common.parse_json_bytes(oversized, "index")
+        loads.assert_not_called()
+        self.assertEqual(str(caught.exception), "metadata exceeds the byte limit")
+        self._assert_stable_error(caught.exception)
+
+    def test_parser_requires_strict_utf8(self) -> None:
+        common = _load_macwin_asset_common()
+        with self.assertRaises(common.MigrationError) as caught:
+            common.parse_json_bytes(b'{"value":"\xff"}', "index")
+        self._assert_stable_error(caught.exception)
+
+    def test_parser_rejects_raw_nested_and_escaped_duplicate_keys(self) -> None:
+        common = _load_macwin_asset_common()
+        cases = (
+            b'{"duplicate":1,"duplicate":2}',
+            b'{"outer":{"duplicate":1,"duplicate":2}}',
+            b'{"duplicate":1,"\\u0064uplicate":2}',
+        )
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises(common.MigrationError) as caught:
+                common.parse_json_bytes(raw, "index")
+            self._assert_stable_error(caught.exception)
+
+    def test_parser_enforces_explicit_depth_before_json_loads(self) -> None:
+        common = _load_macwin_asset_common()
+        self.assertEqual(common.MAX_JSON_DEPTH, 128)
+        at_limit = (b"[" * common.MAX_JSON_DEPTH) + b"0" + (
+            b"]" * common.MAX_JSON_DEPTH
+        )
+        old_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(max(old_limit, 10_000))
+            common.parse_json_bytes(at_limit, "index")
+            too_deep = b"[" + at_limit + b"]"
+            with mock.patch.object(common.json, "loads") as loads:
+                with self.assertRaises(common.MigrationError) as caught:
+                    common.parse_json_bytes(too_deep, "index")
+            loads.assert_not_called()
+        finally:
+            sys.setrecursionlimit(old_limit)
+        self._assert_stable_error(caught.exception)
+
+    def test_depth_prescan_is_string_and_escape_aware(self) -> None:
+        common = _load_macwin_asset_common()
+        value = "[\\\"{not structural}\\\"]"
+        self.assertEqual(
+            common.parse_json_bytes(json.dumps(value).encode("utf-8"), "index"),
+            value,
+        )
+
+    def test_relative_posix_paths_are_host_independent(self) -> None:
+        common = _load_macwin_asset_common()
+        valid = (
+            "MacWinManager/catalog/7zip.json",
+            "migration/macwin/source/objects/sha256/ab/cdef",
+            "a-b_c.1/file name.txt",
+        )
+        for value in valid:
+            with self.subTest(path=value):
+                self.assertEqual(common.require_relative_posix_path(value), value)
+
+        invalid = (
+            "",
+            ".",
+            "..",
+            "/absolute",
+            "//server/share",
+            "C:/drive",
+            "C:\\drive",
+            "\\\\server\\share",
+            "\\\\?\\C:\\device",
+            "folder\\file",
+            "folder:file",
+            "folder//file",
+            "folder/./file",
+            "folder/../file",
+            "folder/",
+            "café/file",
+            "control\x00/file",
+        )
+        for value in invalid:
+            with self.subTest(path=repr(value)), self.assertRaises(common.MigrationError):
+                common.require_relative_posix_path(value)
+
+    def test_canonical_json_is_utf8_sorted_indented_and_lf_terminated(self) -> None:
+        common = _load_macwin_asset_common()
+        value = {"z": [None, True, -7], "é": {"a": "雪"}}
+        self.assertEqual(
+            common.canonical_json_bytes(value),
+            (
+                '{\n'
+                '  "z": [\n'
+                '    null,\n'
+                '    true,\n'
+                '    -7\n'
+                '  ],\n'
+                '  "é": {\n'
+                '    "a": "雪"\n'
+                '  }\n'
+                '}\n'
+            ).encode("utf-8"),
+        )
+
+    def test_canonical_json_rejects_unsupported_or_unbounded_values(self) -> None:
+        common = _load_macwin_asset_common()
+        cycle: list[object] = []
+        cycle.append(cycle)
+        invalid = (
+            1.0,
+            (1,),
+            {1},
+            b"bytes",
+            {1: "non-string key"},
+            common.MAX_JSON_INTEGER + 1,
+            common.MIN_JSON_INTEGER - 1,
+            cycle,
+        )
+        for value in invalid:
+            with self.subTest(value=type(value).__name__), self.assertRaises(
+                common.MigrationError
+            ) as caught:
+                common.canonical_json_bytes(value)
+            self._assert_stable_error(caught.exception)
+
+    def test_canonical_json_enforces_depth_iteratively(self) -> None:
+        common = _load_macwin_asset_common()
+        value: object = 0
+        for _ in range(common.MAX_JSON_DEPTH):
+            value = [value]
+        common.canonical_json_bytes(value)
+        value = [value]
+        with self.assertRaises(common.MigrationError) as caught:
+            common.canonical_json_bytes(value)
+        self._assert_stable_error(caught.exception)
+
+    def test_errors_are_single_line_stable_and_do_not_reflect_input(self) -> None:
+        common = _load_macwin_asset_common()
+        hostile = "secret-key\x1b[31m\r\nsecond-line"
+        raw = json.dumps({hostile: 1}, ensure_ascii=False)[:-1]
+        raw += "," + json.dumps(hostile) + ":2}"
+        messages = []
+        for _ in range(2):
+            with self.assertRaises(common.MigrationError) as caught:
+                common.parse_json_bytes(raw.encode("utf-8"), hostile)
+            messages.append(str(caught.exception))
+            self._assert_stable_error(caught.exception)
+            self.assertNotIn("secret-key", messages[-1])
+        self.assertEqual(messages[0], messages[1])
+
+    def _assert_stable_error(self, error: Exception) -> None:
+        message = str(error)
+        self.assertTrue(message)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\r", message)
+        self.assertNotIn("\x1b", message)
+        self.assertLessEqual(len(message.encode("utf-8")), 160)
+
+
+class MigrationSchemaTests(unittest.TestCase):
+    SCHEMA_NAMES = (
+        "macwin-source-pack.schema.json",
+        "migration-record.schema.json",
+        "quarantine.schema.json",
+        "portable-probe.schema.json",
+        "portable-fixture.schema.json",
+    )
+
+    def test_new_schemas_have_unique_canonical_ids_and_exact_versions(self) -> None:
+        schemas = self._schemas()
+        identifiers = [schema["$id"] for schema in schemas.values()]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        for name, schema in schemas.items():
+            with self.subTest(schema=name):
+                self.assertEqual(
+                    schema["$id"], f"https://compatforge.dev/schemas/{name}"
+                )
+                self.assertEqual(schema["properties"]["schemaVersion"], {"const": "1"})
+                self.assertIn("schemaVersion", schema["required"])
+
+    def test_every_declared_object_boundary_is_closed(self) -> None:
+        for name, schema in self._schemas().items():
+            for location, node in self._walk_schema(schema):
+                if node.get("type") == "object":
+                    with self.subTest(schema=name, location=location):
+                        self.assertIs(node.get("additionalProperties"), False)
+                        self.assertIsInstance(node.get("properties"), dict)
+
+    def test_collections_strings_and_integers_are_explicitly_bounded(self) -> None:
+        for name, schema in self._schemas().items():
+            for location, node in self._walk_schema(schema):
+                node_type = node.get("type")
+                with self.subTest(schema=name, location=location):
+                    if node_type == "array":
+                        self.assertIn("maxItems", node)
+                    elif node_type == "string" and not any(
+                        keyword in node for keyword in ("const", "enum", "$ref")
+                    ):
+                        self.assertIn("maxLength", node)
+                    elif node_type == "integer":
+                        self.assertIn("minimum", node)
+                        self.assertIn("maximum", node)
+
+    def test_all_path_fields_use_the_ascii_relative_posix_contract(self) -> None:
+        for name, schema in self._schemas().items():
+            relative_path = schema["$defs"]["relativePath"]
+            pattern = re.compile(relative_path["pattern"], re.ASCII)
+            self.assertEqual(relative_path["type"], "string", name)
+            for value in (
+                "MacWinManager/catalog/7zip.json",
+                "objects/sha256/ab/cdef",
+            ):
+                self.assertIsNotNone(pattern.fullmatch(value), (name, value))
+            for value in (
+                "",
+                ".",
+                "..",
+                "/absolute",
+                "C:/drive",
+                "C:\\drive",
+                "\\\\server\\share",
+                "\\\\?\\C:\\device",
+                "a\\b",
+                "a:b",
+                "a//b",
+                "a/./b",
+                "a/../b",
+                "a/",
+                "café/file",
+            ):
+                self.assertIsNone(pattern.fullmatch(value), (name, value))
+
+    def test_source_pack_contract_captures_source_identities_and_dependencies(self) -> None:
+        schema = self._schema("macwin-source-pack.schema.json")
+        self.assertEqual(
+            set(schema["required"]),
+            {
+                "schemaVersion",
+                "repository",
+                "sourceTag",
+                "sourceCommit",
+                "inventoryCommit",
+                "digestAlgorithm",
+                "assetCount",
+                "categoryCounts",
+                "assets",
+            },
+        )
+        self.assertEqual(schema["properties"]["repository"], {"const": "a1112/Mac-Win"})
+        self.assertEqual(schema["properties"]["digestAlgorithm"], {"const": "sha256"})
+        self.assertEqual(schema["properties"]["assetCount"], {"const": 90})
+        counts = schema["properties"]["categoryCounts"]
+        self.assertEqual(
+            counts["properties"],
+            {
+                "catalog": {"const": 19},
+                "patches": {"const": 11},
+                "probes": {"const": 26},
+                "fixtures": {"const": 30},
+                "bottleSchema": {"const": 4},
+            },
+        )
+        record = schema["$defs"]["sourceRecord"]
+        self.assertEqual(
+            set(record["required"]),
+            {
+                "category",
+                "sourcePath",
+                "sourceCommit",
+                "gitMode",
+                "gitBlobOid",
+                "sha256",
+                "byteSize",
+                "kind",
+                "license",
+                "provenance",
+                "intendedOwner",
+                "externalRefs",
+                "developmentDependencies",
+                "objectPath",
+            },
+        )
+        self.assertEqual(record["properties"]["externalRefs"]["uniqueItems"], True)
+        self.assertEqual(
+            record["properties"]["developmentDependencies"]["uniqueItems"], True
+        )
+        self.assertEqual(
+            record["properties"]["provenance"], {"$ref": "#/$defs/reviewStatus"}
+        )
+        self.assertEqual(record["properties"]["license"], {"$ref": "#/$defs/reviewStatus"})
+        self.assertEqual(record["properties"]["objectPath"], {"$ref": "#/$defs/objectPath"})
+        object_path = re.compile(schema["$defs"]["objectPath"]["pattern"], re.ASCII)
+        self.assertIsNotNone(
+            object_path.fullmatch("objects/sha256/ab/" + ("c" * 62))
+        )
+        for value in (
+            "migration/macwin/source/objects/sha256/ab/" + ("c" * 62),
+            "objects/sha256/AB/" + ("c" * 62),
+            "objects/sha256/ab/short",
+            "objects/sha1/ab/" + ("c" * 62),
+        ):
+            self.assertIsNone(object_path.fullmatch(value), value)
+
+    def test_migration_records_are_closed_and_deferred_to_fixed_issues(self) -> None:
+        schema = self._schema("migration-record.schema.json")
+        record = schema["$defs"]["record"]
+        self.assertEqual(record["properties"]["status"], {"const": "deferred"})
+        self.assertEqual(
+            set(record["properties"]["targetIssue"]["enum"]),
+            {"MW-ASSET-002", "MW-ASSET-003"},
+        )
+        self.assertEqual(
+            set(record["properties"]["category"]["enum"]),
+            {"patches", "bottle-schema"},
+        )
+
+    def test_quarantine_has_fixed_reasons_and_release_evidence(self) -> None:
+        schema = self._schema("quarantine.schema.json")
+        record = schema["$defs"]["record"]
+        self.assertEqual(record["properties"]["status"], {"const": "quarantined"})
+        self.assertEqual(
+            set(record["properties"]["reason"]["enum"]),
+            {
+                "absolute-path",
+                "mutable-local-installation",
+                "missing-digest",
+                "unresolved-external-reference",
+                "unresolved-environment-path",
+                "missing-license",
+                "missing-provenance",
+                "unsupported-schema",
+                "unsupported-behavior",
+            },
+        )
+        self.assertIn("evidenceLocators", record["required"])
+        self.assertIn("releaseCondition", record["required"])
+
+    def test_probe_and_fixture_contracts_are_non_executable_and_provenanced(self) -> None:
+        expected_kinds = {
+            "portable-probe.schema.json": {
+                "shell",
+                "registry",
+                "source",
+                "binary",
+                "data",
+                "other",
+            },
+            "portable-fixture.schema.json": {
+                "registry",
+                "source",
+                "binary",
+                "data",
+                "other",
+            },
+        }
+        for name, kinds in expected_kinds.items():
+            schema = self._schema(name)
+            properties = schema["properties"]
+            with self.subTest(schema=name):
+                self.assertEqual(properties["executable"], {"const": False})
+                self.assertEqual(set(properties["kind"]["enum"]), kinds)
+                self.assertTrue(
+                    {
+                        "id",
+                        "kind",
+                        "source",
+                        "contentPath",
+                        "contentSha256",
+                        "mediaType",
+                        "executable",
+                        "referencedAssetIds",
+                        "intendedOwner",
+                        "license",
+                        "provenance",
+                    }.issubset(schema["required"])
+                )
+                source = schema["$defs"]["sourceIdentity"]
+                self.assertEqual(
+                    set(source["required"]),
+                    {
+                        "sourceRepository",
+                        "sourceCommit",
+                        "sourcePath",
+                        "sourceSha256",
+                    },
+                )
+                self.assertEqual(properties["source"], {"$ref": "#/$defs/sourceIdentity"})
+                self.assertEqual(properties["license"], {"$ref": "#/$defs/reviewStatus"})
+                self.assertEqual(properties["provenance"], {"$ref": "#/$defs/reviewStatus"})
+
+    def test_recipe_v2_provenance_is_additive_closed_and_all_or_none(self) -> None:
+        recipe = self._schema("recipe.schema.json")
+        self.assertEqual(recipe["properties"]["schemaVersion"], {"const": "2"})
+        self.assertNotIn("provenance", recipe["required"])
+        provenance = recipe["properties"]["provenance"]
+        expected = {
+            "sourceRepository",
+            "sourceCommit",
+            "sourcePath",
+            "sourceSha256",
+        }
+        self.assertIs(provenance["additionalProperties"], False)
+        self.assertTrue(
+            expected.issubset(provenance["properties"]),
+            "source provenance must be additive to the existing Recipe provenance",
+        )
+        self.assertTrue(
+            {"source", "maintainer", "reviewedAt"}.issubset(provenance["properties"])
+        )
+        self.assertNotIn("required", provenance)
+        self.assertEqual(
+            provenance["dependentRequired"],
+            {field: sorted(expected - {field}) for field in sorted(expected)},
+        )
+
+    def _schemas(self) -> dict[str, dict[str, object]]:
+        return {name: self._schema(name) for name in self.SCHEMA_NAMES}
+
+    def _schema(self, name: str) -> dict[str, object]:
+        path = ROOT / "schemas" / name
+        if not path.is_file():
+            raise AssertionError(f"required migration schema is missing: {name}")
+        return json.loads(path.read_bytes())
+
+    @classmethod
+    def _walk_schema(cls, node: object, location: str = "$"):
+        if isinstance(node, dict):
+            yield location, node
+            for key, value in node.items():
+                yield from cls._walk_schema(value, f"{location}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from cls._walk_schema(value, f"{location}/{index}")
 
 
 class MigrationLayoutTests(unittest.TestCase):
