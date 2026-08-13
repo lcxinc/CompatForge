@@ -142,25 +142,25 @@
     }
   },
   "$defs": {
-    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
-    "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])" },
+    "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}(?![\\s\\S])" },
     "sourceCommit": {
       "type": "string",
       "minLength": 40,
       "maxLength": 40,
-      "pattern": "^[0-9a-f]{40}$"
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
     },
     "sourceSha256": {
       "type": "string",
       "minLength": 64,
       "maxLength": 64,
-      "pattern": "^[0-9a-f]{64}$"
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 4096,
-      "pattern": "^(?!.*(?:^|/)\\.\\.?(?:/|$))[\\x20-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]+(?:/[\\x20-\\x2E\\x30-\\x39\\x3B-\\x5B\\x5D-\\x7E]+)*$"
+      "maxLength": 1024,
+      "pattern": "^(?=.{1,1024}(?![\\s\\S]))(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+)*(?![\\s\\S])"
     },
     "action": {
       "type": "object",

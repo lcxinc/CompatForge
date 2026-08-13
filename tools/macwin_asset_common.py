@@ -8,6 +8,7 @@ from typing import NoReturn
 
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_JSON_DEPTH = 128
+MAX_JSON_COLLECTION_ITEMS = 100_000
 MIN_JSON_INTEGER = -(2**63)
 MAX_JSON_INTEGER = (2**63) - 1
 
@@ -72,6 +73,7 @@ def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, obj
 
 def parse_json_bytes(
     raw: bytes,
+    *,
     label: str,
     max_bytes: int = MAX_METADATA_BYTES,
 ) -> object:
@@ -89,7 +91,7 @@ def parse_json_bytes(
 
     _prescan_json_depth(text)
     try:
-        return json.loads(
+        value = json.loads(
             text,
             object_pairs_hook=_object_without_duplicates,
             parse_constant=_reject_constant,
@@ -100,76 +102,138 @@ def parse_json_bytes(
         raise
     except (json.JSONDecodeError, RecursionError, UnicodeError, ValueError, OverflowError):
         _fail("metadata is not valid JSON")
+    _validate_json_strings(value)
+    return value
 
 
-def _validate_canonical_value(value: object) -> None:
-    stack: list[tuple[object, int, bool]] = [(value, 0, False)]
-    active: set[int] = set()
+def _validate_json_strings(value: object) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if type(current) is str:
+            try:
+                current.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                _fail("metadata contains a non-Unicode scalar")
+        elif type(current) is list:
+            pending.extend(current)
+        elif type(current) is dict:
+            pending.extend(current.keys())
+            pending.extend(current.values())
 
-    while stack:
-        current, parent_depth, exiting = stack.pop()
-        current_type = type(current)
-        if current_type in (list, dict):
-            identity = id(current)
-            if exiting:
-                active.remove(identity)
-                continue
-            if identity in active:
-                _fail("canonical JSON contains a reference cycle")
-            depth = parent_depth + 1
-            if depth > MAX_JSON_DEPTH:
-                _fail("canonical JSON exceeds the nesting limit")
-            active.add(identity)
-            stack.append((current, parent_depth, True))
-            if current_type is list:
-                for item in reversed(current):
-                    stack.append((item, depth, False))
-            else:
-                items = list(current.items())
-                for key, item in reversed(items):
-                    if type(key) is not str:
-                        _fail("canonical JSON object keys must be strings")
-                    stack.append((key, depth, False))
-                    stack.append((item, depth, False))
-        elif current is None or current_type in (bool, str):
-            continue
-        elif current_type is int:
-            if current < MIN_JSON_INTEGER or current > MAX_JSON_INTEGER:
-                _fail("canonical JSON contains an out-of-range integer")
-        else:
-            _fail("canonical JSON contains an unsupported value")
+
+def _encoded_json_string(value: str) -> bytes:
+    try:
+        return json.encoder.encode_basestring(value).encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, ValueError, OverflowError):
+        _fail("canonical JSON contains a non-Unicode scalar")
 
 
 def canonical_json_bytes(value: object) -> bytes:
     """Serialize the supported JSON value model to canonical UTF-8/LF bytes."""
 
-    _validate_canonical_value(value)
-    try:
-        rendered = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            indent=2,
-            sort_keys=True,
-        )
-        encoded = (rendered + "\n").encode("utf-8", errors="strict")
-    except (RecursionError, UnicodeError, TypeError, ValueError, OverflowError):
-        _fail("canonical JSON serialization failed")
-    if len(encoded) > MAX_METADATA_BYTES:
-        _fail("canonical JSON exceeds the byte limit")
-    return encoded
+    output = bytearray()
+    active: set[int] = set()
+    stack: list[tuple[object, ...]] = [("value", value, 0)]
+    node_count = 0
+
+    def emit(chunk: bytes) -> None:
+        if len(output) + len(chunk) > MAX_METADATA_BYTES:
+            _fail("canonical JSON exceeds the byte limit")
+        output.extend(chunk)
+
+    while stack:
+        frame = stack.pop()
+        kind = frame[0]
+        if kind == "value":
+            current, parent_depth = frame[1], frame[2]
+            node_count += 1
+            if node_count > MAX_JSON_COLLECTION_ITEMS:
+                _fail("canonical JSON exceeds the collection limit")
+            current_type = type(current)
+            if current is None:
+                emit(b"null")
+            elif current_type is bool:
+                emit(b"true" if current else b"false")
+            elif current_type is int:
+                if current < MIN_JSON_INTEGER or current > MAX_JSON_INTEGER:
+                    _fail("canonical JSON contains an out-of-range integer")
+                emit(str(current).encode("ascii"))
+            elif current_type is str:
+                emit(_encoded_json_string(current))
+            elif current_type in (list, dict):
+                identity = id(current)
+                if identity in active:
+                    _fail("canonical JSON contains a reference cycle")
+                depth = parent_depth + 1
+                if depth > MAX_JSON_DEPTH:
+                    _fail("canonical JSON exceeds the nesting limit")
+                if len(current) > MAX_JSON_COLLECTION_ITEMS:
+                    _fail("canonical JSON exceeds the collection limit")
+                active.add(identity)
+                if current_type is list:
+                    emit(b"[")
+                    if current:
+                        emit(b"\n")
+                        stack.append(("list", current, 0, depth))
+                    else:
+                        active.remove(identity)
+                        emit(b"]")
+                else:
+                    for key in current:
+                        if type(key) is not str:
+                            _fail("canonical JSON object keys must be strings")
+                    try:
+                        keys = tuple(sorted(current))
+                    except (UnicodeError, ValueError, OverflowError):
+                        _fail("canonical JSON key sorting failed")
+                    emit(b"{")
+                    if keys:
+                        emit(b"\n")
+                        stack.append(("object", current, keys, 0, depth))
+                    else:
+                        active.remove(identity)
+                        emit(b"}")
+            else:
+                _fail("canonical JSON contains an unsupported value")
+        elif kind == "list":
+            current, index, depth = frame[1], frame[2], frame[3]
+            if index == len(current):
+                emit(b"\n" + (b" " * (2 * (depth - 1))) + b"]")
+                active.remove(id(current))
+            else:
+                if index:
+                    emit(b",\n")
+                emit(b" " * (2 * depth))
+                stack.append(("list", current, index + 1, depth))
+                stack.append(("value", current[index], depth))
+        else:
+            current, keys, index, depth = frame[1], frame[2], frame[3], frame[4]
+            if index == len(keys):
+                emit(b"\n" + (b" " * (2 * (depth - 1))) + b"}")
+                active.remove(id(current))
+            else:
+                if index:
+                    emit(b",\n")
+                key = keys[index]
+                emit((b" " * (2 * depth)) + _encoded_json_string(key) + b": ")
+                stack.append(("object", current, keys, index + 1, depth))
+                stack.append(("value", current[key], depth))
+
+    emit(b"\n")
+    return bytes(output)
 
 
 def require_relative_posix_path(value: str) -> str:
     """Return an ASCII repository-relative POSIX path or fail closed."""
 
-    if type(value) is not str or not value or len(value) > 4096:
+    if type(value) is not str or not value:
         _fail("path is not a safe relative POSIX path")
     try:
         encoded = value.encode("ascii", errors="strict")
     except UnicodeEncodeError:
         _fail("path is not a safe relative POSIX path")
-    if any(byte < 0x20 or byte == 0x7F for byte in encoded):
+    if len(encoded) > 1024 or any(byte < 0x20 or byte == 0x7F for byte in encoded):
         _fail("path is not a safe relative POSIX path")
     if (
         value.startswith("/")
@@ -177,8 +241,18 @@ def require_relative_posix_path(value: str) -> str:
         or "\\" in value
         or ":" in value
         or "//" in value
+        or any(character in '<>"|?*' for character in value)
     ):
         _fail("path is not a safe relative POSIX path")
-    if any(part in ("", ".", "..") for part in value.split("/")):
-        _fail("path is not a safe relative POSIX path")
+    reserved = {"CON", "PRN", "AUX", "NUL"}
+    reserved.update(f"COM{number}" for number in range(1, 10))
+    reserved.update(f"LPT{number}" for number in range(1, 10))
+    for part in value.split("/"):
+        if (
+            part in ("", ".", "..")
+            or len(part.encode("utf-8")) > 255
+            or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in reserved
+        ):
+            _fail("path is not a safe relative POSIX path")
     return value

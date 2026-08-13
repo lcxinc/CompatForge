@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
@@ -10,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
@@ -45,19 +47,27 @@ def _load_macwin_asset_common():
 
 
 class MigrationJsonBoundaryTests(unittest.TestCase):
+    def test_parser_configuration_is_keyword_only(self) -> None:
+        common = _load_macwin_asset_common()
+        self.assertEqual(common.parse_json_bytes(b"{}", label="index"), {})
+        with self.assertRaises(TypeError):
+            common.parse_json_bytes(b"{}", "index")
+        with self.assertRaises(TypeError):
+            common.parse_json_bytes(b"{}", "index", 1024)
+
     def test_metadata_limit_is_enforced_before_decoding(self) -> None:
         common = _load_macwin_asset_common()
         self.assertEqual(common.MAX_METADATA_BYTES, 1024 * 1024)
         maximum = common.MAX_METADATA_BYTES
         exact = b'"' + (b"a" * (maximum - 2)) + b'"'
         self.assertEqual(len(exact), maximum)
-        self.assertEqual(len(common.parse_json_bytes(exact, "index")), maximum - 2)
+        self.assertEqual(len(common.parse_json_bytes(exact, label="index")), maximum - 2)
 
         oversized = b"\xff" + (b" " * maximum)
         self.assertEqual(len(oversized), maximum + 1)
         with mock.patch.object(common.json, "loads") as loads:
             with self.assertRaises(common.MigrationError) as caught:
-                common.parse_json_bytes(oversized, "index")
+                common.parse_json_bytes(oversized, label="index")
         loads.assert_not_called()
         self.assertEqual(str(caught.exception), "metadata exceeds the byte limit")
         self._assert_stable_error(caught.exception)
@@ -65,8 +75,29 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
     def test_parser_requires_strict_utf8(self) -> None:
         common = _load_macwin_asset_common()
         with self.assertRaises(common.MigrationError) as caught:
-            common.parse_json_bytes(b'{"value":"\xff"}', "index")
+            common.parse_json_bytes(b'{"value":"\xff"}', label="index")
         self._assert_stable_error(caught.exception)
+
+    def test_parser_rejects_surrogates_and_accepts_unicode_scalars(self) -> None:
+        common = _load_macwin_asset_common()
+        for raw in (
+            b'"\\ud800"',
+            b'"\\udfff"',
+            b'{"\\ud800":1}',
+            b'{"nested":["\\udfff"]}',
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaises(common.MigrationError) as caught:
+                    common.parse_json_bytes(raw, label="index")
+                self._assert_stable_error(caught.exception)
+        expected = "\U0001f600"
+        self.assertEqual(
+            common.parse_json_bytes(b'"\\ud83d\\ude00"', label="index"), expected
+        )
+        self.assertEqual(
+            common.parse_json_bytes(('"' + expected + '"').encode("utf-8"), label="index"),
+            expected,
+        )
 
     def test_parser_rejects_raw_nested_and_escaped_duplicate_keys(self) -> None:
         common = _load_macwin_asset_common()
@@ -77,7 +108,7 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
         )
         for raw in cases:
             with self.subTest(raw=raw), self.assertRaises(common.MigrationError) as caught:
-                common.parse_json_bytes(raw, "index")
+                common.parse_json_bytes(raw, label="index")
             self._assert_stable_error(caught.exception)
 
     def test_parser_enforces_explicit_depth_before_json_loads(self) -> None:
@@ -89,11 +120,11 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
         old_limit = sys.getrecursionlimit()
         try:
             sys.setrecursionlimit(max(old_limit, 10_000))
-            common.parse_json_bytes(at_limit, "index")
+            common.parse_json_bytes(at_limit, label="index")
             too_deep = b"[" + at_limit + b"]"
             with mock.patch.object(common.json, "loads") as loads:
                 with self.assertRaises(common.MigrationError) as caught:
-                    common.parse_json_bytes(too_deep, "index")
+                    common.parse_json_bytes(too_deep, label="index")
             loads.assert_not_called()
         finally:
             sys.setrecursionlimit(old_limit)
@@ -103,7 +134,7 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
         common = _load_macwin_asset_common()
         value = "[\\\"{not structural}\\\"]"
         self.assertEqual(
-            common.parse_json_bytes(json.dumps(value).encode("utf-8"), "index"),
+            common.parse_json_bytes(json.dumps(value).encode("utf-8"), label="index"),
             value,
         )
 
@@ -136,10 +167,32 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
             "folder/",
             "café/file",
             "control\x00/file",
+            "CON",
+            "con.txt",
+            "folder/PRN.log",
+            "folder/aux",
+            "folder/NUL.txt",
+            "COM1/file",
+            "folder/lpt9.bin",
+            "folder/name.",
+            "folder/name ",
+            "folder/a<b",
+            "folder/a>b",
+            'folder/a"b',
+            "folder/a|b",
+            "folder/a?b",
+            "folder/a*b",
+            ("a" * 256) + "/file",
+            "/".join(["a" * 255] * 5),
         )
         for value in invalid:
             with self.subTest(path=repr(value)), self.assertRaises(common.MigrationError):
                 common.require_relative_posix_path(value)
+
+        self.assertEqual(
+            common.require_relative_posix_path(("a" * 255) + "/file"),
+            ("a" * 255) + "/file",
+        )
 
     def test_canonical_json_is_utf8_sorted_indented_and_lf_terminated(self) -> None:
         common = _load_macwin_asset_common()
@@ -192,6 +245,28 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
             common.canonical_json_bytes(value)
         self._assert_stable_error(caught.exception)
 
+    def test_canonical_json_enforces_output_budget_without_json_dumps(self) -> None:
+        common = _load_macwin_asset_common()
+        exact = "a" * (common.MAX_METADATA_BYTES - 3)
+        with mock.patch.object(common.json, "dumps", side_effect=AssertionError("not bounded")):
+            encoded = common.canonical_json_bytes(exact)
+            self.assertEqual(len(encoded), common.MAX_METADATA_BYTES)
+            with self.assertRaises(common.MigrationError) as caught:
+                common.canonical_json_bytes(exact + "a")
+        self.assertEqual(str(caught.exception), "canonical JSON exceeds the byte limit")
+
+        wide: object = list(range(100_000))
+        for _ in range(common.MAX_JSON_DEPTH - 1):
+            wide = [wide]
+        tracemalloc.start()
+        try:
+            with self.assertRaises(common.MigrationError):
+                common.canonical_json_bytes(wide)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 8 * common.MAX_METADATA_BYTES)
+
     def test_errors_are_single_line_stable_and_do_not_reflect_input(self) -> None:
         common = _load_macwin_asset_common()
         hostile = "secret-key\x1b[31m\r\nsecond-line"
@@ -200,7 +275,7 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
         messages = []
         for _ in range(2):
             with self.assertRaises(common.MigrationError) as caught:
-                common.parse_json_bytes(raw.encode("utf-8"), hostile)
+                common.parse_json_bytes(raw.encode("utf-8"), label=hostile)
             messages.append(str(caught.exception))
             self._assert_stable_error(caught.exception)
             self.assertNotIn("secret-key", messages[-1])
@@ -287,6 +362,94 @@ class MigrationSchemaTests(unittest.TestCase):
                 "café/file",
             ):
                 self.assertIsNone(pattern.fullmatch(value), (name, value))
+
+    def test_schema_patterns_use_absolute_end_and_reject_hostile_tail(self) -> None:
+        from jsonschema import Draft202012Validator
+
+        for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
+            schema = self._schema(name)
+            Draft202012Validator.check_schema(schema)
+            for location, node in self._walk_schema(schema):
+                pattern = node.get("pattern")
+                if pattern is None:
+                    continue
+                with self.subTest(schema=name, location=location):
+                    self.assertFalse(pattern.endswith("$"))
+                    validator = Draft202012Validator(node)
+                    valid = self._valid_pattern_value(location, pattern)
+                    self.assertFalse(list(validator.iter_errors(valid)), (location, valid))
+                    for suffix in ("\n", "\r", "\x00"):
+                        self.assertTrue(
+                            list(validator.iter_errors(valid + suffix)),
+                            (location, repr(valid + suffix)),
+                        )
+
+    def test_complete_schema_instances_reject_pattern_tail_mutants(self) -> None:
+        from jsonschema import Draft202012Validator
+
+        instances = self._complete_schema_instances()
+        mutations = {
+            "macwin-source-pack.schema.json": lambda value: value.__setitem__(
+                "sourceTag", value["sourceTag"] + "\n"
+            ),
+            "migration-record.schema.json": lambda value: value["records"][0].__setitem__(
+                "sourcePath", value["records"][0]["sourcePath"] + "\n"
+            ),
+            "quarantine.schema.json": lambda value: value["records"][0].__setitem__(
+                "sourceSha256", value["records"][0]["sourceSha256"] + "\n"
+            ),
+            "portable-probe.schema.json": lambda value: value.__setitem__(
+                "mediaType", value["mediaType"] + "\n"
+            ),
+            "portable-fixture.schema.json": lambda value: value["source"].__setitem__(
+                "sourcePath", value["source"]["sourcePath"] + "\n"
+            ),
+            "recipe.schema.json": lambda value: value["provenance"].__setitem__(
+                "sourceCommit", value["provenance"]["sourceCommit"] + "\n"
+            ),
+        }
+        for name, value in instances.items():
+            validator = Draft202012Validator(self._schema(name))
+            with self.subTest(schema=name, case="valid"):
+                self.assertFalse(list(validator.iter_errors(value)))
+            mutant = copy.deepcopy(value)
+            mutations[name](mutant)
+            with self.subTest(schema=name, case="tail-mutant"):
+                self.assertTrue(list(validator.iter_errors(mutant)))
+
+    def test_schema_paths_match_portable_windows_segment_rules(self) -> None:
+        from jsonschema import Draft202012Validator
+
+        valid = ("safe/path.txt", ("a" * 255) + "/file")
+        invalid = (
+            "CON",
+            "con.txt",
+            "folder/PRN.log",
+            "folder/aux",
+            "folder/NUL.txt",
+            "COM1/file",
+            "folder/lpt9.bin",
+            "folder/name.",
+            "folder/name ",
+            "folder/a<b",
+            "folder/a>b",
+            'folder/a"b',
+            "folder/a|b",
+            "folder/a?b",
+            "folder/a*b",
+            ("a" * 256) + "/file",
+            "/".join(["a" * 255] * 5),
+        )
+        for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
+            schema = self._schema(name)
+            contract = schema["$defs"]["relativePath"]
+            validator = Draft202012Validator(contract)
+            for value in valid:
+                with self.subTest(schema=name, valid=value[:20]):
+                    self.assertFalse(list(validator.iter_errors(value)))
+            for value in invalid:
+                with self.subTest(schema=name, invalid=value[:20]):
+                    self.assertTrue(list(validator.iter_errors(value)))
 
     def test_source_pack_contract_captures_source_identities_and_dependencies(self) -> None:
         schema = self._schema("macwin-source-pack.schema.json")
@@ -511,6 +674,123 @@ class MigrationSchemaTests(unittest.TestCase):
         elif isinstance(node, list):
             for index, value in enumerate(node):
                 yield from cls._walk_schema(value, f"{location}/{index}")
+
+    @staticmethod
+    def _valid_pattern_value(location: str, pattern: str) -> str:
+        if location.endswith("/relativePath"):
+            return "safe/path.txt"
+        if location.endswith("/objectPath"):
+            return "objects/sha256/aa/" + ("a" * 62)
+        if "sourceCommit" in location or location.endswith("/commit"):
+            return "a" * 40
+        if "Sha256" in location or location.endswith("/sha256"):
+            return "a" * 64
+        if location.endswith("/gitBlobOid"):
+            return "a" * 40
+        if location.endswith("/id"):
+            return "valid-id"
+        if "mediaType" in location:
+            return "text/plain"
+        if "intendedOwner" in location:
+            return "compatforge/probes"
+        if "sourceTag" in location:
+            return "migration-tag"
+        candidate = "valid"
+        if re.fullmatch(pattern, candidate):
+            return candidate
+        raise AssertionError(f"missing representative value for {location}: {pattern}")
+
+    def _complete_schema_instances(self) -> dict[str, dict[str, object]]:
+        source = {
+            "sourceRepository": "a1112/Mac-Win",
+            "sourceCommit": "d" * 40,
+            "sourcePath": "scripts/example.sh",
+            "sourceSha256": "a" * 64,
+        }
+        review = {"status": "unresolved"}
+        asset = {
+            "category": "probes",
+            "sourcePath": source["sourcePath"],
+            "sourceCommit": source["sourceCommit"],
+            "gitBlobOid": "b" * 40,
+            "sha256": source["sourceSha256"],
+            "byteSize": 1,
+            "gitMode": "100755",
+            "kind": "probe",
+            "license": review,
+            "provenance": review,
+            "intendedOwner": "compatforge/probes",
+            "externalRefs": [],
+            "developmentDependencies": [],
+            "objectPath": "objects/sha256/aa/" + ("a" * 62),
+        }
+        deferred = {
+            "sourcePath": "patches/example.patch",
+            "sourceCommit": "d" * 40,
+            "sourceSha256": "a" * 64,
+            "category": "patches",
+            "status": "deferred",
+            "targetIssue": "MW-ASSET-002",
+            "intendedOwner": "compatforge/patches",
+            "license": review,
+            "provenance": review,
+        }
+        quarantine = {
+            "sourcePath": "scripts/example.sh",
+            "sourceCommit": "d" * 40,
+            "sourceSha256": "a" * 64,
+            "category": "probes",
+            "status": "quarantined",
+            "reason": "unsupported-behavior",
+            "evidenceLocators": ["reviewed evidence"],
+            "intendedOwner": "compatforge/probes",
+            "releaseCondition": "review source semantics",
+        }
+        portable = {
+            "schemaVersion": "1",
+            "id": "portable-example",
+            "kind": "source",
+            "source": source,
+            "contentPath": "migration/macwin/generated/content/example.sh",
+            "contentSha256": "c" * 64,
+            "mediaType": "text/plain",
+            "executable": False,
+            "referencedAssetIds": [],
+            "intendedOwner": "compatforge/probes",
+            "license": review,
+            "provenance": review,
+        }
+        recipe = json.loads((ROOT / "examples/recipes/7zip.json").read_bytes())
+        recipe["provenance"] = {
+            "sourceRepository": "a1112/Mac-Win",
+            "sourceCommit": "d" * 40,
+            "sourcePath": "MacWinManager/catalog/7zip.json",
+            "sourceSha256": "a" * 64,
+        }
+        return {
+            "macwin-source-pack.schema.json": {
+                "schemaVersion": "1",
+                "repository": "a1112/Mac-Win",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceCommit": "d" * 40,
+                "inventoryCommit": "e" * 40,
+                "digestAlgorithm": "sha256",
+                "assetCount": 90,
+                "categoryCounts": {
+                    "catalog": 19,
+                    "patches": 11,
+                    "probes": 26,
+                    "fixtures": 30,
+                    "bottleSchema": 4,
+                },
+                "assets": [copy.deepcopy(asset) for _ in range(90)],
+            },
+            "migration-record.schema.json": {"schemaVersion": "1", "records": [deferred]},
+            "quarantine.schema.json": {"schemaVersion": "1", "records": [quarantine]},
+            "portable-probe.schema.json": portable,
+            "portable-fixture.schema.json": {**copy.deepcopy(portable), "kind": "source"},
+            "recipe.schema.json": recipe,
+        }
 
 
 class MigrationLayoutTests(unittest.TestCase):
