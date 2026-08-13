@@ -1219,7 +1219,7 @@ class MacWinConversionModelTests(unittest.TestCase):
         source_root = (ROOT / "migration/macwin/source").absolute()
         counts: dict[str, int] = {}
         limits: dict[str, set[int]] = {}
-        original = converter._SOURCE_PACK._read_regular_file
+        original = converter._read_and_hold_regular_file
 
         def observe(path, maximum, **options):
             relative = path.absolute().relative_to(source_root).as_posix()
@@ -1228,7 +1228,7 @@ class MacWinConversionModelTests(unittest.TestCase):
             return original(path, maximum, **options)
 
         with mock.patch.object(
-            converter._SOURCE_PACK, "_read_regular_file", side_effect=observe
+            converter, "_read_and_hold_regular_file", side_effect=observe
         ):
             loaded = converter.load_source_pack(ROOT)
         self.assertEqual(len(loaded.assets), 90)
@@ -1260,8 +1260,8 @@ class MacWinConversionModelTests(unittest.TestCase):
     def test_classification_and_rendering_reuse_authenticated_memory_bytes(self) -> None:
         converter = self.converter
         with mock.patch.object(
-            converter._SOURCE_PACK,
-            "_read_regular_file",
+            converter,
+            "_read_and_hold_regular_file",
             side_effect=AssertionError("authenticated source bytes were reread"),
         ):
             result = converter.classify_source_pack(self.source_pack)
@@ -1279,10 +1279,11 @@ class MacWinConversionModelTests(unittest.TestCase):
             source_root.parent.mkdir(parents=True)
             shutil.copytree(ROOT / "migration/macwin/source", source_root)
             target = source_root / PurePosixPath(source_asset.object_path)
-            original_load = converter._load_authenticated_asset_bytes
-            original_read = converter._SOURCE_PACK._read_regular_file
+            original_load = converter._load_authenticated_asset
+            original_read = converter._read_and_hold_regular_file
             target_reads = 0
-            mutated = False
+            mutation_attempted = False
+            mutation_blocked = False
 
             def observe_read(path, maximum, **options):
                 nonlocal target_reads
@@ -1291,25 +1292,206 @@ class MacWinConversionModelTests(unittest.TestCase):
                 return original_read(path, maximum, **options)
 
             def mutate_after_read(root, record, expected_identity):
-                nonlocal mutated
-                raw = original_load(root, record, expected_identity)
+                nonlocal mutation_attempted, mutation_blocked
+                leaf = original_load(root, record, expected_identity)
                 if record["objectPath"] == source_asset.object_path:
-                    target.write_bytes(raw + b"post-read-mutation")
-                    mutated = True
-                return raw
+                    mutation_attempted = True
+                    try:
+                        target.write_bytes(leaf.raw + b"post-read-mutation")
+                    except OSError:
+                        mutation_blocked = True
+                return leaf
 
+            rejected = False
             with mock.patch.object(
-                converter._SOURCE_PACK,
-                "_read_regular_file",
+                converter,
+                "_read_and_hold_regular_file",
                 side_effect=observe_read,
             ), mock.patch.object(
                 converter,
-                "_load_authenticated_asset_bytes",
+                "_load_authenticated_asset",
                 side_effect=mutate_after_read,
-            ), self.assertRaises(converter.ConversionError):
-                converter.load_source_pack(repository_root)
-        self.assertTrue(mutated)
+            ):
+                try:
+                    converter.load_source_pack(repository_root)
+                except converter.ConversionError:
+                    rejected = True
+        self.assertTrue(mutation_attempted)
+        self.assertTrue(mutation_blocked or rejected)
         self.assertEqual(target_reads, 1)
+
+    def test_authentication_window_blocks_or_rejects_restored_mtime_rewrites(self) -> None:
+        converter = self.converter
+        source_asset = self.source_pack.assets[0]
+        cases = (
+            ("index", PurePosixPath("index.json")),
+            ("object", PurePosixPath(source_asset.object_path)),
+        )
+        for name, relative in cases:
+            with self.subTest(leaf=name), tempfile.TemporaryDirectory(
+                prefix=".macwin-converter-test-", dir=ROOT
+            ) as directory:
+                repository_root = Path(directory)
+                source_root = repository_root / "migration/macwin/source"
+                source_root.parent.mkdir(parents=True)
+                shutil.copytree(ROOT / "migration/macwin/source", source_root)
+                target = source_root / relative
+                original = target.read_bytes()
+                original_metadata = target.stat()
+                original_bind = converter._bind_source_tree
+                original_read = converter._read_and_hold_regular_file
+                bind_calls = 0
+                target_reads = 0
+                mutation_attempted = False
+                mutation_blocked = False
+
+                def observe_read(path, maximum, **options):
+                    nonlocal target_reads
+                    if path.absolute() == target.absolute():
+                        target_reads += 1
+                    return original_read(path, maximum, **options)
+
+                def mutate_before_final_bind(root, expected_paths):
+                    nonlocal bind_calls, mutation_attempted, mutation_blocked
+                    bind_calls += 1
+                    if bind_calls == 2:
+                        mutation_attempted = True
+                        mutated = bytes([original[0] ^ 1]) + original[1:]
+                        try:
+                            with target.open("r+b") as stream:
+                                stream.write(mutated)
+                                stream.flush()
+                                os.fsync(stream.fileno())
+                            os.utime(
+                                target,
+                                ns=(
+                                    original_metadata.st_atime_ns,
+                                    original_metadata.st_mtime_ns,
+                                ),
+                            )
+                        except OSError:
+                            mutation_blocked = True
+                    return original_bind(root, expected_paths)
+
+                rejected = False
+                with mock.patch.object(
+                    converter,
+                    "_read_and_hold_regular_file",
+                    side_effect=observe_read,
+                ), mock.patch.object(
+                    converter,
+                    "_bind_source_tree",
+                    side_effect=mutate_before_final_bind,
+                ):
+                    try:
+                        converter.load_source_pack(repository_root)
+                    except converter.ConversionError:
+                        rejected = True
+
+                self.assertTrue(mutation_attempted)
+                self.assertTrue(
+                    mutation_blocked or rejected,
+                    "same-size rewrite with restored mtime was silently accepted",
+                )
+                if os.name == "nt":
+                    self.assertTrue(mutation_blocked)
+                self.assertEqual(target_reads, 1)
+
+    def test_authentication_window_blocks_or_rejects_leaf_replacement(self) -> None:
+        converter = self.converter
+        source_asset = self.source_pack.assets[0]
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-converter-test-", dir=ROOT
+        ) as directory:
+            repository_root = Path(directory)
+            source_root = repository_root / "migration/macwin/source"
+            source_root.parent.mkdir(parents=True)
+            shutil.copytree(ROOT / "migration/macwin/source", source_root)
+            target = source_root / PurePosixPath(source_asset.object_path)
+            replacement = repository_root / "replacement-object"
+            shutil.copyfile(target, replacement)
+            original_bind = converter._bind_source_tree
+            original_read = converter._read_and_hold_regular_file
+            bind_calls = 0
+            target_reads = 0
+            replacement_attempted = False
+            replacement_blocked = False
+
+            def observe_read(path, maximum, **options):
+                nonlocal target_reads
+                if path.absolute() == target.absolute():
+                    target_reads += 1
+                return original_read(path, maximum, **options)
+
+            def replace_before_final_bind(root, expected_paths):
+                nonlocal bind_calls, replacement_attempted, replacement_blocked
+                bind_calls += 1
+                if bind_calls == 2:
+                    replacement_attempted = True
+                    try:
+                        os.replace(replacement, target)
+                    except OSError:
+                        replacement_blocked = True
+                return original_bind(root, expected_paths)
+
+            rejected = False
+            with mock.patch.object(
+                converter,
+                "_read_and_hold_regular_file",
+                side_effect=observe_read,
+            ), mock.patch.object(
+                converter,
+                "_bind_source_tree",
+                side_effect=replace_before_final_bind,
+            ):
+                try:
+                    converter.load_source_pack(repository_root)
+                except converter.ConversionError:
+                    rejected = True
+
+            self.assertTrue(replacement_attempted)
+            self.assertTrue(replacement_blocked or rejected)
+            if os.name == "nt":
+                self.assertTrue(replacement_blocked)
+            self.assertEqual(target_reads, 1)
+
+    def test_held_source_handles_close_after_success_and_failure(self) -> None:
+        converter = self.converter
+        source_asset = self.source_pack.assets[0]
+        for outcome in ("success", "failure"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory(
+                prefix=".macwin-converter-test-", dir=ROOT
+            ) as directory:
+                repository_root = Path(directory)
+                source_root = repository_root / "migration/macwin/source"
+                source_root.parent.mkdir(parents=True)
+                shutil.copytree(ROOT / "migration/macwin/source", source_root)
+                target = source_root / PurePosixPath(source_asset.object_path)
+                original = converter._read_and_hold_regular_file
+                calls = 0
+
+                def fail_after_one_object(path, maximum, **options):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 3:
+                        raise converter.ConversionError("injected load failure")
+                    return original(path, maximum, **options)
+
+                if outcome == "success":
+                    converter.load_source_pack(repository_root)
+                else:
+                    with mock.patch.object(
+                        converter,
+                        "_read_and_hold_regular_file",
+                        side_effect=fail_after_one_object,
+                    ), self.assertRaises(converter.ConversionError):
+                        converter.load_source_pack(repository_root)
+
+                with target.open("r+b"):
+                    pass
+                moved = repository_root / "released-source-object"
+                os.replace(target, moved)
+                os.replace(moved, target)
 
     def test_conversion_is_byte_deterministic_and_has_no_locator_side_effects(self) -> None:
         converter = self.converter

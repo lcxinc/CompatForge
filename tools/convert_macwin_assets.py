@@ -14,6 +14,12 @@ import types
 from typing import NoReturn
 
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+
 sys.dont_write_bytecode = True
 
 ROOT = Path(os.path.abspath(__file__)).parent.parent
@@ -234,26 +240,208 @@ class _SourceTreeBinding:
     leaves: tuple[tuple[str, tuple[int, int, int, int, int, int]], ...]
 
 
-def _load_authenticated_asset_bytes(
+@dataclass(frozen=True, slots=True)
+class _HeldSourceLeaf:
+    path: Path
+    path_identity: tuple[int, int, int, int, int, int]
+    handle_identity: tuple[int, int, int, int, int, int]
+    descriptor: int
+    raw: bytes
+
+
+if os.name == "nt":
+    _GENERIC_READ = 0x80000000
+    _FILE_READ_ATTRIBUTES = 0x0080
+    _FILE_SHARE_READ = 0x00000001
+    _OPEN_EXISTING = 3
+    _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+    _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    _FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+    _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class _FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = (
+            ("file_attributes", wintypes.DWORD),
+            ("reparse_tag", wintypes.DWORD),
+        )
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _CREATE_FILE = _KERNEL32.CreateFileW
+    _CREATE_FILE.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    _CREATE_FILE.restype = wintypes.HANDLE
+    _GET_FILE_INFORMATION = _KERNEL32.GetFileInformationByHandleEx
+    _GET_FILE_INFORMATION.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    _GET_FILE_INFORMATION.restype = wintypes.BOOL
+    _CLOSE_HANDLE = _KERNEL32.CloseHandle
+    _CLOSE_HANDLE.argtypes = (wintypes.HANDLE,)
+    _CLOSE_HANDLE.restype = wintypes.BOOL
+
+
+def _open_source_leaf_descriptor(path: Path) -> int:
+    if os.name != "nt":
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            return os.open(path, flags)
+        except OSError:
+            _fail("source leaf could not be opened safely")
+
+    handle = _CREATE_FILE(
+        str(path),
+        _GENERIC_READ | _FILE_READ_ATTRIBUTES,
+        _FILE_SHARE_READ,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_SEQUENTIAL_SCAN,
+        None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        _fail("source leaf could not be opened safely")
+    transferred = False
+    try:
+        attributes = _FileAttributeTagInfo()
+        if not _GET_FILE_INFORMATION(
+            handle,
+            _FILE_ATTRIBUTE_TAG_INFO_CLASS,
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ):
+            _fail("source leaf handle could not be authenticated")
+        if attributes.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            _fail("source leaf handle is linked")
+        try:
+            descriptor = msvcrt.open_osfhandle(
+                handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+        except OSError:
+            _fail("source leaf handle could not be bound")
+        transferred = True
+        return descriptor
+    finally:
+        if not transferred:
+            _CLOSE_HANDLE(handle)
+
+
+def _read_and_hold_regular_file(
+    path: Path,
+    maximum: int,
+    *,
+    expected_identity: tuple[int, int, int, int, int, int] | None = None,
+) -> _HeldSourceLeaf:
+    """Read one regular leaf once and retain its authenticated open handle."""
+
+    descriptor: int | None = None
+    try:
+        before = _SOURCE_PACK._path_metadata(path)
+        identity = _SOURCE_PACK._file_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > maximum
+            or (expected_identity is not None and identity != expected_identity)
+        ):
+            _fail("source leaf metadata is invalid")
+        descriptor = _open_source_leaf_descriptor(path)
+        opened = os.fstat(descriptor)
+        handle_identity = _SOURCE_PACK._file_identity(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or handle_identity[:4] != identity[:4]
+        ):
+            _fail("source leaf handle identity changed")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            try:
+                chunk = os.read(
+                    descriptor,
+                    min(1024 * 1024, maximum + 1 - total),
+                )
+            except OSError:
+                _fail("source leaf could not be read")
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum:
+                _fail("source leaf exceeds the byte limit")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        final = os.fstat(descriptor)
+        if (
+            _SOURCE_PACK._file_identity(final) != handle_identity
+            or len(raw) != before.st_size
+            or _SOURCE_PACK._file_identity(
+                _SOURCE_PACK._path_metadata(path)
+            )
+            != identity
+        ):
+            _fail("source leaf changed while it was read")
+        held = _HeldSourceLeaf(
+            path.absolute(), identity, handle_identity, descriptor, raw
+        )
+        descriptor = None
+        return held
+    except OSError:
+        _fail("source leaf could not be authenticated")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_held_source_leaf(leaf: _HeldSourceLeaf) -> None:
+    try:
+        descriptor_metadata = os.fstat(leaf.descriptor)
+        path_metadata = _SOURCE_PACK._path_metadata(leaf.path)
+    except OSError:
+        _fail("source leaf binding could not be finalized")
+    if (
+        not stat.S_ISREG(descriptor_metadata.st_mode)
+        or descriptor_metadata.st_nlink != 1
+        or _SOURCE_PACK._file_identity(descriptor_metadata) != leaf.handle_identity
+        or _SOURCE_PACK._file_identity(path_metadata) != leaf.path_identity
+    ):
+        _fail("source leaf binding changed")
+
+
+def _load_authenticated_asset(
     source_root: Path,
     record: dict[str, object],
     expected_identity: tuple[int, int, int, int, int, int],
-) -> bytes:
+) -> _HeldSourceLeaf:
     path = source_root / PurePosixPath(record["objectPath"])
-    before = _SOURCE_PACK._file_identity(_SOURCE_PACK._path_metadata(path))
-    if before != expected_identity:
-        _fail("source asset identity changed")
-    raw = _SOURCE_PACK._read_regular_file(path, _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES)
-    after = _SOURCE_PACK._file_identity(_SOURCE_PACK._path_metadata(path))
+    leaf = _read_and_hold_regular_file(
+        path,
+        _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES,
+        expected_identity=expected_identity,
+    )
+    raw = leaf.raw
     if (
-        after != expected_identity
-        or type(raw) is not bytes
-        or len(raw) != record["byteSize"]
+        len(raw) != record["byteSize"]
         or hashlib.sha256(raw).hexdigest() != record["sha256"]
         or _git_blob_oid(raw) != record["gitBlobOid"]
     ):
+        os.close(leaf.descriptor)
         _fail("source asset content is invalid")
-    return raw
+    return leaf
 
 
 def load_source_pack(repository_root: Path) -> SourcePack:
@@ -262,6 +450,7 @@ def load_source_pack(repository_root: Path) -> SourcePack:
     if not isinstance(repository_root, Path):
         _fail("repository root is invalid")
     source_root = repository_root.absolute() / SOURCE_PACK_RELATIVE
+    held_leaves: list[_HeldSourceLeaf] = []
     try:
         _SOURCE_PACK._validate_path_chain(source_root)
         root_metadata = _SOURCE_PACK._path_metadata(source_root)
@@ -273,14 +462,13 @@ def load_source_pack(repository_root: Path) -> SourcePack:
         index_before = _SOURCE_PACK._file_identity(
             _SOURCE_PACK._path_metadata(index_path)
         )
-        index_raw = _SOURCE_PACK._read_regular_file(
-            index_path, _SOURCE_PACK.MAX_SOURCE_INDEX_BYTES
+        index_leaf = _read_and_hold_regular_file(
+            index_path,
+            _SOURCE_PACK.MAX_SOURCE_INDEX_BYTES,
+            expected_identity=index_before,
         )
-        index_after = _SOURCE_PACK._file_identity(
-            _SOURCE_PACK._path_metadata(index_path)
-        )
-        if index_after != index_before:
-            _fail("source pack index identity changed")
+        held_leaves.append(index_leaf)
+        index_raw = index_leaf.raw
         if (
             hashlib.sha256(index_raw).hexdigest()
             != _SOURCE_PACK.APPROVED_SOURCE_INDEX_SHA256
@@ -310,11 +498,13 @@ def load_source_pack(repository_root: Path) -> SourcePack:
         assets: list[SourceAsset] = []
         total = 0
         for raw_record in manifest["assets"]:
-            raw = _load_authenticated_asset_bytes(
+            leaf = _load_authenticated_asset(
                 source_root,
                 raw_record,
                 leaf_identities[raw_record["objectPath"]],
             )
+            held_leaves.append(leaf)
+            raw = leaf.raw
             total += len(raw)
             if total > _SOURCE_PACK.MAX_TOTAL_SOURCE_BYTES:
                 _fail("source pack total bytes exceed the limit")
@@ -339,23 +529,31 @@ def load_source_pack(repository_root: Path) -> SourcePack:
                     raw=raw,
                 )
             )
+        source_pack = SourcePack(
+            repository=manifest["repository"],
+            source_tag=manifest["sourceTag"],
+            source_tag_object=manifest["sourceTagObject"],
+            source_commit=manifest["sourceCommit"],
+            inventory_commit=manifest["inventoryCommit"],
+            digest_algorithm=manifest["digestAlgorithm"],
+            category_counts=EXPECTED_CATEGORY_COUNTS,
+            assets=tuple(assets),
+        )
+        _validate_source_pack_model(source_pack)
         if _bind_source_tree(source_root, expected_paths) != tree:
             _fail("source pack tree identity changed")
         _SOURCE_PACK._validate_path_chain(source_root)
+        for leaf in held_leaves:
+            _verify_held_source_leaf(leaf)
+        return source_pack
     except _SOURCE_PACK.SourcePackError:
         _fail("source pack is invalid")
-    source_pack = SourcePack(
-        repository=manifest["repository"],
-        source_tag=manifest["sourceTag"],
-        source_tag_object=manifest["sourceTagObject"],
-        source_commit=manifest["sourceCommit"],
-        inventory_commit=manifest["inventoryCommit"],
-        digest_algorithm=manifest["digestAlgorithm"],
-        category_counts=EXPECTED_CATEGORY_COUNTS,
-        assets=tuple(assets),
-    )
-    _validate_source_pack_model(source_pack)
-    return source_pack
+    finally:
+        for leaf in reversed(held_leaves):
+            try:
+                os.close(leaf.descriptor)
+            except OSError:
+                pass
 
 
 def _bind_source_tree(
