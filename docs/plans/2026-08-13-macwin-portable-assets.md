@@ -201,7 +201,21 @@ git commit -s -m "feat: define portable migration contracts"
 - Create: `tools/import_macwin_source_pack.py`
 - Create: `migration/macwin/source/index.json`
 - Create: `migration/macwin/source/objects/sha256/**`
+- Modify: `scripts/validate_repository.py`
 - Modify: `tests/test_macwin_asset_migration.py`
+
+The repository developer-path gate is integrated in this task instead of
+waiting for Task 8 because the exact frozen source bytes and dependency
+evidence intentionally contain reviewed developer-machine locators. This is
+not a subtree exclusion. The validator first performs the complete offline
+source-pack validation: canonical index, exact 90-record/count/mode contract,
+derived object paths, exact referenced object set, and every raw-byte size,
+SHA-256, and Git blob OID. Only after that validation succeeds may the existing
+developer-path scan exempt the validated index and its exact 90 referenced
+content-addressed leaves. Any extra or unreferenced file, index/object drift,
+linked boundary, or source-pack validation failure grants no exemption and
+fails closed. This validation never reads a neighboring repository or uses the
+network.
 
 **Step 1: Write failing source-pack tests**
 
