@@ -4885,6 +4885,59 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
                 self.converter.write_generated_documents(root, self.documents)
             self.assertFalse((parent / "generated").exists())
 
+    def test_new_transaction_binding_failure_removes_every_created_directory(self) -> None:
+        for generated_exists in (True, False):
+            with self.subTest(generated_exists=generated_exists), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                parent = root / "migration/macwin"
+                parent.mkdir(parents=True)
+                generated = parent / "generated"
+                if generated_exists:
+                    generated.mkdir()
+                original = self.converter._hold_generated_directories
+
+                def reject_transaction(paths):
+                    if any(
+                        path.name == ".compatforge-transaction" for path in paths
+                    ):
+                        raise self.converter.ConversionError(
+                            "injected transaction binding failure"
+                        )
+                    return original(paths)
+
+                with mock.patch.object(
+                    self.converter,
+                    "_hold_generated_directories",
+                    side_effect=reject_transaction,
+                ), self.assertRaises(self.converter.ConversionError):
+                    self.converter.write_generated_documents(root, self.documents)
+                self.assertFalse(
+                    (generated / ".compatforge-transaction").exists()
+                )
+                self.assertEqual(generated.exists(), generated_exists)
+
+    def test_new_generated_root_binding_failure_restores_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "migration/macwin"
+            parent.mkdir(parents=True)
+            original = self.converter._open_bound_child
+
+            def reject_generated(parent_binding, name):
+                if name == "generated":
+                    raise self.converter.ConversionError(
+                        "injected generated binding failure"
+                    )
+                return original(parent_binding, name)
+
+            with mock.patch.object(
+                self.converter,
+                "_open_bound_child",
+                side_effect=reject_generated,
+            ), self.assertRaises(self.converter.ConversionError):
+                self.converter.write_generated_documents(root, self.documents)
+            self.assertFalse((parent / "generated").exists())
+
     def test_exact_repeat_is_a_true_noop_for_identity_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -5418,7 +5471,10 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
 
             def swap_before_enumeration(path):
                 nonlocal attacked
-                if not attacked and Path(path) == owned:
+                is_target = (
+                    os.name == "nt" and Path(path) == owned
+                ) or (os.name != "nt" and isinstance(path, int))
+                if not attacked and is_target:
                     attacked = True
                     owned.rename(saved)
                     owned.symlink_to(external, target_is_directory=True)
@@ -5438,21 +5494,34 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
             external = root / "outside"
             external.mkdir()
             generated = parent / "generated"
-            original_mkdir = Path.mkdir
             attacked = False
+            if os.name == "nt":
+                original_mkdir = Path.mkdir
 
-            def swap_parent(path, *args, **kwargs):
-                nonlocal attacked
-                if not attacked and path == generated:
-                    attacked = True
-                    parent.rename(saved)
-                    parent.symlink_to(external, target_is_directory=True)
-                return original_mkdir(path, *args, **kwargs)
+                def swap_parent(path, *args, **kwargs):
+                    nonlocal attacked
+                    if not attacked and path == generated:
+                        attacked = True
+                        parent.rename(saved)
+                        parent.symlink_to(external, target_is_directory=True)
+                    return original_mkdir(path, *args, **kwargs)
 
-            with mock.patch.object(Path, "mkdir", new=swap_parent), self.assertRaises(
-                self.converter.ConversionError
-            ):
+                patcher = mock.patch.object(Path, "mkdir", new=swap_parent)
+            else:
+                original_mkdir = os.mkdir
+
+                def swap_parent(path, *args, **kwargs):
+                    nonlocal attacked
+                    if not attacked and path == "generated":
+                        attacked = True
+                        parent.rename(saved)
+                        parent.symlink_to(external, target_is_directory=True)
+                    return original_mkdir(path, *args, **kwargs)
+
+                patcher = mock.patch.object(os, "mkdir", side_effect=swap_parent)
+            with patcher, self.assertRaises(self.converter.ConversionError):
                 self.converter.write_generated_documents(root, self.documents)
+            self.assertTrue(attacked)
             self.assertFalse((external / "generated").exists())
 
     def test_same_byte_new_inode_substitution_during_atomic_replace_rejects(self) -> None:
@@ -5491,50 +5560,152 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
 
     @staticmethod
     def _ordinary_documents(root: Path) -> dict[str, bytes]:
+        documents, _directories, _metadata = (
+            MacWinMigrationTransactionTests._exact_tree_oracle(root)
+        )
+        return documents
+
+    @staticmethod
+    def _exact_tree_oracle(
+        root: Path,
+    ) -> tuple[
+        dict[str, bytes],
+        set[str],
+        dict[str, tuple[int, int, int, int, int, int]],
+    ]:
         generated = root / "migration/macwin/generated"
-        if not generated.exists() or generated.is_symlink():
-            return {}
-        return {
-            path.relative_to(root).as_posix(): path.read_bytes()
-            for path in generated.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        }
+        try:
+            root_metadata = generated.lstat()
+        except FileNotFoundError:
+            return {}, set(), {}
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or stat.S_ISLNK(root_metadata.st_mode)
+            or getattr(root_metadata, "st_reparse_tag", 0)
+        ):
+            raise AssertionError("generated oracle root is unsafe")
+        documents: dict[str, bytes] = {}
+        directories: set[str] = set()
+        metadata_snapshot: dict[
+            str, tuple[int, int, int, int, int, int]
+        ] = {}
+        pending = [generated]
+        while pending:
+            directory = pending.pop()
+            before = directory.lstat()
+            relative_directory = directory.relative_to(root).as_posix()
+            metadata_snapshot[relative_directory] = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_nlink,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    entry_metadata = path.lstat()
+                    relative = path.relative_to(root).as_posix()
+                    if stat.S_ISLNK(entry_metadata.st_mode) or getattr(
+                        entry_metadata, "st_reparse_tag", 0
+                    ):
+                        raise AssertionError("generated oracle encountered a link")
+                    identity = (
+                        entry_metadata.st_dev,
+                        entry_metadata.st_ino,
+                        entry_metadata.st_size,
+                        entry_metadata.st_nlink,
+                        entry_metadata.st_mtime_ns,
+                        entry_metadata.st_ctime_ns,
+                    )
+                    metadata_snapshot[relative] = identity
+                    if stat.S_ISDIR(entry_metadata.st_mode):
+                        directories.add(relative)
+                        pending.append(path)
+                        continue
+                    if not stat.S_ISREG(entry_metadata.st_mode) or entry_metadata.st_nlink != 1:
+                        raise AssertionError("generated oracle encountered a nonregular leaf")
+                    descriptor = os.open(
+                        path,
+                        os.O_RDONLY
+                        | getattr(os, "O_BINARY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    try:
+                        opened = os.fstat(descriptor)
+                        raw_parts: list[bytes] = []
+                        while True:
+                            chunk = os.read(descriptor, 64 * 1024)
+                            if not chunk:
+                                break
+                            raw_parts.append(chunk)
+                        final = os.fstat(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    after = path.lstat()
+                    after_identity = (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_size,
+                        after.st_nlink,
+                        after.st_mtime_ns,
+                        after.st_ctime_ns,
+                    )
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                        or opened.st_size != entry_metadata.st_size
+                        or (
+                            final.st_dev,
+                            final.st_ino,
+                            final.st_size,
+                            final.st_nlink,
+                            final.st_mtime_ns,
+                            final.st_ctime_ns,
+                        )
+                        != (
+                            opened.st_dev,
+                            opened.st_ino,
+                            opened.st_size,
+                            opened.st_nlink,
+                            opened.st_mtime_ns,
+                            opened.st_ctime_ns,
+                        )
+                        or after_identity != identity
+                    ):
+                        raise AssertionError("generated oracle leaf identity changed")
+                    documents[relative] = b"".join(raw_parts)
+            after_directory = directory.lstat()
+            if (after_directory.st_dev, after_directory.st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                raise AssertionError("generated oracle directory identity changed")
+        return documents, directories, metadata_snapshot
 
     def _assert_no_transaction_artifacts(self, root: Path) -> None:
-        generated = root / "migration/macwin/generated"
-        if generated.exists() and not generated.is_symlink():
-            self.assertFalse(
-                any("compatforge-transaction" in path.name for path in generated.rglob("*"))
+        documents, directories, _metadata = self._exact_tree_oracle(root)
+        self.assertFalse(
+            any(
+                ".compatforge-transaction" in PurePosixPath(path).parts
+                for path in (*documents, *directories)
             )
+        )
 
     @staticmethod
     def _directory_set(root: Path) -> set[str]:
-        generated = root / "migration/macwin/generated"
-        if not generated.exists() or generated.is_symlink():
-            return set()
-        return {
-            path.relative_to(root).as_posix()
-            for path in generated.rglob("*")
-            if path.is_dir() and not path.is_symlink()
-        }
+        _documents, directories, _metadata = (
+            MacWinMigrationTransactionTests._exact_tree_oracle(root)
+        )
+        return directories
 
     @staticmethod
     def _metadata_snapshot(root: Path) -> dict[str, tuple[int, int, int, int, int, int]]:
-        generated = root / "migration/macwin/generated"
-        if not generated.exists():
-            return {}
-        snapshot = {}
-        for path in (generated, *generated.rglob("*")):
-            metadata = path.lstat()
-            snapshot[path.relative_to(root).as_posix()] = (
-                metadata.st_dev,
-                metadata.st_ino,
-                metadata.st_size,
-                metadata.st_nlink,
-                metadata.st_mtime_ns,
-                metadata.st_ctime_ns,
-            )
-        return snapshot
+        _documents, _directories, metadata = (
+            MacWinMigrationTransactionTests._exact_tree_oracle(root)
+        )
+        return metadata
 
 
 class MigrationLayoutTests(unittest.TestCase):

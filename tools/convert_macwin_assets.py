@@ -3166,7 +3166,18 @@ def _mkdir_bound_child(
     except OSError:
         _fail("generated output directory could not be created")
     _verify_held_generated_directories([parent])
-    return _hold_generated_directories([path])[0]
+    try:
+        return _hold_generated_directories([path])[0]
+    except BaseException:
+        try:
+            if os.name == "nt":
+                path.rmdir()
+            else:
+                os.rmdir(name, dir_fd=parent.handle)
+                os.fsync(parent.handle)
+        except OSError:
+            _fail("generated output created directory could not be rolled back")
+        raise
 
 
 def _open_bound_child(
@@ -3248,6 +3259,16 @@ def _bind_generated_root(
         parents.append(generated_binding)
         return generated, created, parents
     except BaseException:
+        if created:
+            try:
+                if os.name == "nt":
+                    generated.rmdir()
+                else:
+                    os.rmdir("generated", dir_fd=parents[-1].handle)
+                    os.fsync(parents[-1].handle)
+            except OSError:
+                _close_generated_directories(parents)
+                _fail("generated output created directory could not be rolled back")
         _close_generated_directories(parents)
         raise
 
@@ -3349,7 +3370,7 @@ def _find_held_directory(
     return next(
         (
             directory
-            for directory in (held or [])
+            for directory in reversed(held or [])
             if directory.path.absolute() == absolute
         ),
         None,
@@ -4064,7 +4085,21 @@ def _install_staged_leaf(
         _verify_held_generated_directories(held_directories)
 
 
-def _remove_entry_without_following(path: Path) -> None:
+@dataclass(slots=True)
+class _CleanupBudget:
+    entries: int = 0
+
+    def consume(self, depth: int) -> None:
+        self.entries += 1
+        if self.entries > _MAX_GENERATED_ENTRIES or depth > 128:
+            _fail("generated output cleanup exceeds its bound")
+
+
+def _remove_entry_without_following(
+    path: Path, budget: _CleanupBudget | None = None
+) -> None:
+    active_budget = budget or _CleanupBudget()
+    active_budget.consume(0)
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -4072,7 +4107,7 @@ def _remove_entry_without_following(path: Path) -> None:
     except OSError:
         _fail("generated output rollback could not inspect an entry")
     if os.name == "nt":
-        _remove_entry_windows(path, metadata)
+        _remove_entry_windows(path, metadata, active_budget, 0)
         return
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
         try:
@@ -4101,7 +4136,9 @@ def _remove_entry_without_following(path: Path) -> None:
         opened = os.fstat(directory_descriptor)
         if _generated_identity(opened)[:2] != _generated_identity(metadata)[:2]:
             _fail("generated output rollback directory changed")
-        _remove_directory_contents_posix(directory_descriptor)
+        _remove_directory_contents_posix(
+            directory_descriptor, active_budget, 1
+        )
         current = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
         if _generated_identity(current)[:2] != _generated_identity(opened)[:2]:
             _fail("generated output rollback directory changed")
@@ -4118,7 +4155,12 @@ def _remove_entry_without_following(path: Path) -> None:
             os.close(parent_descriptor)
 
 
-def _remove_entry_windows(path: Path, expected: os.stat_result) -> None:
+def _remove_entry_windows(
+    path: Path,
+    expected: os.stat_result,
+    budget: _CleanupBudget,
+    depth: int,
+) -> None:
     flags = _FILE_FLAG_OPEN_REPARSE_POINT
     if stat.S_ISDIR(expected.st_mode):
         flags |= _FILE_FLAG_BACKUP_SEMANTICS
@@ -4147,13 +4189,19 @@ def _remove_entry_windows(path: Path, expected: os.stat_result) -> None:
             _fail("generated output rollback entry changed")
         if stat.S_ISDIR(expected.st_mode):
             try:
-                entries = list(os.scandir(path))
+                entries = os.scandir(path)
             except OSError:
                 _fail("generated output rollback directory changed")
-            for entry in entries:
-                child = Path(entry.path)
-                child_metadata = child.lstat()
-                _remove_entry_windows(child, child_metadata)
+            try:
+                for entry in entries:
+                    budget.consume(depth + 1)
+                    child = Path(entry.path)
+                    child_metadata = child.lstat()
+                    _remove_entry_windows(
+                        child, child_metadata, budget, depth + 1
+                    )
+            finally:
+                entries.close()
         disposition = _FileDispositionInfo(True)
         if not _SET_FILE_INFORMATION(
             handle,
@@ -4170,8 +4218,14 @@ def _remove_entry_windows(path: Path, expected: os.stat_result) -> None:
         _CLOSE_HANDLE(handle)
 
 
-def _remove_directory_contents_posix(directory_descriptor: int) -> None:
+def _remove_directory_contents_posix(
+    directory_descriptor: int,
+    budget: _CleanupBudget | None = None,
+    depth: int = 0,
+) -> None:
+    active_budget = budget or _CleanupBudget()
     for entry in os.scandir(directory_descriptor):
+        active_budget.consume(depth)
         metadata = entry.stat(follow_symlinks=False)
         if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
             child = os.open(
@@ -4185,7 +4239,9 @@ def _remove_directory_contents_posix(directory_descriptor: int) -> None:
             try:
                 if _generated_identity(os.fstat(child))[:2] != _generated_identity(metadata)[:2]:
                     _fail("generated output rollback directory changed")
-                _remove_directory_contents_posix(child)
+                _remove_directory_contents_posix(
+                    child, active_budget, depth + 1
+                )
                 current = os.stat(
                     entry.name, dir_fd=directory_descriptor, follow_symlinks=False
                 )
@@ -4274,8 +4330,6 @@ def _restore_generated_snapshot(
             )
         else:
             _remove_entry_without_following(transaction)
-        if held_directories is not None:
-            _verify_held_generated_directories(held_directories)
         restored = _scan_generated_tree(
             generated, root_binding=generated_binding
         )
@@ -4318,7 +4372,13 @@ def _restore_generated_snapshot(
         _close_generated_directories(list(restored_cache.values()))
 
 
-def _remove_child_posix(parent_descriptor: int, name: str) -> None:
+def _remove_child_posix(
+    parent_descriptor: int,
+    name: str,
+    budget: _CleanupBudget | None = None,
+) -> None:
+    active_budget = budget or _CleanupBudget()
+    active_budget.consume(0)
     metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
         child = os.open(
@@ -4332,7 +4392,7 @@ def _remove_child_posix(parent_descriptor: int, name: str) -> None:
         try:
             if _generated_identity(os.fstat(child))[:2] != _generated_identity(metadata)[:2]:
                 _fail("generated output rollback directory changed")
-            _remove_directory_contents_posix(child)
+            _remove_directory_contents_posix(child, active_budget, 1)
             current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
             if _generated_identity(current)[:2] != _generated_identity(metadata)[:2]:
                 _fail("generated output rollback directory changed")
@@ -4557,6 +4617,10 @@ def write_generated_documents(
                     _remove_entry_without_following(directory)
                 else:
                     tail = PurePosixPath(relative)
+                    stale_binding = main_cache.pop(relative, None)
+                    if stale_binding is not None:
+                        held_main.remove(stale_binding)
+                        all_held.remove(stale_binding)
                     parent_key = tail.parent.as_posix()
                     parent_binding = (
                         held_main[3]
@@ -4568,6 +4632,9 @@ def write_generated_documents(
                         os.fsync(parent_binding.handle)
                     except OSError:
                         _fail("generated output stale directory could not be removed")
+                    finally:
+                        if stale_binding is not None:
+                            os.close(stale_binding.handle)
         installed = _scan_generated_tree(
             generated,
             ignore_transaction=True,
