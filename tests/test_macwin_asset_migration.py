@@ -359,6 +359,28 @@ class MigrationSchemaTests(unittest.TestCase):
         ):
             self.assertIsNone(object_path.fullmatch(value), value)
 
+    def test_source_pack_preserves_reviewed_regular_and_executable_git_modes(self) -> None:
+        schema = self._schema("macwin-source-pack.schema.json")
+        record = schema["$defs"]["sourceRecord"]
+        reviewed_mode_counts = {"100644": 79, "100755": 11}
+        self.assertEqual(sum(reviewed_mode_counts.values()), 90)
+
+        git_mode = record["properties"]["gitMode"]
+        self.assertEqual(git_mode, {"enum": ["100644", "100755"]})
+        allowed_modes = set(git_mode["enum"])
+        representative_assets = (
+            {"category": "catalog", "kind": "catalog-record", "gitMode": "100644"},
+            {"category": "probes", "kind": "probe", "gitMode": "100755"},
+        )
+        for asset in representative_assets:
+            with self.subTest(asset=asset):
+                self.assertIn(asset["category"], record["properties"]["category"]["enum"])
+                self.assertIn(asset["kind"], record["properties"]["kind"]["enum"])
+                self.assertIn(asset["gitMode"], allowed_modes)
+        for unknown in ("100600", "100664", "120000", "160000", "100755 "):
+            with self.subTest(gitMode=unknown):
+                self.assertNotIn(unknown, allowed_modes)
+
     def test_migration_records_are_closed_and_deferred_to_fixed_issues(self) -> None:
         schema = self._schema("migration-record.schema.json")
         record = schema["$defs"]["record"]

@@ -118,7 +118,7 @@
           "minimum": 0,
           "maximum": 8388608
         },
-        "gitMode": { "const": "100644" },
+        "gitMode": { "enum": ["100644", "100755"] },
         "kind": {
           "enum": ["catalog-record", "source-patch", "probe", "test-fixture", "bottle-schema"]
         },
