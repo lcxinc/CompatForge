@@ -1613,6 +1613,179 @@ class MacWinConversionModelTests(unittest.TestCase):
         self.assertIs(converter._COMMON, published[0])
         self.assertIs(converter._SOURCE_PACK, published[1])
 
+    def test_two_converter_instances_bootstrap_without_sys_modules_collision(self) -> None:
+        converter_path = ROOT / "tools/convert_macwin_assets.py"
+
+        def load_instance(name):
+            spec = importlib.util.spec_from_file_location(name, converter_path)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.modules.pop(name, None)
+            return module
+
+        converters = (
+            load_instance("macwin_converter_instance_alpha"),
+            load_instance("macwin_converter_instance_beta"),
+        )
+        thread_count = 16
+        ready = threading.Barrier(thread_count)
+        exec_barriers = {
+            "macwin_asset_common.py": threading.Barrier(2),
+            "import_macwin_source_pack.py": threading.Barrier(2),
+        }
+        counts = [{}, {}]
+        count_locks = [threading.Lock(), threading.Lock()]
+        original_loaders = tuple(
+            converter._load_trusted_tool for converter in converters
+        )
+        original_exec = exec
+        baseline_temporary_keys = {
+            key for key in sys.modules if key.startswith("_compatforge_")
+        }
+
+        def synchronized_exec(code, globals_value, locals_value=None):
+            filename = (
+                Path(code.co_filename).name
+                if hasattr(code, "co_filename")
+                else None
+            )
+            barrier = exec_barriers.get(filename)
+            if barrier is not None:
+                barrier.wait(timeout=5)
+            if locals_value is None:
+                return original_exec(code, globals_value)
+            return original_exec(code, globals_value, locals_value)
+
+        wrappers = []
+        for index, original in enumerate(original_loaders):
+            def observed_load(name, *, _index=index, _original=original):
+                with count_locks[_index]:
+                    current = counts[_index]
+                    current[name] = current.get(name, 0) + 1
+                return _original(name)
+
+            wrappers.append(observed_load)
+
+        def worker(index):
+            converter = converters[index]
+            ready.wait(timeout=5)
+            try:
+                result = converter.build_conversion(ROOT)
+                document = converter.render_documents(result)["conversion-ledger.json"]
+            except BaseException as error:
+                return ("error", type(error).__name__, str(error))
+            return (
+                "success",
+                converter._COMMON,
+                converter._SOURCE_PACK,
+                hashlib.sha256(document).hexdigest(),
+            )
+
+        with mock.patch("builtins.exec", side_effect=synchronized_exec), mock.patch.object(
+            converters[0], "_load_trusted_tool", side_effect=wrappers[0]
+        ), mock.patch.object(
+            converters[1], "_load_trusted_tool", side_effect=wrappers[1]
+        ), concurrent.futures.ThreadPoolExecutor(
+            max_workers=thread_count
+        ) as executor:
+            futures = [executor.submit(worker, index % 2) for index in range(thread_count)]
+            results = [future.result(timeout=30) for future in futures]
+
+        self.assertTrue(all(result[0] == "success" for result in results), results)
+        for count in counts:
+            self.assertEqual(
+                count,
+                {
+                    "macwin_asset_common.py": 1,
+                    "import_macwin_source_pack.py": 1,
+                },
+            )
+        for instance_index, converter in enumerate(converters):
+            instance_results = results[instance_index::2]
+            self.assertTrue(
+                all(
+                    result[1] is converter._COMMON
+                    and result[2] is converter._SOURCE_PACK
+                    and result[3] == instance_results[0][3]
+                    for result in instance_results
+                )
+            )
+        self.assertIsNot(converters[0]._COMMON, converters[1]._COMMON)
+        self.assertIsNot(converters[0]._SOURCE_PACK, converters[1]._SOURCE_PACK)
+        self.assertEqual(results[0][3], results[1][3])
+        self.assertEqual(
+            {key for key in sys.modules if key.startswith("_compatforge_")},
+            baseline_temporary_keys,
+        )
+
+    def test_converter_instance_bootstrap_failure_is_isolated_and_retryable(self) -> None:
+        first = _load_macwin_asset_converter()
+        second_path = ROOT / "tools/convert_macwin_assets.py"
+        spec = importlib.util.spec_from_file_location(
+            "macwin_converter_failure_isolation", second_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        second = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = second
+        try:
+            spec.loader.exec_module(second)
+        finally:
+            sys.modules.pop(spec.name, None)
+
+        ready = threading.Barrier(2)
+        original_first = first._load_trusted_tool
+        first_importer_attempts = 0
+
+        def corrupt_first(name):
+            nonlocal first_importer_attempts
+            if name == "import_macwin_source_pack.py":
+                first_importer_attempts += 1
+                if first_importer_attempts == 1:
+                    raise RuntimeError("corrupt isolated sibling")
+            return original_first(name)
+
+        def run_first():
+            ready.wait(timeout=5)
+            try:
+                first._bootstrap_dependencies()
+            except first.ConversionError as error:
+                return ("failure", str(error), first._COMMON, first._SOURCE_PACK)
+            return ("success", first._COMMON, first._SOURCE_PACK)
+
+        def run_second():
+            ready.wait(timeout=5)
+            try:
+                result = second.build_conversion(ROOT)
+            except BaseException as error:
+                return ("error", type(error).__name__, str(error))
+            return ("success", second._COMMON, second._SOURCE_PACK, len(result.records))
+
+        with mock.patch.object(
+            first, "_load_trusted_tool", side_effect=corrupt_first
+        ), concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(run_first)
+            second_future = executor.submit(run_second)
+            first_result = first_future.result(timeout=30)
+            second_result = second_future.result(timeout=30)
+
+        self.assertEqual(
+            first_result,
+            ("failure", "migration dependencies are unavailable", None, None),
+        )
+        self.assertEqual(second_result[0], "success", second_result)
+        self.assertEqual(second_result[3], 90)
+        first._bootstrap_dependencies()
+        self.assertIsNotNone(first._COMMON)
+        self.assertIsNotNone(first._SOURCE_PACK)
+        self.assertIsNot(first._COMMON, second._COMMON)
+        self.assertIsNot(first._SOURCE_PACK, second._SOURCE_PACK)
+
     def test_each_source_leaf_is_read_once_by_the_bounded_bottom_primitive(self) -> None:
         converter = self.converter
         source_root = (ROOT / "migration/macwin/source").absolute()

@@ -75,6 +75,7 @@ QUARANTINE_REASONS = frozenset(
 STATUSES = frozenset({"converted", "deferred", "quarantined"})
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
+_LOADER_IDENTITY = object()
 
 
 class ConversionError(ValueError):
@@ -155,7 +156,11 @@ def _load_trusted_tool(name: str):
         ) != identity:
             raise OSError
 
-        module_name = f"_compatforge_{name.removesuffix('.py')}"
+        module_name = (
+            f"_compatforge_{name.removesuffix('.py')}_{id(_LOADER_IDENTITY):x}"
+        )
+        if module_name in sys.modules:
+            raise RuntimeError
         module = types.ModuleType(module_name)
         module.__file__ = str(path)
         module.__package__ = ""
@@ -163,7 +168,8 @@ def _load_trusted_tool(name: str):
         try:
             exec(compile(b"".join(chunks), str(path), "exec"), module.__dict__)
         finally:
-            sys.modules.pop(module_name, None)
+            if sys.modules.get(module_name) is module:
+                sys.modules.pop(module_name, None)
         return module
     except BaseException:
         raise RuntimeError("migration dependency could not be loaded") from None
