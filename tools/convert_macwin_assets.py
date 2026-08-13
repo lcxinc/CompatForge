@@ -374,6 +374,11 @@ class ConversionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _GeneratedGraphSeal:
+    entries: tuple[tuple[str, int, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RecipeFinding:
     reason: str
     evidence_locator: str
@@ -1065,6 +1070,45 @@ def _expected_graph_records(result: ConversionResult) -> list[dict[str, object]]
     return records
 
 
+def _expected_generated_paths(result: ConversionResult) -> set[str]:
+    """Derive the complete path set from authenticated ledger identities."""
+
+    assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    paths = {
+        f"{GENERATED_ROOT}/catalog.json",
+        f"{GENERATED_ROOT}/quarantine.json",
+        f"{GENERATED_ROOT}/mappings/patches.json",
+        f"{GENERATED_ROOT}/mappings/bottle-schemas.json",
+    }
+    for record in result.records:
+        if record.status != "converted" or record.output_kind == "catalog-boundary":
+            continue
+        if record.output_kind == "recipe":
+            source = _parse_json_object(assets[record.source_path])
+            identifier = source.get("id")
+            if type(identifier) is not str:
+                _fail("generated Recipe graph identity is invalid")
+            additions = (f"{GENERATED_ROOT}/recipes/{identifier}.json",)
+        elif record.output_kind in {"portable-probe", "portable-fixture"}:
+            table = PORTABLE_ASSET_TABLE.get(record.source_path)
+            if type(table) is not tuple or len(table) != 3:
+                _fail("portable asset graph identity is invalid")
+            identifier = table[0]
+            category = "probes" if record.category == "probes" else "fixtures"
+            additions = (
+                f"{GENERATED_ROOT}/{category}/{identifier}.json",
+                f"{GENERATED_ROOT}/{category}/content/sha256/"
+                f"{record.source_sha256[:2]}/{record.source_sha256[2:]}",
+            )
+        else:
+            _fail("generated record output is invalid")
+        for path in additions:
+            if path in paths:
+                _fail("generated output identity is duplicated")
+            paths.add(path)
+    return paths
+
+
 def _portable_manifest_paths(
     documents: dict[str, bytes],
 ) -> dict[str, str]:
@@ -1129,6 +1173,137 @@ def _render_generated_root_index(
     }
 
 
+def _authenticate_generated_graph_seal(
+    documents: dict[str, bytes], result: ConversionResult
+) -> tuple[_GeneratedGraphSeal, dict[str, object]]:
+    """Authenticate the root and all dependent byte seals before leaf parsing."""
+
+    if type(documents) is not dict or GENERATED_INDEX_PATH not in documents:
+        _fail("generated graph set is invalid")
+    if any(type(path) is not str or type(raw) is not bytes for path, raw in documents.items()):
+        _fail("generated graph set is invalid")
+    if list(documents) != sorted(documents, key=lambda value: value.encode("ascii")):
+        _fail("generated graph order is invalid")
+    index_raw = documents[GENERATED_INDEX_PATH]
+    if len(index_raw) > _COMMON.MAX_METADATA_BYTES:
+        _fail("generated root index is oversized")
+    try:
+        root = _COMMON.parse_json_bytes(index_raw, label="generated root index")
+        if _COMMON.canonical_json_bytes(root) != index_raw:
+            _fail("generated root index is not canonical")
+    except _COMMON.MigrationError:
+        _fail("generated root index is invalid")
+    root_fields = {
+        "schemaVersion", "source", "recordCount", "categoryCounts",
+        "statusCounts", "documentCount", "documents", "records",
+    }
+    if type(root) is not dict or set(root) != root_fields:
+        _fail("generated root index fields are invalid")
+    source_pack = result.source_pack
+    status_counts = {status: 0 for status in sorted(STATUSES)}
+    for record in result.records:
+        status_counts[record.status] += 1
+    expected_identity = {
+        "schemaVersion": "1",
+        "source": {
+            "repository": source_pack.repository,
+            "sourceTag": source_pack.source_tag,
+            "sourceTagObject": source_pack.source_tag_object,
+            "sourceCommit": source_pack.source_commit,
+            "inventoryCommit": source_pack.inventory_commit,
+            "digestAlgorithm": source_pack.digest_algorithm,
+        },
+        "recordCount": len(result.records),
+        "categoryCounts": {
+            "bottleSchema": dict(source_pack.category_counts)["bottle-schema"],
+            "catalog": dict(source_pack.category_counts)["catalog"],
+            "fixtures": dict(source_pack.category_counts)["fixtures"],
+            "patches": dict(source_pack.category_counts)["patches"],
+            "probes": dict(source_pack.category_counts)["probes"],
+        },
+        "statusCounts": status_counts,
+        "records": _expected_graph_records(result),
+    }
+    source = root.get("source")
+    category_counts = root.get("categoryCounts")
+    actual_status_counts = root.get("statusCounts")
+    records = root.get("records")
+    if (
+        type(root.get("schemaVersion")) is not str
+        or type(source) is not dict
+        or set(source) != set(expected_identity["source"])
+        or any(type(value) is not str for value in source.values())
+        or type(root.get("recordCount")) is not int
+        or type(root.get("documentCount")) is not int
+        or type(category_counts) is not dict
+        or set(category_counts) != set(expected_identity["categoryCounts"])
+        or any(type(value) is not int for value in category_counts.values())
+        or type(actual_status_counts) is not dict
+        or set(actual_status_counts) != set(expected_identity["statusCounts"])
+        or any(type(value) is not int for value in actual_status_counts.values())
+        or type(records) is not list
+        or any(
+            type(record) is not dict
+            or set(record)
+            != {
+                "sourcePath", "sourceCommit", "sourceSha256", "category",
+                "status", "documentPath",
+            }
+            or any(type(value) is not str for value in record.values())
+            for record in records
+        )
+        or any(root.get(field) != value for field, value in expected_identity.items())
+    ):
+        _fail("generated root index identity is invalid")
+    leaves = {path: raw for path, raw in documents.items() if path != GENERATED_INDEX_PATH}
+    expected_paths = _expected_generated_paths(result)
+    if set(leaves) != expected_paths:
+        _fail("generated document coverage is invalid")
+    entries = root["documents"]
+    if (
+        type(entries) is not list
+        or root["documentCount"] != len(expected_paths)
+        or len(entries) != len(expected_paths)
+    ):
+        _fail("generated document index is invalid")
+    seals = [(GENERATED_INDEX_PATH, len(index_raw), hashlib.sha256(index_raw).hexdigest())]
+    indexed_paths: list[str] = []
+    for entry in entries:
+        if type(entry) is not dict or set(entry) != {
+            "path", "kind", "byteSize", "sha256", "references"
+        }:
+            _fail("generated document record is invalid")
+        path = entry["path"]
+        references = entry["references"]
+        kind = entry["kind"]
+        maximum = (
+            _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES
+            if kind == "portable-content"
+            else _COMMON.MAX_METADATA_BYTES
+        )
+        if (
+            type(path) is not str
+            or path not in expected_paths
+            or type(kind) is not str
+            or kind != _graph_document_kind(path)
+            or type(entry["byteSize"]) is not int
+            or not 0 <= entry["byteSize"] <= maximum
+            or type(entry["sha256"]) is not str
+            or _HEX_64.fullmatch(entry["sha256"]) is None
+            or type(references) is not list
+            or any(type(reference) is not str for reference in references)
+            or references != sorted(set(references), key=lambda value: value.encode("ascii"))
+        ):
+            _fail("generated document record is invalid")
+        indexed_paths.append(path)
+        seals.append((path, entry["byteSize"], entry["sha256"]))
+    if indexed_paths != sorted(expected_paths, key=lambda value: value.encode("ascii")):
+        _fail("generated document coverage is invalid")
+    seal = _GeneratedGraphSeal(tuple(sorted(seals, key=lambda item: item[0].encode("ascii"))))
+    _validate_generated_graph_seal(documents, seal)
+    return seal, root
+
+
 def validate_generated_graph(
     documents: dict[str, bytes], source_pack: SourcePack
 ) -> None:
@@ -1136,16 +1311,10 @@ def validate_generated_graph(
 
     _bootstrap_dependencies()
     _validate_source_pack_model(source_pack)
-    if type(documents) is not dict or GENERATED_INDEX_PATH not in documents:
-        _fail("generated graph set is invalid")
-    if any(type(path) is not str or type(raw) is not bytes for path, raw in documents.items()):
-        _fail("generated graph set is invalid")
-    if list(documents) != sorted(documents, key=lambda value: value.encode("ascii")):
-        _fail("generated graph order is invalid")
+    result = classify_source_pack(source_pack)
+    _seal, root = _authenticate_generated_graph_seal(documents, result)
     leaves = {path: raw for path, raw in documents.items() if path != GENERATED_INDEX_PATH}
-    if not leaves:
-        _fail("generated graph is empty")
-    for path, raw in documents.items():
+    for path, raw in leaves.items():
         try:
             _COMMON.require_relative_posix_path(path)
         except _COMMON.MigrationError:
@@ -1161,25 +1330,6 @@ def validate_generated_graph(
                     _fail("generated graph JSON is not canonical")
             except _COMMON.MigrationError:
                 _fail("generated graph JSON is invalid")
-    try:
-        root = _COMMON.parse_json_bytes(
-            documents[GENERATED_INDEX_PATH], label="generated root index"
-        )
-    except _COMMON.MigrationError:
-        _fail("generated root index is invalid")
-    root_fields = {
-        "schemaVersion",
-        "source",
-        "recordCount",
-        "categoryCounts",
-        "statusCounts",
-        "documentCount",
-        "documents",
-        "records",
-    }
-    if type(root) is not dict or set(root) != root_fields:
-        _fail("generated root index fields are invalid")
-    result = classify_source_pack(source_pack)
     expected_root = _render_generated_root_index(leaves, result)
     if root != expected_root:
         _fail("generated root index semantics are invalid")
@@ -1264,6 +1414,25 @@ def validate_generated_graph(
                 _fail("generated Recipe graph is invalid")
             if leaves.get(path) != expected:
                 _fail("generated Recipe graph is invalid")
+
+
+def _validate_generated_graph_seal(
+    documents: dict[str, bytes], seal: _GeneratedGraphSeal
+) -> None:
+    """Reject drift against a previously fully authenticated graph in one pass."""
+
+    if type(documents) is not dict or type(seal) is not _GeneratedGraphSeal:
+        _fail("generated graph seal is invalid")
+    if tuple(documents) != tuple(entry[0] for entry in seal.entries):
+        _fail("generated graph seal is invalid")
+    for path, size, digest in seal.entries:
+        raw = documents.get(path)
+        if (
+            type(raw) is not bytes
+            or len(raw) != size
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            _fail("generated graph seal changed")
 
 
 def _portable_document(

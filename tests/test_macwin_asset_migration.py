@@ -2439,7 +2439,7 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     validator.validate_no_developer_paths(),
                 )
 
-    def test_repository_oracle_requires_the_exact_committed_task6_tree(self) -> None:
+    def test_repository_oracle_requires_the_exact_committed_task7_tree(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         fixed = (
             "catalog.json",
@@ -2467,6 +2467,28 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     "Mac-Win generated evidence validation failed",
                     validator.validate_no_developer_paths(),
                 )
+
+    def test_task6_suboracle_remains_an_exact_reusable_four_leaf_oracle(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task6-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            full = self.converter.render_documents(
+                self.converter.build_conversion(temporary_root)
+            )
+            task6 = {
+                path: full[path]
+                for path in validator.TASK6_EVIDENCE_PATHS
+            }
+            validator._independent_task6_oracle(source_binding, task6)
+            with self.assertRaises(ValueError):
+                validator._independent_task6_oracle(source_binding, full)
 
     def test_repository_oracle_rejects_an_extra_generated_link(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -2556,6 +2578,30 @@ class MacWinPortableAssetTests(unittest.TestCase):
             manifest,
         )
         self.assertEqual(documents[manifest["contentPath"]], replacement.raw)
+
+    def test_portable_content_uses_the_source_object_limit_not_metadata_limit(self) -> None:
+        asset = self.assets["scripts/fixtures/meshlab-cube.obj"]
+        raw = b"x" * (self.common.MAX_METADATA_BYTES + 1)
+        digest = hashlib.sha256(raw).hexdigest()
+        replacement = dataclasses.replace(
+            asset,
+            raw=raw,
+            byte_size=len(raw),
+            sha256=digest,
+            git_blob_oid=self.converter._git_blob_oid(raw),
+            object_path=f"objects/sha256/{digest[:2]}/{digest[2:]}",
+            license_status="reviewed",
+            provenance_status="reviewed",
+        )
+        result = self.converter.classify_source_pack(
+            self._replace_asset(self.result.source_pack, asset, replacement)
+        )
+        documents = self.converter.render_documents(result)
+        content_path = (
+            "migration/macwin/generated/fixtures/content/sha256/"
+            f"{digest[:2]}/{digest[2:]}"
+        )
+        self.assertEqual(documents[content_path], raw)
 
     def test_reviewed_closed_probe_and_fixture_use_the_real_portable_renderer(self) -> None:
         paths = (
@@ -4396,6 +4442,40 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
             with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
                 self.converter.validate_generated_graph(documents, self.result.source_pack)
 
+    def test_root_count_types_reject_canonical_float_and_boolean_mutants(self) -> None:
+        original = self.converter.render_documents(self.result)
+        paths = (
+            ("recordCount",),
+            ("documentCount",),
+            ("categoryCounts", "catalog"),
+            ("statusCounts", "quarantined"),
+        )
+        for path in paths:
+            root_value = self._parse_root(original)
+            target_value = root_value
+            for component in path:
+                target_value = target_value[component]
+            for mutant_value in (float(target_value), True):
+                with self.subTest(path=path, value=mutant_value):
+                    root = copy.deepcopy(root_value)
+                    target = root
+                    for component in path[:-1]:
+                        target = target[component]
+                    target[path[-1]] = mutant_value
+                    documents = {
+                        **original,
+                        self.INDEX_PATH: (
+                            json.dumps(
+                                root, ensure_ascii=False, indent=2, sort_keys=True
+                            ).encode("utf-8")
+                            + b"\n"
+                        ),
+                    }
+                    with self.assertRaises(self.converter.ConversionError):
+                        self.converter.validate_generated_graph(
+                            documents, self.result.source_pack
+                        )
+
     def test_dangling_duplicate_and_circular_references_reject(self) -> None:
         original = self.converter.render_documents(self.result)
         root = self._parse_root(original)
@@ -4441,19 +4521,68 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
         with self.assertRaises(self.converter.ConversionError):
             self.converter.validate_generated_graph(documents, self.result.source_pack)
 
-    def test_whole_file_seal_mutation_flips_every_byte_of_every_json(self) -> None:
+    def test_self_consistent_resealed_extra_document_rejects(self) -> None:
         original = self.converter.render_documents(self.result)
-        for path, raw in original.items():
-            with self.subTest(path=path):
-                self.assertTrue(path.endswith(".json"))
-                mutant = bytes(value ^ 1 for value in raw)
-                self.assertEqual(len(mutant), len(raw))
-                self.assertTrue(all(left != right for left, right in zip(raw, mutant)))
-                documents = {**original, path: mutant}
+        cases = {
+            "mapping": {
+                "migration/macwin/generated/mappings/extra.json": b"{}\n"
+            },
+            "recipe": {
+                "migration/macwin/generated/recipes/extra.json": b"{}\n"
+            },
+            "raw": {
+                "migration/macwin/generated/probes/content/sha256/00/"
+                + "0" * 62: b"extra"
+            },
+            "manifest-and-raw": {
+                "migration/macwin/generated/probes/extra.json": (
+                    b'{"contentPath":"migration/macwin/generated/probes/content/'
+                    b'sha256/00/' + b'0' * 62
+                    + b'","id":"extra","referencedAssetIds":[]}\n'
+                ),
+                "migration/macwin/generated/probes/content/sha256/00/"
+                + "0" * 62: b"extra",
+            },
+        }
+        for name, extras in cases.items():
+            with self.subTest(case=name):
+                leaves = {
+                    path: raw
+                    for path, raw in original.items()
+                    if path != self.INDEX_PATH
+                }
+                leaves.update(extras)
+                root = self.converter._render_generated_root_index(leaves, self.result)
+                documents = dict(
+                    sorted(
+                        {
+                            **leaves,
+                            self.INDEX_PATH: self.common.canonical_json_bytes(root),
+                        }.items(),
+                        key=lambda item: item[0].encode("ascii"),
+                    )
+                )
                 with self.assertRaises(self.converter.ConversionError):
                     self.converter.validate_generated_graph(
                         documents, self.result.source_pack
                     )
+
+    def test_exhaustive_single_byte_drift_rejects_through_authenticated_seals(self) -> None:
+        original = self.converter.render_documents(self.result)
+        seal, _root = self.converter._authenticate_generated_graph_seal(
+            original, self.result
+        )
+        mutations = 0
+        for path, raw in original.items():
+            self.assertTrue(path.endswith(".json"))
+            for offset in range(len(raw)):
+                mutant = bytearray(raw)
+                mutant[offset] ^= 1
+                documents = {**original, path: bytes(mutant)}
+                with self.assertRaises(self.converter.ConversionError):
+                    self.converter._validate_generated_graph_seal(documents, seal)
+                mutations += 1
+        self.assertEqual(mutations, sum(map(len, original.values())))
 
     def test_committed_generated_set_exactly_matches_renderer(self) -> None:
         documents = self.converter.render_documents(self.result)

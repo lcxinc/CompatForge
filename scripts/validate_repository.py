@@ -51,9 +51,8 @@ TASK6_DOCUMENT_PATHS = frozenset(
 TASK7_DOCUMENT_PATHS = frozenset(
     {"migration/macwin/generated/index.json"}
 )
-GENERATED_EVIDENCE_PATHS = (
-    TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS | TASK7_DOCUMENT_PATHS
-)
+TASK6_EVIDENCE_PATHS = TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS
+GENERATED_EVIDENCE_PATHS = TASK6_EVIDENCE_PATHS | TASK7_DOCUMENT_PATHS
 TASK5_DOCUMENT_SHA256 = {
     "migration/macwin/generated/catalog.json": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
     "migration/macwin/generated/quarantine.json": "cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b",
@@ -816,7 +815,7 @@ def _independent_task6_oracle(
 ) -> None:
     """Independently close every real Task 6 mapping and quarantine decision."""
 
-    if type(documents) is not dict or set(documents) != GENERATED_EVIDENCE_PATHS:
+    if type(documents) is not dict or set(documents) != TASK6_EVIDENCE_PATHS:
         raise ValueError("generated evidence set is invalid")
     for relative, expected_digest in TASK6_DOCUMENT_SHA256.items():
         raw = documents.get(relative)
@@ -1026,7 +1025,7 @@ def _independent_task7_oracle(
 def _validated_macwin_generated_evidence_binding(source_binding: object) -> tuple[
     _GeneratedEvidenceBinding | None, list[str]
 ]:
-    """Rebuild, compare, and bind the additive Task 5/6 evidence leaves."""
+    """Rebuild, compare, and bind the complete Task 7 generated graph."""
 
     try:
         converter, converter_path, converter_raw, converter_identity = (
@@ -1066,7 +1065,10 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             source_binding,
             {relative: committed[relative] for relative in TASK5_DOCUMENT_PATHS},
         )
-        _independent_task6_oracle(source_binding, committed)
+        _independent_task6_oracle(
+            source_binding,
+            {relative: committed[relative] for relative in TASK6_EVIDENCE_PATHS},
+        )
         _independent_task7_oracle(source_binding, committed)
         if len(leaves) != 5:
             raise ValueError("generated evidence leaf set is invalid")
