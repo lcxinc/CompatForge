@@ -302,11 +302,13 @@ def is_host_dependent_path(value: object) -> bool:
         return False
     normalized = value.replace("\\", "/")
     return (
-        normalized.startswith(("/", "~/", "$HOME/", "${HOME}/"))
-        or re.match(r"^[A-Za-z]:/", normalized) is not None
-        or re.match(r"^%[^%]+%/", normalized) is not None
-        or re.match(r"^\$\{[^}]+\}/", normalized) is not None
-        or re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*/", normalized) is not None
+        normalized.startswith("/")
+        or re.match(r"^~[^/]*(?:/|\Z)", normalized) is not None
+        or re.match(r"^[A-Za-z]:", normalized) is not None
+        or re.match(r"^%[^%]+%(?:/|\Z)", normalized) is not None
+        or re.match(r"^\$\{[^}]+\}(?:/|\Z)", normalized) is not None
+        or re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*(?:/|\Z)", normalized) is not None
+        or normalized.casefold().startswith("file://")
     )
 
 
@@ -330,7 +332,12 @@ def is_safe_guest_executable(value: object) -> bool:
         normalized = normalized[3:]
     elif normalized.startswith("/") or ":" in normalized:
         return False
-    if not normalized or normalized.endswith("/") or "//" in normalized:
+    if (
+        not normalized
+        or normalized.endswith("/")
+        or "//" in normalized
+        or ":" in normalized
+    ):
         return False
     if any(character in '<>"|?*' for character in normalized):
         return False
@@ -347,3 +354,14 @@ def is_safe_guest_executable(value: object) -> bool:
         ):
             return False
     return True
+
+
+def is_safe_portable_basename(value: object) -> bool:
+    """Accept one portable Windows-compatible file-name segment."""
+
+    return (
+        is_safe_guest_executable(value)
+        and type(value) is str
+        and "/" not in value
+        and "\\" not in value
+    )

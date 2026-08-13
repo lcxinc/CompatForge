@@ -1171,6 +1171,23 @@ def _recipe_findings(
                 "unresolved-external-reference",
                 f"{source_locator}#installer.url",
             )
+        elif mode == "download" and not installer["url"].casefold().startswith(
+            ("https://", "http://")
+        ):
+            _add_recipe_finding(
+                findings,
+                "absolute-path"
+                if _is_host_absolute_locator(installer["url"])
+                else "unresolved-external-reference",
+                installer["url"]
+                if _is_host_absolute_locator(installer["url"])
+                else f"{source_locator}#installer.url",
+            )
+        file_name = installer.get("fileName")
+        if mode == "download" and not _COMMON.is_safe_portable_basename(file_name):
+            _add_recipe_finding(
+                findings, "unsupported-schema", f"{source_locator}#installer.fileName"
+            )
         hints = installer.get("hints", [])
         if type(hints) is not list or any(type(value) is not str for value in hints):
             _add_recipe_finding(
@@ -1358,8 +1375,10 @@ def _map_recipe_structure(source: dict[str, object]) -> dict[str, object]:
         if (
             type(installer.get("url")) is not str
             or not installer["url"]
+            or not installer["url"].casefold().startswith(("https://", "http://"))
             or type(installer.get("fileName")) is not str
             or not installer["fileName"]
+            or not _COMMON.is_safe_portable_basename(installer["fileName"])
             or type(installer.get("sha256")) is not str
             or _HEX_64.fullmatch(installer["sha256"]) is None
         ):

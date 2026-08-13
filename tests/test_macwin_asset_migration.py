@@ -2344,6 +2344,10 @@ class MacWinRecipeConversionTests(unittest.TestCase):
 
     def test_host_dependency_detection_covers_portable_path_attacks(self) -> None:
         hostile = (
+            "~",
+            "~reviewer",
+            "~reviewer/private/tool.exe",
+            "~reviewer\\private\\tool.exe",
             "/Users/reviewer/tool.exe",
             "C:/Users/reviewer/tool.exe",
             "C:\\Users\\reviewer\\tool.exe",
@@ -2356,8 +2360,16 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             "~/private/tool.exe",
             "~\\private\\tool.exe",
             "%USERPROFILE%\\private\\tool.exe",
+            "%USERPROFILE%",
             "${HOME}/private/tool.exe",
+            "${HOME}",
+            "${REVIEW_ROOT}",
             "$HOME/private/tool.exe",
+            "$HOME",
+            "$REVIEW_ROOT",
+            "file:///Users/reviewer/tool.exe",
+            "FILE://server/share/tool.exe",
+            "C:relative.exe",
         )
         for value in hostile:
             with self.subTest(value=value):
@@ -2365,8 +2377,9 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         for value in (
             "bin/tool.exe",
             "bin\\tool.exe",
-            "C:relative.exe",
             "https://example.invalid/tool.exe",
+            "release-26.2.4",
+            "version:$stable",
         ):
             with self.subTest(safe=value):
                 self.assertFalse(self.converter._is_host_absolute_locator(value))
@@ -2394,6 +2407,8 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             "bin/../tool.exe",
             "bin//tool.exe",
             "bin/tool.exe:stream",
+            "C:/Program Files/App/tool.exe:stream",
+            "C:\\Program Files/App\\..\\tool.exe",
             "bin/a<b.exe",
             "bin/a>b.exe",
             'bin/a"b.exe',
@@ -2421,6 +2436,57 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         for value in hostile:
             with self.subTest(hostile=value):
                 self.assertFalse(self.converter._is_safe_guest_executable(value))
+
+    def test_installer_locators_and_filenames_are_portable(self) -> None:
+        asset = self._recipe_asset("7zip")
+        base = self.converter._parse_json_object(asset)
+        reviewed = dataclasses.replace(
+            asset,
+            development_dependencies=(),
+            external_refs=(),
+            license_status="reviewed",
+            provenance_status="reviewed",
+        )
+        source = copy.deepcopy(base)
+        source["license"] = "LGPL-2.1-or-later"
+        source["tests"] = [
+            {"id": "smoke", "kind": "process-exit", "timeoutSeconds": 30}
+        ]
+        hostile_urls = (
+            "file:///Users/reviewer/setup.exe",
+            "FILE://server/share/setup.exe",
+            "/Users/reviewer/setup.exe",
+            "C:\\Users\\reviewer\\setup.exe",
+            "%TEMP%\\setup.exe",
+        )
+        hostile_names = (
+            "../setup.exe",
+            "folder/setup.exe",
+            "folder\\setup.exe",
+            "C:\\setup.exe",
+            "setup.exe:stream",
+            "CON.exe",
+            "setup.exe.",
+            "setup.exe ",
+            "set?up.exe",
+            "setup\x1f.exe",
+            ("a" * 256) + ".exe",
+        )
+        for field, values in (("url", hostile_urls), ("fileName", hostile_names)):
+            for value in values:
+                with self.subTest(field=field, value=value[:30]):
+                    candidate = copy.deepcopy(source)
+                    candidate["installer"][field] = value
+                    findings = self.converter._recipe_findings(reviewed, candidate)
+                    self.assertIn(
+                        self.converter._select_recipe_reason(findings),
+                        {"absolute-path", "unresolved-external-reference", "unsupported-schema"},
+                    )
+        findings = self.converter._recipe_findings(reviewed, source)
+        self.assertIsNone(self.converter._select_recipe_reason(findings))
+        recipe = self.converter._render_reviewed_recipe(reviewed, source)
+        schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
+        MigrationSchemaTests._assert_schema_instance_valid(recipe, schema, schema)
 
     def test_every_rejection_rule_is_detected_with_fixed_precedence(self) -> None:
         asset = self._recipe_asset("7zip")
