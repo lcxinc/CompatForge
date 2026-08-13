@@ -23,6 +23,13 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MEMBER = re.compile(r'^\s*"([^"]+)"[,]?\s*$')
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 MIGRATION_CHECK_TIMEOUT_SECONDS = 120
+MAX_MIGRATION_CONVERTER_BYTES = 2 * 1024 * 1024
+MIGRATION_CONVERTER_BOOTSTRAP = (
+    "import sys; path=sys.argv[1]; sys.argv=sys.argv[1:]; "
+    "source=sys.stdin.buffer.read(); "
+    "namespace={'__file__':path,'__name__':'__main__','__package__':None}; "
+    "exec(compile(source,path,'exec'),namespace)"
+)
 MIGRATION_ENVIRONMENT_NAMES = frozenset(
     {
         "COMSPEC",
@@ -80,16 +87,21 @@ def validate_macwin_asset_migration() -> list[str]:
     """Run the required migration converter check."""
     converter = ROOT / "tools/convert_macwin_assets.py"
     try:
-        converter_metadata = converter.lstat()
-    except FileNotFoundError:
+        for directory in (ROOT, ROOT / "tools"):
+            metadata = directory.lstat()
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, "st_reparse_tag", 0)
+            ):
+                return ["Mac-Win asset migration converter path is not a regular file"]
+        converter_raw, _converter_identity = _read_bound_regular_file(
+            converter, MAX_MIGRATION_CONVERTER_BYTES
+        )
+    except (FileNotFoundError, ValueError):
         return ["Mac-Win asset migration converter path is not a regular file"]
     except OSError:
         return ["Mac-Win asset migration converter path is not a regular file"]
-    if not stat.S_ISREG(converter_metadata.st_mode) or getattr(
-        converter_metadata, "st_reparse_tag", 0
-    ):
-        return ["Mac-Win asset migration converter path is not a regular file"]
-
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -98,12 +110,19 @@ def validate_macwin_asset_migration() -> list[str]:
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         completed = subprocess.run(
-            [sys.executable, "-B", str(converter), "--check"],
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                MIGRATION_CONVERTER_BOOTSTRAP,
+                str(converter),
+                "--check",
+            ],
             cwd=ROOT,
             check=False,
             env=environment,
             executable=None,
-            stdin=subprocess.DEVNULL,
+            input=converter_raw,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             shell=False,

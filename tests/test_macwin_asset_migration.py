@@ -13,6 +13,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4676,6 +4677,23 @@ class MacWinMigrationCliTests(unittest.TestCase):
                     self.converter.read_generated_documents(ROOT), before
                 )
 
+    def test_default_summary_uses_the_dedicated_canonical_single_line_renderer(self) -> None:
+        summary = {
+            "records": 90,
+            "quarantined": 73,
+            "documents": 5,
+            "converted": 2,
+            "deferred": 15,
+        }
+        self.assertEqual(
+            self.converter.render_summary(summary),
+            b'{"converted":2,"deferred":15,"documents":5,"quarantined":73,"records":90}\n',
+        )
+        with self.assertRaises(self.converter.ConversionError):
+            self.converter.render_summary({**summary, "future": 1})
+        with self.assertRaises(self.converter.ConversionError):
+            self.converter.render_summary({**summary, "records": True})
+
     def test_check_rejects_missing_extra_and_modified_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4854,6 +4872,19 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
                         self.converter.read_generated_documents(root), self.documents
                     )
 
+    def test_missing_generated_root_is_removed_when_initial_scan_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "migration/macwin"
+            parent.mkdir(parents=True)
+            with mock.patch.object(
+                self.converter,
+                "_scan_generated_tree",
+                side_effect=self.converter.ConversionError("injected initial scan failure"),
+            ), self.assertRaises(self.converter.ConversionError):
+                self.converter.write_generated_documents(root, self.documents)
+            self.assertFalse((parent / "generated").exists())
+
     def test_exact_repeat_is_a_true_noop_for_identity_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4900,6 +4931,61 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
                 (root / "migration/macwin/generated" / relative).mkdir(parents=True)
                 with self.assertRaises(self.converter.ConversionError):
                     self.converter.check_generated_documents(root, self.documents)
+
+    def test_scan_enforces_the_entry_limit_incrementally(self) -> None:
+        consumed = 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "migration/macwin/generated"
+            generated.mkdir(parents=True)
+
+            entries = []
+            for index in range(self.converter._MAX_GENERATED_ENTRIES):
+                entry = type("Entry", (), {})()
+                entry.name = f"entry-{index}"
+                entry.path = str(generated / f"entry-{index}")
+                entry.stat = mock.Mock(
+                    return_value=type("Metadata", (), {"st_mode": stat.S_IFREG, "st_reparse_tag": 0})()
+                )
+                entries.append(entry)
+            overflow = type("Entry", (), {})()
+            overflow.name = "overflow"
+            overflow.path = str(generated / "overflow")
+            overflow.stat = mock.Mock(side_effect=AssertionError("overflow entry was inspected"))
+            entries.append(overflow)
+
+            def iter_entries():
+                nonlocal consumed
+                for entry in entries:
+                    consumed += 1
+                    yield entry
+
+            with mock.patch.object(os, "scandir", return_value=iter_entries()), mock.patch.object(
+                self.converter, "_read_generated_leaf", return_value=self.converter._GeneratedLeafBinding((0,0,0,1,0,0), b"")
+            ), self.assertRaises(
+                self.converter.ConversionError
+            ):
+                self.converter._scan_generated_tree(generated)
+        self.assertEqual(consumed, self.converter._MAX_GENERATED_ENTRIES + 1)
+
+    def test_scan_casefold_oracle_rejects_colliding_current_paths(self) -> None:
+        with self.assertRaises(self.converter.ConversionError):
+            self.converter._reject_generated_casefold_collisions(
+                ("A.json", "a.json")
+            )
+
+    def test_scan_rejects_casefold_colliding_current_paths_on_case_sensitive_filesystem(self) -> None:
+        if os.path.normcase("A") == os.path.normcase("a"):
+            self.skipTest("case-colliding names cannot coexist on this filesystem")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "migration/macwin/generated"
+            generated.mkdir(parents=True)
+            (generated / "A.json").write_bytes(b"{}\n")
+            (generated / "a.json").write_bytes(b"{}\n")
+            with self.assertRaises(self.converter.ConversionError):
+                self.converter.read_generated_documents(root)
 
     def test_output_map_rejects_case_collisions_reserved_paths_and_invalid_values_before_write(self) -> None:
         invalid = (
@@ -4953,6 +5039,71 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
                 self.assertEqual(self._directory_set(root), before_dirs)
                 self._assert_no_transaction_artifacts(root)
 
+    def test_base_exceptions_after_commit_restore_before_reraising(self) -> None:
+        initial = {
+            path: b"old:" + raw for path, raw in self.documents.items()
+        }
+        initial["migration/macwin/generated/stale.json"] = b"stale\n"
+        for exception_type in (
+            RuntimeError,
+            self.converter.ConversionError,
+            KeyboardInterrupt,
+            SystemExit,
+        ):
+            with self.subTest(exception=exception_type.__name__), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                MacWinMigrationCliTests._write_documents(root, initial)
+                calls = 0
+                original = self.converter._install_staged_leaf
+
+                def fail_once(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        raise exception_type("injected post-commit failure")
+                    return original(*args, **kwargs)
+
+                with mock.patch.object(
+                    self.converter, "_install_staged_leaf", side_effect=fail_once
+                ), self.assertRaises(exception_type):
+                    self.converter.write_generated_documents(root, self.documents)
+                self.assertEqual(self._ordinary_documents(root), initial)
+                self._assert_no_transaction_artifacts(root)
+
+    def test_every_stage_ordinal_failure_precedes_commit_and_leaves_no_artifacts(self) -> None:
+        initial = {
+            "migration/macwin/generated/index.json": b"old\n",
+            "migration/macwin/generated/stale.json": b"stale\n",
+        }
+        expected_stages = len(self.documents) + len(initial)
+        for failure_ordinal in range(1, expected_stages + 1):
+            with self.subTest(failure=failure_ordinal), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                MacWinMigrationCliTests._write_documents(root, initial)
+                calls = 0
+                original = self.converter._stage_transaction_leaf_bound
+
+                def fail_once(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == failure_ordinal:
+                        raise OSError("injected stage failure")
+                    return original(*args, **kwargs)
+
+                with mock.patch.object(
+                    self.converter,
+                    "_stage_transaction_leaf_bound",
+                    side_effect=fail_once,
+                ), mock.patch.object(
+                    self.converter,
+                    "_install_staged_leaf",
+                    wraps=self.converter._install_staged_leaf,
+                ) as install, self.assertRaises(OSError):
+                    self.converter.write_generated_documents(root, self.documents)
+                install.assert_not_called()
+                self.assertEqual(self._ordinary_documents(root), initial)
+                self._assert_no_transaction_artifacts(root)
+
     def test_all_new_and_rollback_leaves_are_staged_before_first_install(self) -> None:
         initial = {
             "migration/macwin/generated/index.json": b"old\n",
@@ -4962,19 +5113,19 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
             root = Path(directory)
             MacWinMigrationCliTests._write_documents(root, initial)
             events: list[tuple[str, str]] = []
-            original_stage = self.converter._stage_transaction_leaf
+            original_stage = self.converter._stage_transaction_leaf_bound
             original_install = self.converter._install_staged_leaf
 
-            def stage(path, raw):
-                binding = original_stage(path, raw)
-                events.append(("stage", path.as_posix()))
+            def stage(parent, name, raw):
+                binding = original_stage(parent, name, raw)
+                events.append(("stage", (parent.path / name).as_posix()))
                 return binding
 
             def install(*args, **kwargs):
                 events.append(("install", args[1].as_posix()))
                 return original_install(*args, **kwargs)
 
-            with mock.patch.object(self.converter, "_stage_transaction_leaf", side_effect=stage), mock.patch.object(
+            with mock.patch.object(self.converter, "_stage_transaction_leaf_bound", side_effect=stage), mock.patch.object(
                 self.converter, "_install_staged_leaf", side_effect=install
             ):
                 self.converter.write_generated_documents(root, self.documents)
@@ -5151,7 +5302,12 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
         else:
             with mock.patch.object(self.converter, "_posix_rename") as rename:
                 self.converter._atomic_move_no_replace(source, destination)
-            rename.assert_called_once_with(source, destination, exchange=False)
+            rename.assert_called_once_with(
+                source,
+                destination,
+                exchange=False,
+                held_directories=None,
+            )
 
     def test_stage_failure_occurs_before_any_destination_install_and_cleans_up(self) -> None:
         initial = {
@@ -5162,7 +5318,7 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
             root = Path(directory)
             MacWinMigrationCliTests._write_documents(root, initial)
             calls = 0
-            original = self.converter._stage_transaction_leaf
+            original = self.converter._stage_transaction_leaf_bound
 
             def fail_during_rollback_stage(*args, **kwargs):
                 nonlocal calls
@@ -5172,7 +5328,9 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
                 return original(*args, **kwargs)
 
             with mock.patch.object(
-                self.converter, "_stage_transaction_leaf", side_effect=fail_during_rollback_stage
+                self.converter,
+                "_stage_transaction_leaf_bound",
+                side_effect=fail_during_rollback_stage,
             ), mock.patch.object(
                 self.converter, "_install_staged_leaf", wraps=self.converter._install_staged_leaf
             ) as install, self.assertRaises(self.converter.ConversionError):
@@ -5180,6 +5338,156 @@ class MacWinMigrationTransactionTests(unittest.TestCase):
             install.assert_not_called()
             self.assertEqual(self._ordinary_documents(root), initial)
             self._assert_no_transaction_artifacts(root)
+
+    def test_final_verification_failure_retains_backups_and_restores_the_old_tree(self) -> None:
+        initial = {"migration/macwin/generated/index.json": b"old\n"}
+        replacement = {"migration/macwin/generated/index.json": b"new\n"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            MacWinMigrationCliTests._write_documents(root, initial)
+            calls = 0
+            original = self.converter.check_generated_documents
+
+            def fail_final(repository_root, expected, **options):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise self.converter.ConversionError(
+                        "injected post-commit verification failure"
+                    )
+                return original(repository_root, expected, **options)
+
+            with mock.patch.object(
+                self.converter, "check_generated_documents", side_effect=fail_final
+            ), self.assertRaises(self.converter.ConversionError):
+                self.converter.write_generated_documents(root, replacement)
+            self.assertEqual(self._ordinary_documents(root), initial)
+            self._assert_no_transaction_artifacts(root)
+
+    def test_tampered_rollback_source_is_rejected_before_the_installed_tree_is_deleted(self) -> None:
+        initial = {
+            "migration/macwin/generated/index.json": b"old-index\n",
+            "migration/macwin/generated/stale.json": b"old-stale\n",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            MacWinMigrationCliTests._write_documents(root, initial)
+            calls = 0
+            original_install = self.converter._install_staged_leaf
+            original_restore = self.converter._restore_generated_snapshot
+
+            def fail_second_install(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected install failure")
+                return original_install(*args, **kwargs)
+
+            def tamper_before_restore(generated, transaction, rollback_root, *args):
+                target = rollback_root / "index.json"
+                target.write_bytes(b"tampered rollback\n")
+                return original_restore(
+                    generated, transaction, rollback_root, *args
+                )
+
+            with mock.patch.object(
+                self.converter, "_install_staged_leaf", side_effect=fail_second_install
+            ), mock.patch.object(
+                self.converter,
+                "_restore_generated_snapshot",
+                side_effect=tamper_before_restore,
+            ), self.assertRaises(self.converter.ConversionError):
+                self.converter.write_generated_documents(root, self.documents)
+            generated = root / "migration/macwin/generated"
+            self.assertTrue((generated / "catalog.json").exists())
+            self.assertTrue((generated / ".compatforge-transaction").exists())
+
+    def test_cleanup_directory_swap_never_deletes_an_external_sentinel(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owned = root / "owned"
+            owned.mkdir()
+            (owned / "owned.bin").write_bytes(b"owned")
+            saved = root / "saved-owned"
+            external = root / "outside"
+            external.mkdir()
+            sentinel = external / "sentinel.bin"
+            sentinel.write_bytes(b"external")
+            original_scandir = os.scandir
+            attacked = False
+
+            def swap_before_enumeration(path):
+                nonlocal attacked
+                if not attacked and Path(path) == owned:
+                    attacked = True
+                    owned.rename(saved)
+                    owned.symlink_to(external, target_is_directory=True)
+                return original_scandir(path)
+
+            with mock.patch.object(os, "scandir", side_effect=swap_before_enumeration):
+                with self.assertRaises(self.converter.ConversionError):
+                    self.converter._remove_entry_without_following(owned)
+            self.assertEqual(sentinel.read_bytes(), b"external")
+
+    def test_parent_swap_before_generated_root_creation_never_writes_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "migration/macwin"
+            parent.mkdir(parents=True)
+            saved = root / "saved-macwin"
+            external = root / "outside"
+            external.mkdir()
+            generated = parent / "generated"
+            original_mkdir = Path.mkdir
+            attacked = False
+
+            def swap_parent(path, *args, **kwargs):
+                nonlocal attacked
+                if not attacked and path == generated:
+                    attacked = True
+                    parent.rename(saved)
+                    parent.symlink_to(external, target_is_directory=True)
+                return original_mkdir(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "mkdir", new=swap_parent), self.assertRaises(
+                self.converter.ConversionError
+            ):
+                self.converter.write_generated_documents(root, self.documents)
+            self.assertFalse((external / "generated").exists())
+
+    def test_same_byte_new_inode_substitution_during_atomic_replace_rejects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "migration/macwin/generated"
+            transaction = generated / ".compatforge-transaction"
+            staged = transaction / "new/index.json"
+            displaced = transaction / "displaced/index.json"
+            destination = generated / "index.json"
+            staged.parent.mkdir(parents=True)
+            displaced.parent.mkdir(parents=True)
+            destination.write_bytes(b"old\n")
+            staged.write_bytes(b"new\n")
+            expected_stage = self.converter._read_generated_leaf(staged)
+            expected_destination = self.converter._read_generated_leaf(destination)
+            original = self.converter._atomic_replace_with_displaced
+
+            def substitute_destination(source, target, backup, held=None):
+                replacement = target.with_suffix(".replacement")
+                replacement.write_bytes(expected_destination.raw)
+                os.replace(replacement, target)
+                return original(source, target, backup, held)
+
+            with mock.patch.object(
+                self.converter,
+                "_atomic_replace_with_displaced",
+                side_effect=substitute_destination,
+            ), self.assertRaises(self.converter.ConversionError):
+                self.converter._install_staged_leaf(
+                    staged,
+                    destination,
+                    expected_stage,
+                    expected_destination,
+                )
 
     @staticmethod
     def _ordinary_documents(root: Path) -> dict[str, bytes]:
@@ -5714,7 +6022,14 @@ class MigrationLayoutTests(unittest.TestCase):
             options = run.call_args.kwargs
             self.assertEqual(
                 command,
-                [sys.executable, "-B", str(converter), "--check"],
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    validator.MIGRATION_CONVERTER_BOOTSTRAP,
+                    str(converter),
+                    "--check",
+                ],
             )
             expected_environment = {
                 key: value
@@ -5724,7 +6039,10 @@ class MigrationLayoutTests(unittest.TestCase):
             expected_environment["PYTHONDONTWRITEBYTECODE"] = "1"
             self.assertEqual(options["env"], expected_environment)
             self.assertEqual(options["cwd"], root)
-            self.assertIs(options["stdin"], subprocess.DEVNULL)
+            self.assertEqual(
+                options["input"], b"raise SystemExit(0)\n"
+            )
+            self.assertNotIn("stdin", options)
             self.assertIs(options["stdout"], subprocess.DEVNULL)
             self.assertIs(options["stderr"], subprocess.DEVNULL)
             self.assertEqual(options["timeout"], 120)
@@ -5810,6 +6128,66 @@ class MigrationLayoutTests(unittest.TestCase):
                 validator.validate_macwin_asset_migration(),
                 ["Mac-Win asset migration converter path is not a regular file"],
             )
+
+    def test_repository_validation_rejects_a_linked_tools_parent_without_execution(self) -> None:
+        validator = self._load_repository_validator()
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside_directory:
+            root = Path(directory)
+            outside = Path(outside_directory)
+            marker = outside / "executed.txt"
+            converter = outside / "convert_macwin_assets.py"
+            converter.write_text(
+                "import pathlib\n"
+                f"pathlib.Path({str(marker)!r}).write_text('executed')\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            try:
+                (root / "tools").symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlink unavailable: {error}")
+            validator.ROOT = root
+            self.assertEqual(
+                validator.validate_macwin_asset_migration(),
+                ["Mac-Win asset migration converter path is not a regular file"],
+            )
+            self.assertFalse(marker.exists())
+
+    def test_repository_validation_executes_only_authenticated_converter_bytes(self) -> None:
+        validator = self._load_repository_validator()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            converter = root / "tools/convert_macwin_assets.py"
+            converter.parent.mkdir(parents=True)
+            converter.write_text("raise SystemExit(0)\n", encoding="utf-8", newline="\n")
+            marker = root / "untrusted-executed.txt"
+            original_read = validator._read_bound_regular_file
+            attacked = False
+
+            def substitute_after_read(path, maximum, **options):
+                nonlocal attacked
+                result = original_read(path, maximum, **options)
+                replacement = converter.with_suffix(".replacement")
+                replacement.write_text(
+                    "from pathlib import Path\n"
+                    f"Path({str(marker)!r}).write_text('executed')\n"
+                    "raise SystemExit(0)\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                os.replace(replacement, converter)
+                attacked = True
+                return result
+
+            validator.ROOT = root
+            with mock.patch.object(
+                validator,
+                "_read_bound_regular_file",
+                side_effect=substitute_after_read,
+            ):
+                self.assertEqual(validator.validate_macwin_asset_migration(), [])
+            self.assertTrue(attacked)
+            self.assertFalse(marker.exists())
 
     def test_repository_validation_rejects_a_nonregular_converter(self) -> None:
         validator = self._load_repository_validator()

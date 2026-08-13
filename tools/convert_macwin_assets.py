@@ -210,8 +210,15 @@ def _load_trusted_tool(name: str):
 
     descriptor: int | None = None
     path = Path(os.path.abspath(__file__)).with_name(name)
+    held_parent: list[_HeldGeneratedDirectory] = []
     try:
-        before = path.lstat()
+        held_parent = _hold_generated_directories([path.parent])
+        if os.name == "nt":
+            before = path.lstat()
+        else:
+            before = os.stat(
+                name, dir_fd=held_parent[0].handle, follow_symlinks=False
+            )
         if (
             not stat.S_ISREG(before.st_mode)
             or stat.S_ISLNK(before.st_mode)
@@ -229,7 +236,10 @@ def _load_trusted_tool(name: str):
             before.st_ctime_ns,
         )
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
+        if os.name == "nt":
+            descriptor = os.open(path, flags)
+        else:
+            descriptor = os.open(name, flags, dir_fd=held_parent[0].handle)
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -264,7 +274,12 @@ def _load_trusted_tool(name: str):
             opened.st_ctime_ns,
         ):
             raise OSError
-        after = path.lstat()
+        if os.name == "nt":
+            after = path.lstat()
+        else:
+            after = os.stat(
+                name, dir_fd=held_parent[0].handle, follow_symlinks=False
+            )
         if (
             after.st_dev,
             after.st_ino,
@@ -274,6 +289,7 @@ def _load_trusted_tool(name: str):
             after.st_ctime_ns,
         ) != identity:
             raise OSError
+        _verify_held_generated_directories(held_parent)
 
         module_name = (
             f"_compatforge_{name.removesuffix('.py')}_{id(_LOADER_IDENTITY):x}"
@@ -295,6 +311,7 @@ def _load_trusted_tool(name: str):
     finally:
         if descriptor is not None:
             os.close(descriptor)
+        _close_generated_directories(held_parent)
 
 
 _COMMON = None
@@ -427,6 +444,7 @@ class _HeldGeneratedDirectory:
 if os.name == "nt":
     _GENERIC_READ = 0x80000000
     _FILE_READ_ATTRIBUTES = 0x0080
+    _DELETE_ACCESS = 0x00010000
     _FILE_SHARE_READ = 0x00000001
     _FILE_SHARE_WRITE = 0x00000002
     _OPEN_EXISTING = 3
@@ -435,6 +453,7 @@ if os.name == "nt":
     _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
     _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+    _FILE_DISPOSITION_INFO_CLASS = 4
     _REPLACEFILE_WRITE_THROUGH = 0x00000001
     _MOVEFILE_WRITE_THROUGH = 0x00000008
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
@@ -444,6 +463,9 @@ if os.name == "nt":
             ("file_attributes", wintypes.DWORD),
             ("reparse_tag", wintypes.DWORD),
         )
+
+    class _FileDispositionInfo(ctypes.Structure):
+        _fields_ = (("delete_file", wintypes.BOOL),)
 
     _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _CREATE_FILE = _KERNEL32.CreateFileW
@@ -468,6 +490,14 @@ if os.name == "nt":
     _CLOSE_HANDLE = _KERNEL32.CloseHandle
     _CLOSE_HANDLE.argtypes = (wintypes.HANDLE,)
     _CLOSE_HANDLE.restype = wintypes.BOOL
+    _SET_FILE_INFORMATION = _KERNEL32.SetFileInformationByHandle
+    _SET_FILE_INFORMATION.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    _SET_FILE_INFORMATION.restype = wintypes.BOOL
     _REPLACE_FILE = _KERNEL32.ReplaceFileW
     _REPLACE_FILE.argtypes = (
         wintypes.LPCWSTR,
@@ -3048,7 +3078,7 @@ def _hold_generated_directories(paths: list[Path]) -> list[_HeldGeneratedDirecto
             if os.name == "nt":
                 handle = _CREATE_FILE(
                     str(path),
-                    _FILE_READ_ATTRIBUTES,
+                    _GENERIC_READ | _FILE_READ_ATTRIBUTES,
                     _FILE_SHARE_READ | _FILE_SHARE_WRITE,
                     None,
                     _OPEN_EXISTING,
@@ -3124,29 +3154,130 @@ def _close_generated_directories(held: list[_HeldGeneratedDirectory]) -> None:
                 pass
 
 
-def _generated_root(repository_root: Path, *, create: bool) -> tuple[Path, bool]:
-    root = Path(os.path.abspath(repository_root))
-    _plain_directory_identity(root)
+def _mkdir_bound_child(
+    parent: _HeldGeneratedDirectory, name: str
+) -> _HeldGeneratedDirectory:
+    path = parent.path / name
+    try:
+        if os.name == "nt":
+            path.mkdir()
+        else:
+            os.mkdir(name, dir_fd=parent.handle)
+    except OSError:
+        _fail("generated output directory could not be created")
+    _verify_held_generated_directories([parent])
+    return _hold_generated_directories([path])[0]
+
+
+def _open_bound_child(
+    parent: _HeldGeneratedDirectory, name: str
+) -> _HeldGeneratedDirectory:
+    path = parent.path / name
+    if os.name == "nt":
+        return _hold_generated_directories([path])[0]
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent.handle,
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError
+        _verify_held_generated_directories([parent])
+        return _HeldGeneratedDirectory(path, _generated_identity(metadata), descriptor)
+    except OSError:
+        _fail("generated output directory could not be bound")
+
+
+def _ensure_bound_directory_tree(
+    root: _HeldGeneratedDirectory,
+    relative: PurePosixPath,
+    cache: dict[str, _HeldGeneratedDirectory],
+) -> _HeldGeneratedDirectory:
     current = root
-    for component in ("migration", "macwin"):
-        current = current / component
-        _plain_directory_identity(current)
+    components: list[str] = []
+    for component in relative.parts:
+        if component == ".":
+            continue
+        components.append(component)
+        key = "/".join(components)
+        if key in cache:
+            current = cache[key]
+            continue
+        try:
+            child = _open_bound_child(current, component)
+        except ConversionError:
+            child = _mkdir_bound_child(current, component)
+        cache[key] = child
+        current = child
+    return current
+
+
+def _bind_generated_root(
+    repository_root: Path, *, create: bool
+) -> tuple[Path, bool, list[_HeldGeneratedDirectory]]:
+    root = Path(os.path.abspath(repository_root))
+    current = root / "migration" / "macwin"
+    parents = _hold_generated_directories(
+        [root, root / "migration", current]
+    )
     generated = current / "generated"
     created = False
     try:
-        generated.lstat()
-    except FileNotFoundError:
-        if not create:
-            _fail("generated output directory is unavailable")
         try:
-            generated.mkdir()
+            generated.lstat()
+        except FileNotFoundError:
+            if not create:
+                _fail("generated output directory is unavailable")
+            try:
+                if os.name == "nt":
+                    generated.mkdir()
+                else:
+                    os.mkdir("generated", dir_fd=parents[-1].handle)
+            except OSError:
+                _fail("generated output directory could not be created")
+            created = True
         except OSError:
-            _fail("generated output directory could not be created")
-        created = True
-    except OSError:
-        _fail("generated output directory is unavailable")
-    _plain_directory_identity(generated)
+            _fail("generated output directory is unavailable")
+        _verify_held_generated_directories(parents)
+        generated_binding = _open_bound_child(parents[-1], "generated")
+        parents.append(generated_binding)
+        return generated, created, parents
+    except BaseException:
+        _close_generated_directories(parents)
+        raise
+
+
+def _generated_root(repository_root: Path, *, create: bool) -> tuple[Path, bool]:
+    generated, created, held = _bind_generated_root(repository_root, create=create)
+    _close_generated_directories(held)
     return generated, created
+
+
+def _remove_bound_generated_root(
+    generated: Path, held: list[_HeldGeneratedDirectory]
+) -> None:
+    if len(held) < 4 or held[3].path.absolute() != generated.absolute():
+        _fail("generated output rollback binding is unavailable")
+    generated_binding = held.pop(3)
+    if os.name == "nt":
+        _CLOSE_HANDLE(generated_binding.handle)
+        try:
+            generated.rmdir()
+        except OSError:
+            _fail("generated output rollback failed")
+    else:
+        try:
+            os.rmdir("generated", dir_fd=held[2].handle)
+            os.fsync(held[2].handle)
+        except OSError:
+            _fail("generated output rollback failed")
+        finally:
+            os.close(generated_binding.handle)
 
 
 def _read_generated_leaf(path: Path) -> _GeneratedLeafBinding:
@@ -3211,79 +3342,301 @@ def _read_generated_leaf(path: Path) -> _GeneratedLeafBinding:
             os.close(descriptor)
 
 
+def _find_held_directory(
+    path: Path, held: list[_HeldGeneratedDirectory] | None
+) -> _HeldGeneratedDirectory | None:
+    absolute = path.absolute()
+    return next(
+        (
+            directory
+            for directory in (held or [])
+            if directory.path.absolute() == absolute
+        ),
+        None,
+    )
+
+
+def _read_generated_leaf_bound(
+    parent: _HeldGeneratedDirectory, name: str
+) -> _GeneratedLeafBinding:
+    """Read one regular leaf relative to an authenticated parent directory."""
+
+    if os.name == "nt":
+        _verify_held_generated_directories([parent])
+        binding = _read_generated_leaf(parent.path / name)
+        _verify_held_generated_directories([parent])
+        return binding
+    descriptor: int | None = None
+    try:
+        before = os.stat(name, dir_fd=parent.handle, follow_symlinks=False)
+        identity = _generated_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > _MAX_GENERATED_LEAF_BYTES
+        ):
+            _fail("generated output leaf is unsafe")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent.handle,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _generated_identity(opened)[:4] != identity[:4]
+        ):
+            _fail("generated output leaf identity changed")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, _MAX_GENERATED_LEAF_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_GENERATED_LEAF_BYTES:
+                _fail("generated output leaf exceeds the byte limit")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        final = os.fstat(descriptor)
+        after = os.stat(name, dir_fd=parent.handle, follow_symlinks=False)
+        if (
+            _generated_identity(final) != _generated_identity(opened)
+            or _generated_identity(after) != identity
+            or len(raw) != identity[2]
+        ):
+            _fail("generated output leaf changed while it was read")
+        _verify_held_generated_directories([parent])
+        return _GeneratedLeafBinding(identity=identity, raw=raw)
+    except ConversionError:
+        raise
+    except OSError:
+        _fail("generated output leaf could not be read safely")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _read_transaction_leaf(
+    path: Path, held: list[_HeldGeneratedDirectory] | None
+) -> _GeneratedLeafBinding:
+    parent = _find_held_directory(path.parent, held)
+    if parent is None:
+        return _read_generated_leaf(path)
+    return _read_generated_leaf_bound(parent, path.name)
+
+
 def _scan_generated_tree(
-    generated: Path, *, ignore_transaction: bool = False
+    generated: Path,
+    *,
+    ignore_transaction: bool = False,
+    root_binding: _HeldGeneratedDirectory | None = None,
 ) -> _GeneratedTreeSnapshot:
+    if root_binding is not None:
+        return _scan_generated_tree_bound(
+            generated,
+            root_binding,
+            ignore_transaction=ignore_transaction,
+        )
     root_identity = _plain_directory_identity(generated)
     directories: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
     leaves: list[tuple[str, _GeneratedLeafBinding]] = []
     pending = [generated]
     total = 0
+    entry_count = 0
     while pending:
         directory = pending.pop()
         before = _plain_directory_identity(directory)
         try:
-            entries = list(os.scandir(directory))
+            entries = os.scandir(directory)
         except OSError:
             _fail("generated output directory could not be enumerated")
-        if len(entries) + len(directories) + len(leaves) > _MAX_GENERATED_ENTRIES:
-            _fail("generated output tree has too many entries")
-        for entry in entries:
-            if (
-                ignore_transaction
-                and directory == generated
-                and entry.name == _TRANSACTION_DIRECTORY_NAME
-            ):
-                continue
-            path = Path(entry.path)
-            relative_tail = path.relative_to(generated).as_posix()
-            relative = f"{GENERATED_ROOT}/{relative_tail}"
-            try:
-                _COMMON.require_relative_posix_path(relative)
-                metadata = entry.stat(follow_symlinks=False)
-            except (_COMMON.MigrationError, OSError):
-                _fail("generated output entry is unsafe")
-            if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
-                _fail("generated output entry is linked")
-            if stat.S_ISDIR(metadata.st_mode):
-                identity = _generated_identity(metadata)
-                directories.append((relative_tail, identity))
-                pending.append(path)
-            elif stat.S_ISREG(metadata.st_mode):
-                binding = _read_generated_leaf(path)
-                total += len(binding.raw)
-                if total > _MAX_GENERATED_TREE_BYTES:
-                    _fail("generated output tree exceeds the byte limit")
-                leaves.append((relative, binding))
-            else:
-                _fail("generated output entry is non-regular")
+        try:
+            for entry in entries:
+                entry_count += 1
+                if entry_count > _MAX_GENERATED_ENTRIES:
+                    _fail("generated output tree has too many entries")
+                if (
+                    ignore_transaction
+                    and directory == generated
+                    and entry.name == _TRANSACTION_DIRECTORY_NAME
+                ):
+                    continue
+                path = Path(entry.path)
+                relative_tail = path.relative_to(generated).as_posix()
+                relative = f"{GENERATED_ROOT}/{relative_tail}"
+                try:
+                    _COMMON.require_relative_posix_path(relative)
+                    metadata = entry.stat(follow_symlinks=False)
+                except (_COMMON.MigrationError, OSError):
+                    _fail("generated output entry is unsafe")
+                if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+                    _fail("generated output entry is linked")
+                if stat.S_ISDIR(metadata.st_mode):
+                    identity = _generated_identity(metadata)
+                    directories.append((relative_tail, identity))
+                    pending.append(path)
+                elif stat.S_ISREG(metadata.st_mode):
+                    binding = _read_generated_leaf(path)
+                    total += len(binding.raw)
+                    if total > _MAX_GENERATED_TREE_BYTES:
+                        _fail("generated output tree exceeds the byte limit")
+                    leaves.append((relative, binding))
+                else:
+                    _fail("generated output entry is non-regular")
+        finally:
+            close = getattr(entries, "close", None)
+            if close is not None:
+                close()
         if _plain_directory_identity(directory) != before:
             _fail("generated output directory identity changed")
     if _plain_directory_identity(generated) != root_identity:
         _fail("generated output root identity changed")
     directories.sort(key=lambda item: item[0].encode("ascii"))
     leaves.sort(key=lambda item: item[0].encode("ascii"))
+    _reject_generated_casefold_collisions(
+        [path for path, _identity in directories]
+        + [
+            PurePosixPath(path).relative_to(PurePosixPath(GENERATED_ROOT)).as_posix()
+            for path, _binding in leaves
+        ]
+    )
     return _GeneratedTreeSnapshot(root_identity, tuple(directories), tuple(leaves))
 
 
-def _read_bound_generated_snapshot(repository_root: Path) -> _GeneratedTreeSnapshot:
-    _bootstrap_dependencies()
-    generated, _created = _generated_root(repository_root, create=False)
-    first = _scan_generated_tree(generated)
-    repository = Path(os.path.abspath(repository_root))
-    paths = [
-        repository,
-        repository / "migration",
-        repository / "migration/macwin",
-        generated,
-        *[
-            generated / Path(*PurePosixPath(relative).parts)
-            for relative, _identity in first.directory_identities
-        ],
+def _scan_generated_tree_bound(
+    generated: Path,
+    root_binding: _HeldGeneratedDirectory,
+    *,
+    ignore_transaction: bool,
+) -> _GeneratedTreeSnapshot:
+    root_identity = root_binding.identity
+    directories: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    leaves: list[tuple[str, _GeneratedLeafBinding]] = []
+    pending: list[
+        tuple[PurePosixPath, tuple[int, int, int, int, int, int]]
+    ] = [
+        (PurePosixPath(), root_binding.identity)
     ]
-    held = _hold_generated_directories(paths)
+    total = 0
+    entry_count = 0
+    while pending:
+        relative_parent, expected_identity = pending.pop()
+        chain: list[_HeldGeneratedDirectory] = []
+        directory = root_binding
+        try:
+            for component in relative_parent.parts:
+                if component == ".":
+                    continue
+                directory = _open_bound_child(directory, component)
+                chain.append(directory)
+            if directory.identity[:2] != expected_identity[:2]:
+                _fail("generated output directory identity changed")
+            _verify_held_generated_directories([directory])
+            scan_target = directory.path if os.name == "nt" else directory.handle
+            try:
+                entries = os.scandir(scan_target)
+            except OSError:
+                _fail("generated output directory could not be enumerated")
+            try:
+                for entry in entries:
+                    entry_count += 1
+                    if entry_count > _MAX_GENERATED_ENTRIES:
+                        _fail("generated output tree has too many entries")
+                    if (
+                        ignore_transaction
+                        and relative_parent == PurePosixPath()
+                        and entry.name == _TRANSACTION_DIRECTORY_NAME
+                    ):
+                        continue
+                    relative_tail_path = relative_parent / entry.name
+                    relative_tail = relative_tail_path.as_posix()
+                    relative = f"{GENERATED_ROOT}/{relative_tail}"
+                    try:
+                        _COMMON.require_relative_posix_path(relative)
+                        if os.name == "nt":
+                            metadata = (directory.path / entry.name).lstat()
+                        else:
+                            metadata = os.stat(
+                                entry.name,
+                                dir_fd=directory.handle,
+                                follow_symlinks=False,
+                            )
+                    except (_COMMON.MigrationError, OSError):
+                        _fail("generated output entry is unsafe")
+                    if stat.S_ISLNK(metadata.st_mode) or getattr(
+                        metadata, "st_reparse_tag", 0
+                    ):
+                        _fail("generated output entry is linked")
+                    if stat.S_ISDIR(metadata.st_mode):
+                        identity = _generated_identity(metadata)
+                        directories.append((relative_tail, identity))
+                        pending.append((relative_tail_path, identity))
+                    elif stat.S_ISREG(metadata.st_mode):
+                        binding = _read_generated_leaf_bound(directory, entry.name)
+                        total += len(binding.raw)
+                        if total > _MAX_GENERATED_TREE_BYTES:
+                            _fail("generated output tree exceeds the byte limit")
+                        leaves.append((relative, binding))
+                    else:
+                        _fail("generated output entry is non-regular")
+            finally:
+                close = getattr(entries, "close", None)
+                if close is not None:
+                    close()
+            _verify_held_generated_directories([directory])
+        finally:
+            _close_generated_directories(chain)
+    _verify_held_generated_directories([root_binding])
+    directories.sort(key=lambda item: item[0].encode("ascii"))
+    leaves.sort(key=lambda item: item[0].encode("ascii"))
+    _reject_generated_casefold_collisions(
+        [path for path, _identity in directories]
+        + [
+            PurePosixPath(path).relative_to(PurePosixPath(GENERATED_ROOT)).as_posix()
+            for path, _binding in leaves
+        ]
+    )
+    return _GeneratedTreeSnapshot(root_identity, tuple(directories), tuple(leaves))
+
+
+def _reject_generated_casefold_collisions(paths) -> None:
+    folded: set[str] = set()
+    for path in paths:
+        if type(path) is not str:
+            _fail("generated output entry identity is invalid")
+        identity = path.casefold()
+        if identity in folded:
+            _fail("generated output entry identity is duplicated")
+        folded.add(identity)
+
+
+def _read_bound_generated_snapshot(
+    repository_root: Path, *, ignore_transaction: bool = False
+) -> _GeneratedTreeSnapshot:
+    _bootstrap_dependencies()
+    generated, _created, held = _bind_generated_root(
+        repository_root, create=False
+    )
     try:
-        second = _scan_generated_tree(generated)
+        first = _scan_generated_tree(
+            generated,
+            ignore_transaction=ignore_transaction,
+            root_binding=held[3],
+        )
+        second = _scan_generated_tree(
+            generated,
+            ignore_transaction=ignore_transaction,
+            root_binding=held[3],
+        )
         _verify_held_generated_directories(held)
         if (
             tuple((path, binding.raw) for path, binding in first.leaves)
@@ -3309,12 +3662,17 @@ def read_generated_documents(repository_root: Path) -> dict[str, bytes]:
 
 
 def check_generated_documents(
-    repository_root: Path, expected: dict[str, bytes]
+    repository_root: Path,
+    expected: dict[str, bytes],
+    *,
+    _ignore_transaction: bool = False,
 ) -> None:
     """Compare every current generated path and byte with the renderer."""
 
     _validate_output_document_map(expected)
-    snapshot = _read_bound_generated_snapshot(repository_root)
+    snapshot = _read_bound_generated_snapshot(
+        repository_root, ignore_transaction=_ignore_transaction
+    )
     if (
         {path: binding.raw for path, binding in snapshot.leaves} != expected
         or {path for path, _identity in snapshot.directory_identities}
@@ -3416,18 +3774,76 @@ def _stage_transaction_leaf(path: Path, raw: bytes) -> _GeneratedLeafBinding:
     return binding
 
 
-def _stage_document_map(root: Path, documents: dict[str, bytes]) -> dict[str, _GeneratedLeafBinding]:
+def _stage_transaction_leaf_bound(
+    parent: _HeldGeneratedDirectory, name: str, raw: bytes
+) -> _GeneratedLeafBinding:
+    if os.name == "nt":
+        return _stage_transaction_leaf(parent.path / name, raw)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent.handle,
+        )
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset : offset + 64 * 1024])
+            if written <= 0:
+                raise OSError
+            offset += written
+        os.fsync(descriptor)
+        opened = os.fstat(descriptor)
+    except OSError:
+        _fail("generated output could not be staged")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    _verify_held_generated_directories([parent])
+    binding = _read_generated_leaf_bound(parent, name)
+    if binding.raw != raw or binding.identity[:2] != _generated_identity(opened)[:2]:
+        _fail("staged generated output failed readback")
+    return binding
+
+
+def _stage_document_map(
+    root: Path,
+    documents: dict[str, bytes],
+    *,
+    root_binding: _HeldGeneratedDirectory | None = None,
+    held: list[_HeldGeneratedDirectory] | None = None,
+) -> dict[str, _GeneratedLeafBinding]:
     bindings: dict[str, _GeneratedLeafBinding] = {}
-    for relative in sorted(documents, key=lambda value: value.encode("ascii")):
-        tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
-        path = root / Path(*tail.parts)
-        _make_plain_directories(root, tail.parent)
-        bindings[relative] = _stage_transaction_leaf(path, documents[relative])
+    cache: dict[str, _HeldGeneratedDirectory] = {}
+    try:
+        for relative in sorted(documents, key=lambda value: value.encode("ascii")):
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            path = root / Path(*tail.parts)
+            if root_binding is None:
+                _make_plain_directories(root, tail.parent)
+                bindings[relative] = _stage_transaction_leaf(path, documents[relative])
+            else:
+                parent = _ensure_bound_directory_tree(root_binding, tail.parent, cache)
+                bindings[relative] = _stage_transaction_leaf_bound(
+                    parent, tail.name, documents[relative]
+                )
+    finally:
+        if held is not None:
+            held.extend(cache.values())
     return bindings
 
 
 def _posix_rename(
-    source: Path, destination: Path, *, exchange: bool
+    source: Path,
+    destination: Path,
+    *,
+    exchange: bool,
+    held_directories: list[_HeldGeneratedDirectory] | None = None,
 ) -> None:
     if sys.platform.startswith("linux"):
         library = ctypes.CDLL(None, use_errno=True)
@@ -3442,20 +3858,30 @@ def _posix_rename(
             ctypes.c_uint,
         )
         renameat2.restype = ctypes.c_int
-        source_descriptor = os.open(
-            source.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-        destination_descriptor = os.open(
-            destination.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
+        held_by_path = {
+            directory.path.absolute(): directory.handle
+            for directory in (held_directories or [])
+        }
+        source_descriptor = held_by_path.get(source.parent.absolute())
+        destination_descriptor = held_by_path.get(destination.parent.absolute())
+        close_source = source_descriptor is None
+        close_destination = destination_descriptor is None
+        if source_descriptor is None:
+            source_descriptor = os.open(
+                source.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+        if destination_descriptor is None:
+            destination_descriptor = os.open(
+                destination.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
         try:
             flag = 0x2 if exchange else 0x1
             result = renameat2(
@@ -3470,35 +3896,91 @@ def _posix_rename(
             os.fsync(source_descriptor)
             os.fsync(destination_descriptor)
         finally:
-            os.close(destination_descriptor)
-            os.close(source_descriptor)
+            if close_destination:
+                os.close(destination_descriptor)
+            if close_source:
+                os.close(source_descriptor)
         return
     if sys.platform == "darwin":
         library = ctypes.CDLL(None, use_errno=True)
-        renamex = getattr(library, "renamex_np", None)
-        if renamex is None:
+        renameatx = getattr(library, "renameatx_np", None)
+        if renameatx is None:
             _fail("atomic generated output replacement is unsupported")
-        renamex.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        renamex.restype = ctypes.c_int
+        renameatx.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameatx.restype = ctypes.c_int
+        held_by_path = {
+            directory.path.absolute(): directory.handle
+            for directory in (held_directories or [])
+        }
+        source_descriptor = held_by_path.get(source.parent.absolute())
+        destination_descriptor = held_by_path.get(destination.parent.absolute())
+        close_source = source_descriptor is None
+        close_destination = destination_descriptor is None
+        if source_descriptor is None:
+            source_descriptor = os.open(
+                source.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+        if destination_descriptor is None:
+            destination_descriptor = os.open(
+                destination.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
         flag = 0x00000002 if exchange else 0x00000004
-        if renamex(os.fsencode(source), os.fsencode(destination), flag) != 0:
-            raise OSError(ctypes.get_errno(), "conditional rename failed")
-        _sync_directory(source.parent)
-        _sync_directory(destination.parent)
+        try:
+            if renameatx(
+                source_descriptor,
+                os.fsencode(source.name),
+                destination_descriptor,
+                os.fsencode(destination.name),
+                flag,
+            ) != 0:
+                raise OSError(ctypes.get_errno(), "conditional rename failed")
+            os.fsync(source_descriptor)
+            os.fsync(destination_descriptor)
+        finally:
+            if close_destination:
+                os.close(destination_descriptor)
+            if close_source:
+                os.close(source_descriptor)
         return
     _fail("atomic generated output replacement is unsupported")
 
 
-def _atomic_move_no_replace(source: Path, destination: Path) -> None:
+def _atomic_move_no_replace(
+    source: Path,
+    destination: Path,
+    held_directories: list[_HeldGeneratedDirectory] | None = None,
+) -> None:
     if os.name == "nt":
         if not _MOVE_FILE(str(source), str(destination), _MOVEFILE_WRITE_THROUGH):
             raise OSError(ctypes.get_last_error(), "conditional move failed")
         return
-    _posix_rename(source, destination, exchange=False)
+    _posix_rename(
+        source,
+        destination,
+        exchange=False,
+        held_directories=held_directories,
+    )
 
 
 def _atomic_replace_with_displaced(
-    source: Path, destination: Path, displaced: Path
+    source: Path,
+    destination: Path,
+    displaced: Path,
+    held_directories: list[_HeldGeneratedDirectory] | None = None,
 ) -> None:
     if os.name == "nt":
         if not _REPLACE_FILE(
@@ -3511,8 +3993,13 @@ def _atomic_replace_with_displaced(
         ):
             raise OSError(ctypes.get_last_error(), "conditional replacement failed")
         return
-    _posix_rename(source, destination, exchange=True)
-    _atomic_move_no_replace(source, displaced)
+    _posix_rename(
+        source,
+        destination,
+        exchange=True,
+        held_directories=held_directories,
+    )
+    _atomic_move_no_replace(source, displaced, held_directories)
 
 
 def _install_staged_leaf(
@@ -3526,12 +4013,26 @@ def _install_staged_leaf(
 
     if held_directories is not None:
         _verify_held_generated_directories(held_directories)
-    if _read_generated_leaf(staged) != expected_stage:
+    if _read_transaction_leaf(staged, held_directories) != expected_stage:
         _fail("staged generated output identity changed")
+    destination_parent = _find_held_directory(destination.parent, held_directories)
     if expected_destination is None:
-        if os.path.lexists(destination):
+        try:
+            if destination_parent is None or os.name == "nt":
+                destination.lstat()
+            else:
+                os.stat(
+                    destination.name,
+                    dir_fd=destination_parent.handle,
+                    follow_symlinks=False,
+                )
+        except FileNotFoundError:
+            pass
+        except OSError:
+            _fail("generated output destination could not be checked")
+        else:
             _fail("generated output destination was substituted")
-    elif _read_generated_leaf(destination) != expected_destination:
+    elif _read_transaction_leaf(destination, held_directories) != expected_destination:
         _fail("generated output destination identity changed")
     transaction = staged
     while transaction.name != _TRANSACTION_DIRECTORY_NAME:
@@ -3540,17 +4041,23 @@ def _install_staged_leaf(
         transaction = transaction.parent
     relative_tail = staged.relative_to(transaction / "new")
     displaced = transaction / "displaced" / relative_tail
-    _make_plain_directories(transaction / "displaced", PurePosixPath(relative_tail.parent.as_posix()))
     if expected_destination is None:
-        _atomic_move_no_replace(staged, destination)
+        _atomic_move_no_replace(staged, destination, held_directories)
     else:
-        _atomic_replace_with_displaced(staged, destination, displaced)
+        _atomic_replace_with_displaced(
+            staged, destination, displaced, held_directories
+        )
+        displaced_binding = _read_transaction_leaf(displaced, held_directories)
         if (
-            _read_generated_leaf(displaced).raw != expected_destination.raw
+            displaced_binding.raw != expected_destination.raw
+            or displaced_binding.identity[:2] != expected_destination.identity[:2]
         ):
             _fail("generated output displaced identity changed")
-    installed = _read_generated_leaf(destination)
-    if installed.raw != expected_stage.raw:
+    installed = _read_transaction_leaf(destination, held_directories)
+    if (
+        installed.raw != expected_stage.raw
+        or installed.identity[:2] != expected_stage.identity[:2]
+    ):
         _fail("generated output install verification failed")
     _sync_directory(destination.parent)
     if held_directories is not None:
@@ -3564,15 +4071,132 @@ def _remove_entry_without_following(path: Path) -> None:
         return
     except OSError:
         _fail("generated output rollback could not inspect an entry")
-    try:
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and not getattr(metadata, "st_reparse_tag", 0):
-            for entry in os.scandir(path):
-                _remove_entry_without_following(Path(entry.path))
-            path.rmdir()
-        else:
+    if os.name == "nt":
+        _remove_entry_windows(path, metadata)
+        return
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+        try:
             path.unlink()
+        except OSError:
+            _fail("generated output rollback could not remove an entry")
+        return
+    parent_descriptor: int | None = None
+    directory_descriptor: int | None = None
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        directory_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(directory_descriptor)
+        if _generated_identity(opened)[:2] != _generated_identity(metadata)[:2]:
+            _fail("generated output rollback directory changed")
+        _remove_directory_contents_posix(directory_descriptor)
+        current = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if _generated_identity(current)[:2] != _generated_identity(opened)[:2]:
+            _fail("generated output rollback directory changed")
+        os.rmdir(path.name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    except ConversionError:
+        raise
     except OSError:
         _fail("generated output rollback could not remove an entry")
+    finally:
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def _remove_entry_windows(path: Path, expected: os.stat_result) -> None:
+    flags = _FILE_FLAG_OPEN_REPARSE_POINT
+    if stat.S_ISDIR(expected.st_mode):
+        flags |= _FILE_FLAG_BACKUP_SEMANTICS
+    handle = _CREATE_FILE(
+        str(path),
+        _GENERIC_READ | _FILE_READ_ATTRIBUTES | _DELETE_ACCESS,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None,
+        _OPEN_EXISTING,
+        flags,
+        None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        _fail("generated output rollback entry could not be bound")
+    try:
+        attributes = _FileAttributeTagInfo()
+        if not _GET_FILE_INFORMATION(
+            handle,
+            _FILE_ATTRIBUTE_TAG_INFO_CLASS,
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ) or attributes.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            _fail("generated output rollback entry is linked")
+        current = path.lstat()
+        if _generated_identity(current)[:2] != _generated_identity(expected)[:2]:
+            _fail("generated output rollback entry changed")
+        if stat.S_ISDIR(expected.st_mode):
+            try:
+                entries = list(os.scandir(path))
+            except OSError:
+                _fail("generated output rollback directory changed")
+            for entry in entries:
+                child = Path(entry.path)
+                child_metadata = child.lstat()
+                _remove_entry_windows(child, child_metadata)
+        disposition = _FileDispositionInfo(True)
+        if not _SET_FILE_INFORMATION(
+            handle,
+            _FILE_DISPOSITION_INFO_CLASS,
+            ctypes.byref(disposition),
+            ctypes.sizeof(disposition),
+        ):
+            _fail("generated output rollback could not remove an entry")
+    except ConversionError:
+        raise
+    except OSError:
+        _fail("generated output rollback entry changed")
+    finally:
+        _CLOSE_HANDLE(handle)
+
+
+def _remove_directory_contents_posix(directory_descriptor: int) -> None:
+    for entry in os.scandir(directory_descriptor):
+        metadata = entry.stat(follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            child = os.open(
+                entry.name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=directory_descriptor,
+            )
+            try:
+                if _generated_identity(os.fstat(child))[:2] != _generated_identity(metadata)[:2]:
+                    _fail("generated output rollback directory changed")
+                _remove_directory_contents_posix(child)
+                current = os.stat(
+                    entry.name, dir_fd=directory_descriptor, follow_symlinks=False
+                )
+                if _generated_identity(current)[:2] != _generated_identity(metadata)[:2]:
+                    _fail("generated output rollback directory changed")
+                os.rmdir(entry.name, dir_fd=directory_descriptor)
+            finally:
+                os.close(child)
+        else:
+            os.unlink(entry.name, dir_fd=directory_descriptor)
+    os.fsync(directory_descriptor)
 
 
 def _restore_generated_snapshot(
@@ -3582,29 +4206,79 @@ def _restore_generated_snapshot(
     rollback_bindings: dict[str, _GeneratedLeafBinding],
     snapshot: _GeneratedTreeSnapshot,
     created_root: bool,
+    held_directories: list[_HeldGeneratedDirectory] | None = None,
 ) -> None:
+    restored_cache: dict[str, _HeldGeneratedDirectory] = {}
     try:
-        for entry in list(os.scandir(generated)):
-            if entry.name != _TRANSACTION_DIRECTORY_NAME:
-                _remove_entry_without_following(Path(entry.path))
+        authenticated: dict[str, _GeneratedLeafBinding] = {}
+        for relative, binding in snapshot.leaves:
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            source = rollback_root / Path(*tail.parts)
+            staged_binding = _read_transaction_leaf(source, held_directories)
+            if (
+                relative not in rollback_bindings
+                or staged_binding != rollback_bindings[relative]
+                or staged_binding.raw != binding.raw
+            ):
+                _fail("generated output rollback source changed")
+            authenticated[relative] = staged_binding
+        generated_binding = next(
+            (
+                directory
+                for directory in (held_directories or [])
+                if directory.path.absolute() == generated.absolute()
+            ),
+            None,
+        )
+        if os.name != "nt" and generated_binding is not None:
+            for entry in list(os.scandir(generated_binding.handle)):
+                if entry.name != _TRANSACTION_DIRECTORY_NAME:
+                    _remove_child_posix(generated_binding.handle, entry.name)
+        else:
+            for entry in list(os.scandir(generated)):
+                if entry.name != _TRANSACTION_DIRECTORY_NAME:
+                    _remove_entry_without_following(Path(entry.path))
         for relative_tail, _identity in snapshot.directory_identities:
-            _make_plain_directories(generated, PurePosixPath(relative_tail))
+            if generated_binding is None:
+                _make_plain_directories(generated, PurePosixPath(relative_tail))
+            else:
+                _ensure_bound_directory_tree(
+                    generated_binding,
+                    PurePosixPath(relative_tail),
+                    restored_cache,
+                )
         for relative, binding in snapshot.leaves:
             tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
             source = rollback_root / Path(*tail.parts)
             destination = generated / Path(*tail.parts)
-            _make_plain_directories(generated, tail.parent)
-            if (
-                relative not in rollback_bindings
-                or _read_generated_leaf(source) != rollback_bindings[relative]
-                or rollback_bindings[relative].raw != binding.raw
-            ):
+            if generated_binding is None:
+                _make_plain_directories(generated, tail.parent)
+            else:
+                _ensure_bound_directory_tree(
+                    generated_binding, tail.parent, restored_cache
+                )
+            active_held = [*(held_directories or []), *restored_cache.values()]
+            if _read_transaction_leaf(source, active_held) != authenticated[relative]:
                 _fail("generated output rollback source changed")
-            _atomic_move_no_replace(source, destination)
-            if _read_generated_leaf(destination).raw != binding.raw:
+            _atomic_move_no_replace(source, destination, active_held)
+            restored_binding = _read_transaction_leaf(destination, active_held)
+            if (
+                restored_binding.raw != binding.raw
+                or restored_binding.identity[:2]
+                != authenticated[relative].identity[:2]
+            ):
                 _fail("generated output rollback verification failed")
-        _remove_entry_without_following(transaction)
-        restored = _scan_generated_tree(generated)
+        if os.name != "nt" and generated_binding is not None:
+            _remove_child_posix(
+                generated_binding.handle, _TRANSACTION_DIRECTORY_NAME
+            )
+        else:
+            _remove_entry_without_following(transaction)
+        if held_directories is not None:
+            _verify_held_generated_directories(held_directories)
+        restored = _scan_generated_tree(
+            generated, root_binding=generated_binding
+        )
         if (
             tuple((path, binding.raw) for path, binding in restored.leaves)
             != tuple((path, binding.raw) for path, binding in snapshot.leaves)
@@ -3613,11 +4287,61 @@ def _restore_generated_snapshot(
         ):
             _fail("generated output rollback was incomplete")
         if created_root:
-            generated.rmdir()
+            if os.name == "nt":
+                try:
+                    generated.rmdir()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    _fail("generated output rollback failed")
+            else:
+                parent_descriptor = os.open(
+                    generated.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                )
+                try:
+                    try:
+                        os.rmdir(generated.name, dir_fd=parent_descriptor)
+                    except FileNotFoundError:
+                        pass
+                    os.fsync(parent_descriptor)
+                finally:
+                    os.close(parent_descriptor)
     except ConversionError:
         raise
     except OSError:
         _fail("generated output rollback failed")
+    finally:
+        _close_generated_directories(list(restored_cache.values()))
+
+
+def _remove_child_posix(parent_descriptor: int, name: str) -> None:
+    metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+        child = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
+        )
+        try:
+            if _generated_identity(os.fstat(child))[:2] != _generated_identity(metadata)[:2]:
+                _fail("generated output rollback directory changed")
+            _remove_directory_contents_posix(child)
+            current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            if _generated_identity(current)[:2] != _generated_identity(metadata)[:2]:
+                _fail("generated output rollback directory changed")
+            os.rmdir(name, dir_fd=parent_descriptor)
+        finally:
+            os.close(child)
+    else:
+        os.unlink(name, dir_fd=parent_descriptor)
+    os.fsync(parent_descriptor)
 
 
 def _sync_directory(path: Path) -> None:
@@ -3634,14 +4358,87 @@ def _sync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
+@dataclass(slots=True)
+class _TransactionBackend:
+    """Route every transaction mutation through authenticated directory bindings."""
+
+    generated: Path
+    main: list[_HeldGeneratedDirectory]
+    transaction: list[_HeldGeneratedDirectory]
+
+    @property
+    def bindings(self) -> list[_HeldGeneratedDirectory]:
+        return [*self.main, *self.transaction]
+
+    def verify(self) -> None:
+        _verify_held_generated_directories(self.bindings)
+
+    def stage(
+        self,
+        root: Path,
+        documents: dict[str, bytes],
+        root_binding: _HeldGeneratedDirectory,
+    ) -> dict[str, _GeneratedLeafBinding]:
+        return _stage_document_map(
+            root,
+            documents,
+            root_binding=root_binding,
+            held=self.transaction,
+        )
+
+    def install(
+        self,
+        staged: Path,
+        destination: Path,
+        expected_stage: _GeneratedLeafBinding,
+        expected_destination: _GeneratedLeafBinding | None,
+    ) -> None:
+        _install_staged_leaf(
+            staged,
+            destination,
+            expected_stage,
+            expected_destination,
+            self.bindings,
+        )
+
+    def read(self, path: Path) -> _GeneratedLeafBinding:
+        return _read_transaction_leaf(path, self.bindings)
+
+    def move_no_replace(self, source: Path, destination: Path) -> None:
+        _atomic_move_no_replace(source, destination, self.bindings)
+
+    def remove_transaction(self) -> None:
+        if os.name == "nt":
+            _close_generated_directories(self.transaction)
+            _remove_entry_without_following(
+                self.generated / _TRANSACTION_DIRECTORY_NAME
+            )
+        else:
+            _remove_child_posix(
+                self.main[3].handle, _TRANSACTION_DIRECTORY_NAME
+            )
+
+
 def write_generated_documents(
     repository_root: Path, documents: dict[str, bytes]
 ) -> None:
     """Install the complete generated graph with staged rollback sources."""
 
     _validate_output_document_map(documents)
-    generated, created_root = _generated_root(repository_root, create=True)
-    initial = _scan_generated_tree(generated)
+    generated, created_root, held_main = _bind_generated_root(
+        repository_root, create=True
+    )
+    try:
+        initial = _scan_generated_tree(
+            generated, root_binding=held_main[3]
+        )
+    except BaseException:
+        try:
+            if created_root:
+                _remove_bound_generated_root(generated, held_main)
+        finally:
+            _close_generated_directories(held_main)
+        raise
     initial_leaves = dict(initial.leaves)
     expected_directories = _expected_output_directories(documents)
     if (
@@ -3649,118 +4446,101 @@ def write_generated_documents(
         and {path for path, _identity in initial.directory_identities}
         == expected_directories
     ):
+        _close_generated_directories(held_main)
         return
-    repository = Path(os.path.abspath(repository_root))
-    held_main = _hold_generated_directories(
-        [
-            repository,
-            repository / "migration",
-            repository / "migration/macwin",
-            generated,
-        ]
-    )
     if held_main[-1].identity[:2] != initial.root_identity[:2]:
         _close_generated_directories(held_main)
         _fail("generated output root binding changed")
     transaction = generated / _TRANSACTION_DIRECTORY_NAME
     try:
-        transaction.mkdir()
-    except OSError:
-        _close_generated_directories(held_main)
+        held_transaction: list[_HeldGeneratedDirectory] = [
+            _mkdir_bound_child(held_main[3], _TRANSACTION_DIRECTORY_NAME)
+        ]
+    except ConversionError:
         if created_root:
             try:
-                generated.rmdir()
-            except OSError:
+                _remove_bound_generated_root(generated, held_main)
+            except ConversionError:
                 pass
+        _close_generated_directories(held_main)
         _fail("generated output transaction already exists")
     new_root = transaction / "new"
     rollback_root = transaction / "rollback"
     displaced_root = transaction / "displaced"
     rollback: dict[str, _GeneratedLeafBinding] = {}
     commit_started = False
-    held_transaction: list[_HeldGeneratedDirectory] = []
     try:
-        new_root.mkdir()
-        rollback_root.mkdir()
-        displaced_root.mkdir()
-        staged = _stage_document_map(new_root, documents)
-        rollback = _stage_document_map(
+        held_transaction.append(_mkdir_bound_child(held_transaction[0], "new"))
+        held_transaction.append(_mkdir_bound_child(held_transaction[0], "rollback"))
+        held_transaction.append(_mkdir_bound_child(held_transaction[0], "displaced"))
+        backend = _TransactionBackend(generated, held_main, held_transaction)
+        staged = backend.stage(
+            new_root,
+            documents,
+            held_transaction[1],
+        )
+        rollback = backend.stage(
             rollback_root,
             {path: binding.raw for path, binding in initial.leaves},
+            held_transaction[2],
         )
         if set(rollback) != set(initial_leaves):
             _fail("generated output rollback staging is incomplete")
+        displaced_cache: dict[str, _HeldGeneratedDirectory] = {}
         for relative in sorted(initial_leaves, key=lambda value: value.encode("ascii")):
             tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
-            _make_plain_directories(displaced_root, tail.parent)
+            _ensure_bound_directory_tree(
+                held_transaction[3], tail.parent, displaced_cache
+            )
+        held_transaction.extend(displaced_cache.values())
         _sync_directory(new_root)
         _sync_directory(rollback_root)
         _sync_directory(displaced_root)
         _sync_directory(transaction)
 
         commit_started = True
-        for relative in sorted(expected_directories, key=lambda value: value.encode("ascii")):
-            _make_plain_directories(generated, PurePosixPath(relative))
-
-        main_paths = [
-            *[
-                generated / Path(*PurePosixPath(relative).parts)
-                for relative in sorted(
-                    expected_directories, key=lambda value: value.encode("ascii")
-                )
-            ],
-        ]
-        held_main.extend(_hold_generated_directories(main_paths))
-        transaction_paths = [transaction, new_root, rollback_root, displaced_root]
-        for base, directory_names in (
-            (new_root, _expected_output_directories(documents)),
-            (
-                rollback_root,
-                _expected_output_directories(
-                    {path: binding.raw for path, binding in initial.leaves}
-                ),
-            ),
-            (
-                displaced_root,
-                _expected_output_directories(
-                    {path: binding.raw for path, binding in initial.leaves}
-                ),
-            ),
+        main_cache: dict[str, _HeldGeneratedDirectory] = {}
+        bound_main_directories = expected_directories | {
+            path for path, _identity in initial.directory_identities
+        }
+        for relative in sorted(
+            bound_main_directories, key=lambda value: value.encode("ascii")
         ):
-            transaction_paths.extend(
-                base / Path(*PurePosixPath(relative).parts)
-                for relative in sorted(
-                    directory_names, key=lambda value: value.encode("ascii")
-                )
+            _ensure_bound_directory_tree(
+                held_main[3], PurePosixPath(relative), main_cache
             )
-        held_transaction = _hold_generated_directories(transaction_paths)
-        all_held = [*held_main, *held_transaction]
+        held_main.extend(main_cache.values())
+        all_held = backend.bindings
 
         for relative in sorted(documents, key=lambda value: value.encode("ascii")):
             tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
-            _install_staged_leaf(
+            backend.install(
                 new_root / Path(*tail.parts),
                 generated / Path(*tail.parts),
                 staged[relative],
                 initial_leaves.get(relative),
-                all_held,
             )
         for relative in sorted(
             set(initial_leaves) - set(documents),
             key=lambda value: value.encode("ascii"),
             reverse=True,
         ):
-            _verify_held_generated_directories(all_held)
+            backend.verify()
             tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
             destination = generated / Path(*tail.parts)
-            if _read_generated_leaf(destination) != initial_leaves[relative]:
+            if backend.read(destination) != initial_leaves[relative]:
                 _fail("generated output destination identity changed")
             displaced = displaced_root / Path(*tail.parts)
-            _atomic_move_no_replace(destination, displaced)
-            if _read_generated_leaf(displaced).raw != initial_leaves[relative].raw:
+            backend.move_no_replace(destination, displaced)
+            displaced_binding = backend.read(displaced)
+            if (
+                displaced_binding.raw != initial_leaves[relative].raw
+                or displaced_binding.identity[:2]
+                != initial_leaves[relative].identity[:2]
+            ):
                 _fail("generated output stale leaf identity changed")
             _sync_directory(destination.parent)
-            _verify_held_generated_directories(all_held)
+            backend.verify()
         for relative, _identity in sorted(
             initial.directory_identities,
             key=lambda item: len(PurePosixPath(item[0]).parts),
@@ -3768,25 +4548,54 @@ def write_generated_documents(
         ):
             if relative not in expected_directories:
                 directory = generated / Path(*PurePosixPath(relative).parts)
-                try:
-                    directory.rmdir()
-                except OSError:
-                    _fail("generated output stale directory could not be removed")
-        installed = _scan_generated_tree(generated, ignore_transaction=True)
+                if os.name == "nt":
+                    stale_binding = main_cache.pop(relative, None)
+                    if stale_binding is not None:
+                        held_main.remove(stale_binding)
+                        all_held.remove(stale_binding)
+                        _CLOSE_HANDLE(stale_binding.handle)
+                    _remove_entry_without_following(directory)
+                else:
+                    tail = PurePosixPath(relative)
+                    parent_key = tail.parent.as_posix()
+                    parent_binding = (
+                        held_main[3]
+                        if parent_key == "."
+                        else main_cache[parent_key]
+                    )
+                    try:
+                        os.rmdir(tail.name, dir_fd=parent_binding.handle)
+                        os.fsync(parent_binding.handle)
+                    except OSError:
+                        _fail("generated output stale directory could not be removed")
+        installed = _scan_generated_tree(
+            generated,
+            ignore_transaction=True,
+            root_binding=held_main[3],
+        )
         if {path: binding.raw for path, binding in installed.leaves} != documents:
             _fail("generated output transaction verification failed")
         if {path for path, _identity in installed.directory_identities} != expected_directories:
             _fail("generated output directory set is not exact")
-        _verify_held_generated_directories(all_held)
+        backend.verify()
         _sync_directory(generated)
-        _close_generated_directories(held_transaction)
-        _remove_entry_without_following(transaction)
-        _sync_directory(generated)
-        check_generated_documents(repository_root, documents)
+        check_generated_documents(
+            repository_root, documents, _ignore_transaction=True
+        )
+        backend.verify()
+        backend.remove_transaction()
     except BaseException as error:
         try:
-            _close_generated_directories(held_transaction)
+            if os.name == "nt":
+                _close_generated_directories(held_transaction)
+                while len(held_main) > 4:
+                    directory = held_main.pop()
+                    _CLOSE_HANDLE(directory.handle)
             if commit_started:
+                _verify_held_generated_directories(held_main)
+                if created_root and os.name == "nt":
+                    directory = held_main.pop()
+                    _CLOSE_HANDLE(directory.handle)
                 _restore_generated_snapshot(
                     generated,
                     transaction,
@@ -3794,11 +4603,21 @@ def write_generated_documents(
                     rollback,
                     initial,
                     created_root,
+                    [*held_main, *held_transaction],
                 )
             else:
-                _remove_entry_without_following(transaction)
+                if os.name == "nt":
+                    _remove_entry_without_following(transaction)
+                else:
+                    _remove_child_posix(
+                        held_main[3].handle, _TRANSACTION_DIRECTORY_NAME
+                    )
                 if created_root:
-                    generated.rmdir()
+                    if os.name == "nt":
+                        generated.rmdir()
+                    else:
+                        os.rmdir("generated", dir_fd=held_main[2].handle)
+                        os.fsync(held_main[2].handle)
         except BaseException:
             raise ConversionError("generated output rollback failed") from None
         raise error
@@ -3874,6 +4693,23 @@ def explain_conversion(result: ConversionResult, identity: str) -> bytes:
         _fail("migration explanation could not be rendered")
 
 
+def render_summary(summary: dict[str, int]) -> bytes:
+    """Render the fixed canonical single-line CLI summary contract."""
+
+    fields = ("converted", "deferred", "documents", "quarantined", "records")
+    if (
+        type(summary) is not dict
+        or set(summary) != set(fields)
+        or any(type(summary[field]) is not int or summary[field] < 0 for field in fields)
+    ):
+        _fail("migration summary is invalid")
+    return (
+        "{" + ",".join(
+            f'"{field}":{summary[field]}' for field in fields
+        ) + "}\n"
+    ).encode("ascii")
+
+
 class _UsageError(Exception):
     pass
 
@@ -3934,19 +4770,13 @@ def main(arguments: tuple[str, ...]) -> int:
                 counts = {status: 0 for status in STATUSES}
                 for record in result.records:
                     counts[record.status] += 1
-                sys.stdout.buffer.write(
-                    (
-                    '{"converted":%d,"deferred":%d,"documents":%d,'
-                    '"quarantined":%d,"records":%d}\n'
-                    % (
-                        counts["converted"],
-                        counts["deferred"],
-                        len(documents),
-                        counts["quarantined"],
-                        len(result.records),
-                    )
-                    ).encode("ascii")
-                )
+                sys.stdout.buffer.write(render_summary({
+                    "converted": counts["converted"],
+                    "deferred": counts["deferred"],
+                    "documents": len(documents),
+                    "quarantined": counts["quarantined"],
+                    "records": len(result.records),
+                }))
     except ConversionError:
         _write_standard_bytes(sys.stderr, b"Mac-Win asset conversion failed.\n")
         return 1
