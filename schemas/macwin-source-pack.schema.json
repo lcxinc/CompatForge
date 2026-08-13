@@ -8,6 +8,7 @@
     "schemaVersion",
     "repository",
     "sourceTag",
+    "sourceTagObject",
     "sourceCommit",
     "inventoryCommit",
     "digestAlgorithm",
@@ -24,6 +25,7 @@
       "maxLength": 128,
       "pattern": "^[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
     },
+    "sourceTagObject": { "$ref": "#/$defs/gitBlobOid" },
     "sourceCommit": { "$ref": "#/$defs/commit" },
     "inventoryCommit": { "$ref": "#/$defs/commit" },
     "digestAlgorithm": { "const": "sha256" },

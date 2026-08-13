@@ -541,6 +541,7 @@ class MigrationSchemaTests(unittest.TestCase):
                 "schemaVersion",
                 "repository",
                 "sourceTag",
+                "sourceTagObject",
                 "sourceCommit",
                 "inventoryCommit",
                 "digestAlgorithm",
@@ -966,6 +967,7 @@ class MigrationSchemaTests(unittest.TestCase):
                 "schemaVersion": "1",
                 "repository": "a1112/Mac-Win",
                 "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "f" * 40,
                 "sourceCommit": "d" * 40,
                 "inventoryCommit": "e" * 40,
                 "digestAlgorithm": "sha256",
@@ -1760,6 +1762,7 @@ class MigrationLayoutTests(unittest.TestCase):
 class MacWinSourcePackTests(unittest.TestCase):
     REPOSITORY = "a1112/Mac-Win"
     SOURCE_TAG = "mw-migration-baseline-db12d5e"
+    SOURCE_TAG_OBJECT = "9f10d003382ce7ffbb269376c03477e17516302f"
     SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
     INVENTORY_COMMIT = "97f8423094d25325d8f864eb6f49a9e8628dbb93"
     CATEGORY_COUNTS = {
@@ -1784,6 +1787,7 @@ class MacWinSourcePackTests(unittest.TestCase):
         self.assertEqual(manifest["schemaVersion"], "1")
         self.assertEqual(manifest["repository"], self.REPOSITORY)
         self.assertEqual(manifest["sourceTag"], self.SOURCE_TAG)
+        self.assertEqual(manifest["sourceTagObject"], self.SOURCE_TAG_OBJECT)
         self.assertEqual(manifest["sourceCommit"], self.SOURCE_COMMIT)
         self.assertEqual(manifest["inventoryCommit"], self.INVENTORY_COMMIT)
         self.assertEqual(manifest["digestAlgorithm"], "sha256")
@@ -2168,6 +2172,7 @@ class MacWinSourcePackTests(unittest.TestCase):
                     importer._bind_repository(
                         repository,
                         tag="approved-tag",
+                        tag_object="0" * 40,
                         source_commit=source,
                         inventory_commit=inventory,
                     )
@@ -2181,6 +2186,9 @@ class MacWinSourcePackTests(unittest.TestCase):
             binding = importer._bind_repository(
                 repository,
                 tag="approved-tag",
+                tag_object=self._git(
+                    repository, "rev-parse", "refs/tags/approved-tag"
+                ),
                 source_commit=source,
                 inventory_commit=inventory,
             )
@@ -2203,6 +2211,9 @@ class MacWinSourcePackTests(unittest.TestCase):
                 importer._bind_repository(
                     linked,
                     tag="approved-tag",
+                    tag_object=self._git(
+                        repository, "rev-parse", "refs/tags/approved-tag"
+                    ),
                     source_commit=source,
                     inventory_commit=inventory,
                 )
@@ -2224,6 +2235,9 @@ class MacWinSourcePackTests(unittest.TestCase):
                     Path(directory), "valid"
                 )
                 git_dir = repository / ".git"
+                tag_object = self._git(
+                    repository, "rev-parse", "refs/tags/approved-tag"
+                )
                 try:
                     if scenario == "alternates":
                         path = git_dir / "objects/info/alternates"
@@ -2278,9 +2292,45 @@ class MacWinSourcePackTests(unittest.TestCase):
                     importer._bind_repository(
                         repository,
                         tag="approved-tag",
+                        tag_object=tag_object,
                         source_commit=source,
                         inventory_commit=inventory,
                     )
+
+    def test_git_binding_rejects_rebuilt_tag_with_same_name_and_peeled_commit(self) -> None:
+        importer = self._load_importer()
+        with self._temporary_directory() as directory:
+            repository, source, inventory = self._make_binding_repository(
+                Path(directory), "valid"
+            )
+            approved_tag_object = self._git(
+                repository, "rev-parse", "refs/tags/approved-tag"
+            )
+            self._git(repository, "tag", "-d", "approved-tag")
+            self._git(
+                repository,
+                "tag",
+                "-a",
+                "approved-tag",
+                "-m",
+                "rebuilt annotation",
+                source,
+            )
+            rebuilt_tag_object = self._git(
+                repository, "rev-parse", "refs/tags/approved-tag"
+            )
+            self.assertNotEqual(rebuilt_tag_object, approved_tag_object)
+            self.assertEqual(
+                self._git(repository, "rev-parse", "approved-tag^{}"), source
+            )
+            with self.assertRaises(importer.SourcePackError):
+                importer._bind_repository(
+                    repository,
+                    tag="approved-tag",
+                    tag_object=approved_tag_object,
+                    source_commit=source,
+                    inventory_commit=inventory,
+                )
 
     def test_importer_requires_explicit_identity_and_never_imports_on_module_load(self) -> None:
         importer = self._load_importer()

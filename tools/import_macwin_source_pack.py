@@ -23,10 +23,11 @@ SOURCE_PACK_ROOT = ROOT / "migration" / "macwin" / "source"
 
 APPROVED_REPOSITORY = "a1112/Mac-Win"
 APPROVED_SOURCE_TAG = "mw-migration-baseline-db12d5e"
+APPROVED_SOURCE_TAG_OBJECT = "9f10d003382ce7ffbb269376c03477e17516302f"
 APPROVED_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 APPROVED_INVENTORY_COMMIT = "97f8423094d25325d8f864eb6f49a9e8628dbb93"
 APPROVED_SOURCE_INDEX_SHA256 = (
-    "7c3b83f00f40b5b3fd9cf893acc23f280b942347a270f070e2b25aa43b710823"
+    "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3"
 )
 
 MAX_SOURCE_INDEX_BYTES = 1024 * 1024
@@ -436,6 +437,7 @@ def _bind_repository(
     repository: Path,
     *,
     tag: str,
+    tag_object: str,
     source_commit: str,
     inventory_commit: str,
 ) -> GitBinding:
@@ -444,6 +446,8 @@ def _bind_repository(
         or type(tag) is not str
         or _TAG.fullmatch(tag) is None
         or type(source_commit) is not str
+        or type(tag_object) is not str
+        or _HEX_40.fullmatch(tag_object) is None
         or _HEX_40.fullmatch(source_commit) is None
         or type(inventory_commit) is not str
         or _HEX_40.fullmatch(inventory_commit) is None
@@ -516,7 +520,7 @@ def _bind_repository(
     kind, tag_oid, peeled = exact
     if (
         kind != "tag"
-        or _HEX_40.fullmatch(tag_oid) is None
+        or tag_oid != tag_object
         or peeled != source_commit
     ):
         _fail("source tag is not the approved annotated tag")
@@ -682,6 +686,7 @@ def _validate_manifest(value: object) -> dict[str, object]:
             "schemaVersion",
             "repository",
             "sourceTag",
+            "sourceTagObject",
             "sourceCommit",
             "inventoryCommit",
             "digestAlgorithm",
@@ -694,6 +699,7 @@ def _validate_manifest(value: object) -> dict[str, object]:
         manifest["schemaVersion"] != "1"
         or manifest["repository"] != APPROVED_REPOSITORY
         or manifest["sourceTag"] != APPROVED_SOURCE_TAG
+        or manifest["sourceTagObject"] != APPROVED_SOURCE_TAG_OBJECT
         or manifest["sourceCommit"] != APPROVED_SOURCE_COMMIT
         or manifest["inventoryCommit"] != APPROVED_INVENTORY_COMMIT
         or manifest["digestAlgorithm"] != "sha256"
@@ -980,6 +986,7 @@ def generate_source_pack(
     binding = _bind_repository(
         repository,
         tag=tag,
+        tag_object=APPROVED_SOURCE_TAG_OBJECT,
         source_commit=source_commit,
         inventory_commit=inventory_commit,
     )
@@ -997,6 +1004,7 @@ def generate_source_pack(
         "schemaVersion": "1",
         "repository": APPROVED_REPOSITORY,
         "sourceTag": tag,
+        "sourceTagObject": binding.tag_oid,
         "sourceCommit": source_commit,
         "inventoryCommit": inventory_commit,
         "digestAlgorithm": "sha256",
@@ -1015,6 +1023,7 @@ def generate_source_pack(
     repeated = _bind_repository(
         binding.repository,
         tag=tag,
+        tag_object=APPROVED_SOURCE_TAG_OBJECT,
         source_commit=source_commit,
         inventory_commit=inventory_commit,
     )

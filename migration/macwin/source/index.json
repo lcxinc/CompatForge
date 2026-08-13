@@ -2236,5 +2236,6 @@
   "repository": "a1112/Mac-Win",
   "schemaVersion": "1",
   "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
-  "sourceTag": "mw-migration-baseline-db12d5e"
+  "sourceTag": "mw-migration-baseline-db12d5e",
+  "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f"
 }
