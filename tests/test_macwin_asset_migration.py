@@ -2510,7 +2510,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 self.skipTest(f"hardlink unavailable: {error}")
             self.assertEqual(validator.validate_no_developer_paths(), [])
 
-    def test_repository_validator_stably_accepts_complete_fixture_twenty_times(self) -> None:
+    def test_repository_validator_stably_accepts_complete_fixture_twenty_four_times(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(
             prefix=".macwin-task5-validator-", dir=ROOT
@@ -2527,7 +2527,7 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 self.skipTest(f"hardlink unavailable: {error}")
 
             validator.ROOT = temporary_root
-            for iteration in range(20):
+            for iteration in range(24):
                 with self.subTest(iteration=iteration):
                     self.assertEqual(validator.validate_no_developer_paths(), [])
 
@@ -2559,6 +2559,49 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 validator._OrdinaryFileBinding,
                 "revalidate",
                 drift_directory_timestamp,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(errors, [])
+
+    def test_repository_validator_accepts_ancestor_timestamp_drift_inside_path_chain(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            ancestor = temporary_root / "ordinary-parent"
+            ordinary = ancestor / "ordinary-directory"
+            ordinary.mkdir(parents=True)
+            ancestor_metadata = ancestor.stat()
+            original_revalidate = validator._OrdinaryFileBinding.revalidate
+            original_lstat = Path.lstat
+            injected = False
+
+            def drift_during_path_chain(path: Path):
+                nonlocal injected
+                metadata = original_lstat(path)
+                if path.absolute() == ordinary.absolute() and not injected:
+                    os.utime(
+                        ancestor,
+                        ns=(
+                            ancestor_metadata.st_atime_ns,
+                            ancestor_metadata.st_mtime_ns + 1_000_000,
+                        ),
+                    )
+                    injected = True
+                return metadata
+
+            def revalidate_with_drift(binding) -> None:
+                with mock.patch.object(Path, "lstat", drift_during_path_chain):
+                    original_revalidate(binding)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator._OrdinaryFileBinding,
+                "revalidate",
+                revalidate_with_drift,
             ):
                 errors = validator.validate_no_developer_paths()
             self.assertTrue(injected)

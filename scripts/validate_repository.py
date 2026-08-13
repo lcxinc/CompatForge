@@ -215,18 +215,32 @@ def _validate_bound_path_chain(path: Path) -> None:
     absolute = path.absolute()
     current = Path(absolute.anchor)
     bindings: list[
-        tuple[Path, tuple[int, int, int, int, int, int]]
+        tuple[Path, str, tuple[int, ...]]
     ] = []
     for part in absolute.parts[1:]:
         current /= part
         metadata = current.lstat()
         if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
             raise ValueError("generated evidence path is linked")
-        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
+        if stat.S_ISDIR(metadata.st_mode):
+            bindings.append((current, "directory", _directory_identity(metadata)))
+        elif current == absolute and stat.S_ISREG(metadata.st_mode):
+            bindings.append((current, "regular", _filesystem_identity(metadata)))
+        else:
             raise ValueError("generated evidence path is invalid")
-        bindings.append((current, _filesystem_identity(metadata)))
-    for component, identity in bindings:
-        if _filesystem_identity(component.lstat()) != identity:
+    for component, kind, identity in bindings:
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+            raise ValueError("generated evidence path identity changed")
+        if kind == "directory":
+            valid = stat.S_ISDIR(metadata.st_mode) and _directory_identity(
+                metadata
+            ) == identity
+        else:
+            valid = stat.S_ISREG(metadata.st_mode) and _filesystem_identity(
+                metadata
+            ) == identity
+        if not valid:
             raise ValueError("generated evidence path identity changed")
 
 
