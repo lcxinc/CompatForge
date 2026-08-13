@@ -16,6 +16,19 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 GIT_TIMEOUT_SECONDS = 30
+IMPORT_PROBE_TIMEOUT_SECONDS = 30
+IMPORT_PROBE_ENVIRONMENT_NAMES = frozenset(
+    {
+        "COMSPEC",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "WINDIR",
+    }
+)
 
 
 class MigrationLayoutTests(unittest.TestCase):
@@ -211,6 +224,7 @@ class MigrationLayoutTests(unittest.TestCase):
         }
         expected_prefix = [
             "git",
+            "--no-replace-objects",
             "-c",
             f"safe.directory={repository}",
             "-c",
@@ -246,6 +260,53 @@ class MigrationLayoutTests(unittest.TestCase):
                     self.assertFalse(options["shell"])
                     self.assertIsNone(options["executable"])
 
+    def test_git_helpers_ignore_replace_refs_for_committed_attributes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            self._git(repository, "init", "--quiet")
+            self._git(repository, "config", "user.name", "Migration Contract Test")
+            self._git(
+                repository,
+                "config",
+                "user.email",
+                "migration@example.invalid",
+            )
+            attributes = repository / ".gitattributes"
+            original = b"tests/fixtures/*.exe binary\n"
+            replacement = original + (
+                b"/migration/macwin/**/*.json text eol=lf\n"
+                b"/schemas/macwin-*.schema.json text eol=lf\n"
+            )
+            attributes.write_bytes(original)
+            self._git(repository, "add", ".gitattributes")
+            self._git(repository, "commit", "--quiet", "-m", "original attributes")
+            original_commit = self._git(repository, "rev-parse", "HEAD")
+
+            attributes.write_bytes(replacement)
+            self._git(repository, "add", ".gitattributes")
+            replacement_tree = self._git(repository, "write-tree")
+            replacement_commit = self._git(
+                repository,
+                "commit-tree",
+                replacement_tree,
+                "-m",
+                "replacement attributes",
+            )
+            self._git(
+                repository,
+                "update-ref",
+                f"refs/replace/{original_commit}",
+                replacement_commit,
+            )
+            self.assertEqual(
+                self._git(repository, "rev-parse", f"refs/replace/{original_commit}"),
+                replacement_commit,
+            )
+            self.assertEqual(
+                self._git_bytes(repository, "show", "HEAD:.gitattributes"),
+                original,
+            )
+
     def test_migration_python_imports_leave_no_repository_bytecode(self) -> None:
         before = self._repository_bytecode()
         self.assertEqual(before, set())
@@ -255,30 +316,92 @@ class MigrationLayoutTests(unittest.TestCase):
             ROOT / "tools/import_macwin_source_pack.py",
             ROOT / "tools/convert_macwin_assets.py",
         )
-        environment = os.environ.copy()
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         for module in modules:
             if not module.is_file():
                 continue
             with self.subTest(module=module.relative_to(ROOT).as_posix()):
-                subprocess.run(
-                    [
-                        sys.executable,
-                        "-B",
-                        "-c",
-                        "import runpy, sys; runpy.run_path(sys.argv[1], "
-                        "run_name='migration_import_contract')",
-                        str(module),
-                    ],
-                    cwd=ROOT,
-                    check=True,
-                    env=environment,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+                self._run_migration_import_probe(module)
 
         self.assertEqual(self._repository_bytecode(), before)
+
+    def test_migration_import_probe_ignores_python_environment_injection(self) -> None:
+        module = ROOT / "scripts/validate_repository.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hostile_modules = root / "hostile-modules"
+            hostile_modules.mkdir()
+            (hostile_modules / "hashlib.py").write_text(
+                "raise RuntimeError('hostile PYTHONPATH imported')\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            scenarios = (
+                ("PYTHONPATH", str(hostile_modules)),
+                ("PYTHONHOME", str(root / "hostile-python-home")),
+            )
+            for key, value in scenarios:
+                with self.subTest(variable=key), mock.patch.dict(
+                    os.environ, {key: value}, clear=False
+                ):
+                    try:
+                        self._run_migration_import_probe(module)
+                    except subprocess.CalledProcessError as error:
+                        self.fail(
+                            f"migration import probe inherited {key}: "
+                            f"exit {error.returncode}"
+                        )
+
+    def test_migration_import_probe_locks_the_subprocess_boundary(self) -> None:
+        module = ROOT / "scripts/validate_repository.py"
+        hostile_environment = {
+            "PYTHONHOME": "hostile-python-home",
+            "PYTHONINSPECT": "1",
+            "PYTHONPATH": "hostile-python-path",
+            "PYTHONSTARTUP": "hostile-startup.py",
+        }
+        allowed_names = {
+            "COMSPEC",
+            "PATH",
+            "PATHEXT",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "WINDIR",
+        }
+        with mock.patch.dict(os.environ, hostile_environment, clear=False), mock.patch.object(
+            subprocess, "run"
+        ) as run:
+            self._run_migration_import_probe(module)
+
+        command = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(
+            command,
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import runpy, sys; runpy.run_path(sys.argv[1], "
+                "run_name='migration_import_contract')",
+                str(module),
+            ],
+        )
+        expected_environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in allowed_names
+        }
+        expected_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        self.assertEqual(options["env"], expected_environment)
+        self.assertEqual(options["cwd"], ROOT)
+        self.assertIs(options["stdin"], subprocess.DEVNULL)
+        self.assertIs(options["stdout"], subprocess.DEVNULL)
+        self.assertIs(options["stderr"], subprocess.DEVNULL)
+        self.assertEqual(options["timeout"], IMPORT_PROBE_TIMEOUT_SECONDS)
+        self.assertTrue(options["check"])
+        self.assertFalse(options["shell"])
+        self.assertIsNone(options["executable"])
 
     def test_repository_validation_skips_only_an_absent_converter(self) -> None:
         validator = self._load_repository_validator()
@@ -557,6 +680,34 @@ class MigrationLayoutTests(unittest.TestCase):
         tracked.write_text("contract\n", encoding="utf-8", newline="\n")
         self._git(repository, "add", "tracked.txt")
 
+    @staticmethod
+    def _run_migration_import_probe(module: Path) -> None:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in IMPORT_PROBE_ENVIRONMENT_NAMES
+        }
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import runpy, sys; runpy.run_path(sys.argv[1], "
+                "run_name='migration_import_contract')",
+                str(module),
+            ],
+            cwd=ROOT,
+            check=True,
+            env=environment,
+            executable=None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=IMPORT_PROBE_TIMEOUT_SECONDS,
+        )
+
     @classmethod
     def _git(
         cls,
@@ -595,6 +746,7 @@ class MigrationLayoutTests(unittest.TestCase):
         resolved = repository.resolve()
         command = [
             "git",
+            "--no-replace-objects",
             "-c",
             f"safe.directory={resolved}",
             "-c",
