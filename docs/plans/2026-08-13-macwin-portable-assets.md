@@ -547,6 +547,8 @@ git commit -s -m "feat: export portable Mac-Win migration assets"
 
 **Files:**
 - Modify: `tools/convert_macwin_assets.py`
+- Modify: `scripts/validate_repository.py` (only the generated-tree checkpoint;
+  the independent Task 5 and Task 6 semantic oracles remain intact)
 - Create: `migration/macwin/generated/index.json`
 - Modify: `tests/test_macwin_asset_migration.py`
 
