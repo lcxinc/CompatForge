@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
+import threading
 import types
 from typing import NoReturn
 
@@ -173,6 +174,7 @@ def _load_trusted_tool(name: str):
 
 _COMMON = None
 _SOURCE_PACK = None
+_DEPENDENCY_LOCK = threading.RLock()
 
 
 def _bootstrap_dependencies() -> None:
@@ -181,13 +183,15 @@ def _bootstrap_dependencies() -> None:
     global _COMMON, _SOURCE_PACK
     if _COMMON is not None and _SOURCE_PACK is not None:
         return
-    try:
-        common = _load_trusted_tool("macwin_asset_common.py")
-        source_pack = _load_trusted_tool("import_macwin_source_pack.py")
-    except RuntimeError:
-        _fail("migration dependencies are unavailable")
-    _COMMON = common
-    _SOURCE_PACK = source_pack
+    with _DEPENDENCY_LOCK:
+        if _COMMON is not None and _SOURCE_PACK is not None:
+            return
+        try:
+            common = _load_trusted_tool("macwin_asset_common.py")
+            source_pack = _load_trusted_tool("import_macwin_source_pack.py")
+        except RuntimeError:
+            _fail("migration dependencies are unavailable")
+        _COMMON, _SOURCE_PACK = common, source_pack
 
 
 @dataclass(frozen=True, slots=True)

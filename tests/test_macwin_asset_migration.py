@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import contextlib
 import copy
 import dataclasses
@@ -15,6 +16,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import tracemalloc
 import unittest
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -1423,6 +1426,192 @@ class MacWinConversionModelTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 1, completed.stderr)
                 self.assertEqual(completed.stdout, "")
                 self.assertEqual(completed.stderr, expected_error)
+
+    def test_private_bootstrap_publishes_one_pair_under_sixteen_threads(self) -> None:
+        converter = _load_macwin_asset_converter()
+        thread_count = 16
+        ready = threading.Barrier(thread_count)
+        loader_entered = threading.Event()
+        release_loader = threading.Event()
+        count_lock = threading.Lock()
+        counts: dict[str, int] = {}
+        original = converter._load_trusted_tool
+
+        def observed_load(name):
+            with count_lock:
+                counts[name] = counts.get(name, 0) + 1
+            loader_entered.set()
+            if not release_loader.wait(timeout=5):
+                raise AssertionError("bootstrap loader release timed out")
+            return original(name)
+
+        def worker():
+            ready.wait(timeout=5)
+            try:
+                converter._bootstrap_dependencies()
+            except BaseException as error:
+                return ("error", type(error).__name__, str(error))
+            return ("success", converter._COMMON, converter._SOURCE_PACK)
+
+        with mock.patch.object(
+            converter, "_load_trusted_tool", side_effect=observed_load
+        ), concurrent.futures.ThreadPoolExecutor(
+            max_workers=thread_count
+        ) as executor:
+            futures = [executor.submit(worker) for _index in range(thread_count)]
+            self.assertTrue(loader_entered.wait(timeout=5))
+            time.sleep(0.1)
+            release_loader.set()
+            results = [future.result(timeout=30) for future in futures]
+
+        self.assertTrue(all(result[0] == "success" for result in results), results)
+        self.assertEqual(
+            counts,
+            {
+                "macwin_asset_common.py": 1,
+                "import_macwin_source_pack.py": 1,
+            },
+        )
+        published = results[0][1:]
+        self.assertTrue(
+            all(
+                result[1] is published[0] and result[2] is published[1]
+                for result in results
+            )
+        )
+
+    def test_public_build_conversion_shares_bootstrap_under_eight_threads(self) -> None:
+        converter = _load_macwin_asset_converter()
+        thread_count = 8
+        ready = threading.Barrier(thread_count)
+        loader_entered = threading.Event()
+        release_loader = threading.Event()
+        count_lock = threading.Lock()
+        counts: dict[str, int] = {}
+        original = converter._load_trusted_tool
+
+        def observed_load(name):
+            with count_lock:
+                counts[name] = counts.get(name, 0) + 1
+            loader_entered.set()
+            if not release_loader.wait(timeout=5):
+                raise AssertionError("bootstrap loader release timed out")
+            return original(name)
+
+        def worker():
+            ready.wait(timeout=5)
+            try:
+                result = converter.build_conversion(ROOT)
+                rendered = converter.render_documents(result)
+            except BaseException as error:
+                return ("error", type(error).__name__, str(error))
+            return (
+                "success",
+                converter._COMMON,
+                converter._SOURCE_PACK,
+                rendered["conversion-ledger.json"],
+            )
+
+        with mock.patch.object(
+            converter, "_load_trusted_tool", side_effect=observed_load
+        ), concurrent.futures.ThreadPoolExecutor(
+            max_workers=thread_count
+        ) as executor:
+            futures = [executor.submit(worker) for _index in range(thread_count)]
+            self.assertTrue(loader_entered.wait(timeout=5))
+            time.sleep(0.1)
+            release_loader.set()
+            results = [future.result(timeout=30) for future in futures]
+
+        self.assertTrue(all(result[0] == "success" for result in results), results)
+        self.assertEqual(
+            counts,
+            {
+                "macwin_asset_common.py": 1,
+                "import_macwin_source_pack.py": 1,
+            },
+        )
+        published = results[0][1:3]
+        expected_document = results[0][3]
+        self.assertTrue(
+            all(
+                result[1] is published[0]
+                and result[2] is published[1]
+                and result[3] == expected_document
+                for result in results
+            )
+        )
+
+    def test_failed_concurrent_bootstrap_is_atomic_retryable_and_deadlock_free(self) -> None:
+        converter = _load_macwin_asset_converter()
+        thread_count = 8
+        ready = threading.Barrier(thread_count)
+        count_lock = threading.Lock()
+        counts: dict[str, int] = {}
+        failed_state = None
+        original = converter._load_trusted_tool
+
+        def fail_first_importer(name):
+            nonlocal failed_state
+            with count_lock:
+                counts[name] = counts.get(name, 0) + 1
+                should_fail = (
+                    name == "import_macwin_source_pack.py"
+                    and counts[name] == 1
+                )
+                if should_fail:
+                    failed_state = (converter._COMMON, converter._SOURCE_PACK)
+            if should_fail:
+                raise RuntimeError("hostile\n\x1b[31m bootstrap failure")
+            return original(name)
+
+        def worker():
+            ready.wait(timeout=5)
+            try:
+                converter._bootstrap_dependencies()
+            except converter.ConversionError as error:
+                return ("failure", str(error))
+            except BaseException as error:
+                return ("error", type(error).__name__, str(error))
+            return ("success", converter._COMMON, converter._SOURCE_PACK)
+
+        with mock.patch.object(
+            converter, "_load_trusted_tool", side_effect=fail_first_importer
+        ), concurrent.futures.ThreadPoolExecutor(
+            max_workers=thread_count
+        ) as executor:
+            futures = [executor.submit(worker) for _index in range(thread_count)]
+            results = [future.result(timeout=30) for future in futures]
+
+        self.assertEqual(failed_state, (None, None))
+        self.assertEqual(
+            [result for result in results if result[0] == "failure"],
+            [("failure", "migration dependencies are unavailable")],
+        )
+        successes = [result for result in results if result[0] == "success"]
+        self.assertEqual(len(successes), thread_count - 1, results)
+        self.assertEqual(
+            counts,
+            {
+                "macwin_asset_common.py": 2,
+                "import_macwin_source_pack.py": 2,
+            },
+        )
+        published = successes[0][1:]
+        self.assertTrue(
+            all(
+                result[1] is published[0] and result[2] is published[1]
+                for result in successes
+            )
+        )
+        with mock.patch.object(
+            converter,
+            "_load_trusted_tool",
+            side_effect=AssertionError("valid dependency pair was reloaded"),
+        ):
+            converter._bootstrap_dependencies()
+        self.assertIs(converter._COMMON, published[0])
+        self.assertIs(converter._SOURCE_PACK, published[1])
 
     def test_each_source_leaf_is_read_once_by_the_bounded_bottom_primitive(self) -> None:
         converter = self.converter
