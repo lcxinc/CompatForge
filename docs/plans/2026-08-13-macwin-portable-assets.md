@@ -141,7 +141,8 @@ before the standard decoder.
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MigrationJsonBoundaryTests|MigrationSchemaTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MigrationJsonBoundaryTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MigrationSchemaTests -v
 ```
 
 Expected: errors for missing common module/schemas and Recipe provenance.
@@ -179,7 +180,8 @@ design. Do not add third-party Python dependencies.
 **Step 4: Run GREEN and mutation checks**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MigrationJsonBoundaryTests|MigrationSchemaTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MigrationJsonBoundaryTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MigrationSchemaTests -v
 python -B scripts/validate_repository.py
 ```
 
@@ -567,7 +569,8 @@ Add `MacWinMigrationCliTests` and `MacWinMigrationTransactionTests` for:
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MacWinMigrationCliTests|MacWinMigrationTransactionTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationCliTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationTransactionTests -v
 ```
 
 Expected: FAIL because CLI and transaction functions do not exist.
@@ -590,7 +593,8 @@ selected.
 **Step 4: Run GREEN and two-write proof**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MacWinMigrationCliTests|MacWinMigrationTransactionTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationCliTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationTransactionTests -v
 python -B tools/convert_macwin_assets.py --check
 python -B tools/convert_macwin_assets.py --write
 python -B tools/convert_macwin_assets.py --write
@@ -636,7 +640,8 @@ Add `MacWinMigrationSideEffectTests` and `MacWinMigrationDocumentationTests`:
 **Step 2: Run RED**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MacWinMigrationSideEffectTests|MacWinMigrationDocumentationTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationSideEffectTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationDocumentationTests -v
 ```
 
 Expected: missing docs and guard assertions fail; controlled mutants escape until
@@ -652,7 +657,8 @@ domain, not a personal account.
 **Step 4: Run GREEN and controlled RED→GREEN proofs**
 
 ```powershell
-python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k 'MacWinMigrationSideEffectTests|MacWinMigrationDocumentationTests' -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationSideEffectTests -v
+python -B -m unittest discover -s tests -p 'test_macwin_asset_migration.py' -k MacWinMigrationDocumentationTests -v
 python -B scripts/validate_repository.py
 ```
 
