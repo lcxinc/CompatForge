@@ -1,4 +1,5 @@
 tests/fixtures/runtime-packs/**/components/*.blob binary
 tests/fixtures/*.exe binary
 /migration/macwin/**/*.json text eol=lf
+/migration/macwin/source/objects/sha256/** binary
 /schemas/macwin-*.schema.json text eol=lf

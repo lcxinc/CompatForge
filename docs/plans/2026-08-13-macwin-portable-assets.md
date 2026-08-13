@@ -198,6 +198,7 @@ git commit -s -m "feat: define portable migration contracts"
 ### Task 3: Import and bind the complete offline source pack
 
 **Files:**
+- Modify: `.gitattributes`
 - Create: `tools/import_macwin_source_pack.py`
 - Create: `migration/macwin/source/index.json`
 - Create: `migration/macwin/source/objects/sha256/**`
@@ -216,6 +217,13 @@ content-addressed leaves. Any extra or unreferenced file, index/object drift,
 linked boundary, or source-pack validation failure grants no exemption and
 fails closed. This validation never reads a neighboring repository or uses the
 network.
+
+The content-addressed raw object leaves are also pinned by the exact
+`.gitattributes` rule
+`/migration/macwin/source/objects/sha256/** binary`. The rule expands to
+`-diff -merge -text`, does not match generated or neighboring paths, and keeps
+Git add/checkout byte identity independent of `core.autocrlf`; the canonical
+source index remains UTF-8/LF JSON under the existing JSON rule.
 
 **Step 1: Write failing source-pack tests**
 
