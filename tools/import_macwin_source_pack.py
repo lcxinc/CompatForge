@@ -1330,9 +1330,21 @@ def _write_source_pack(destination: Path, documents: dict[str, bytes]) -> None:
                 committed = True
             except OSError:
                 _fail("source-pack transaction failed")
-            installed = validate_source_pack(destination)
-            if _document_bytes(destination, installed) != documents:
-                _fail("source-pack installed bytes do not match")
+            installed_verified = False
+            try:
+                installed = validate_source_pack(destination)
+                if _document_bytes(destination, installed) != documents:
+                    _fail("source-pack installed bytes do not match")
+                installed_verified = True
+            finally:
+                if not installed_verified:
+                    failed = parent / f".source-failed-{secrets.token_hex(16)}"
+                    try:
+                        os.replace(destination, failed)
+                        committed = False
+                        shutil.rmtree(failed)
+                    except OSError:
+                        _fail("source-pack transaction failed")
     finally:
         if stage.exists() and not committed:
             shutil.rmtree(stage)

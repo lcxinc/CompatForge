@@ -2348,6 +2348,49 @@ class MacWinSourcePackTests(unittest.TestCase):
             self.assertTrue(parent.is_dir())
             self.assertFalse(destination.exists())
 
+    def test_first_install_rolls_back_after_post_replace_failure(self) -> None:
+        importer = self._load_importer()
+        source_root = ROOT / "migration/macwin/source"
+        manifest = importer.validate_source_pack(source_root)
+        documents = importer._document_bytes(source_root, manifest)
+
+        for scenario in ("validation", "readback", "injected"):
+            with self.subTest(scenario=scenario), self._temporary_directory() as directory:
+                root = Path(directory)
+                destination = root / "migration/macwin/source"
+                real_validate = importer.validate_source_pack
+                real_document_bytes = importer._document_bytes
+
+                def injected_validate(path: Path):
+                    if scenario == "validation" and path == destination:
+                        raise importer.SourcePackError("injected installed validation failure")
+                    return real_validate(path)
+
+                def injected_document_bytes(path: Path, value: dict[str, object]):
+                    if scenario == "readback" and path == destination:
+                        raise importer.SourcePackError("injected installed readback failure")
+                    if scenario == "injected" and path == destination:
+                        raise RuntimeError("injected post-replace failure")
+                    return real_document_bytes(path, value)
+
+                with mock.patch.object(
+                    importer, "SOURCE_PACK_ROOT", destination
+                ), mock.patch.object(
+                    importer, "validate_source_pack", injected_validate
+                ), mock.patch.object(
+                    importer, "_document_bytes", injected_document_bytes
+                ):
+                    expected = (
+                        RuntimeError
+                        if scenario == "injected"
+                        else importer.SourcePackError
+                    )
+                    with self.assertRaises(expected):
+                        importer._write_source_pack(destination, documents)
+
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(destination.parent.iterdir()), [])
+
     def test_repository_validator_allows_only_the_validated_sealed_evidence(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         validator.ROOT = ROOT
