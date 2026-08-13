@@ -479,6 +479,13 @@ git commit -s -m "feat: convert frozen Mac-Win recipes"
 
 ### Task 6: Export portable probes, fixtures, and deferred mappings
 
+At the Task 6 checkpoint, the top-level generated-evidence oracle accepts
+exactly `catalog.json`, `quarantine.json`, `mappings/patches.json`, and
+`mappings/bottle-schemas.json`, with no other generated file or directory.
+Task 7 explicitly replaces this checkpoint set when it adds the sealed root
+index and any newly approved generated graph leaves; the Task 5 two-leaf
+sub-oracle remains independently reusable inside both checkpoints.
+
 **Files:**
 - Modify: `tools/convert_macwin_assets.py`
 - Create: `migration/macwin/generated/probes/*.json`
