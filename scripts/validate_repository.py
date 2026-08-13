@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -15,33 +16,63 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MEMBER = re.compile(r'^\s*"([^"]+)"[,]?\s*$')
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+MIGRATION_CHECK_TIMEOUT_SECONDS = 120
+MIGRATION_ENVIRONMENT_NAMES = frozenset(
+    {
+        "COMSPEC",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "WINDIR",
+    }
+)
 
 
 def validate_macwin_asset_migration() -> list[str]:
-    """Run the migration converter check once the Task 2 tool exists."""
+    """Run the migration converter check once the Task 4 tool exists."""
     converter = ROOT / "tools/convert_macwin_assets.py"
-    if not converter.exists():
+    try:
+        converter_metadata = converter.lstat()
+    except FileNotFoundError:
         # Temporary Task 1 boundary: Task 8 removes this absence-only skip.
         return []
+    except OSError:
+        return ["Mac-Win asset migration converter path is not a regular file"]
+    if not stat.S_ISREG(converter_metadata.st_mode) or getattr(
+        converter_metadata, "st_reparse_tag", 0
+    ):
+        return ["Mac-Win asset migration converter path is not a regular file"]
 
-    environment = os.environ.copy()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in MIGRATION_ENVIRONMENT_NAMES
+    }
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    completed = subprocess.run(
-        [sys.executable, "-B", str(converter), "--check"],
-        cwd=ROOT,
-        env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-B", str(converter), "--check"],
+            cwd=ROOT,
+            check=False,
+            env=environment,
+            executable=None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=MIGRATION_CHECK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return ["Mac-Win asset migration check timed out"]
+    except OSError:
+        return ["Mac-Win asset migration check could not start"]
     if completed.returncode == 0:
         return []
 
-    detail = completed.stderr.strip() or completed.stdout.strip()
-    message = f"Mac-Win asset migration check failed with exit {completed.returncode}"
-    if detail:
-        message += f": {detail}"
-    return [message]
+    return [f"Mac-Win asset migration check failed with exit {completed.returncode}"]
 
 
 def validate_json() -> list[str]:
