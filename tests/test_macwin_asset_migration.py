@@ -2681,6 +2681,53 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             errors = validator.validate_no_developer_paths()
             self.assertIn("Mac-Win generated evidence validation failed", errors)
 
+    def test_repository_validator_routes_future_converter_documents_to_ordinary_scan(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        for case in ("safe", "hostile"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-task5-validator-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                self._copy_validator_fixture(temporary_root)
+                future = temporary_root / "migration/macwin/generated/future.json"
+                future_raw = (
+                    b'{"future":"portable"}\n'
+                    if case == "safe"
+                    else b'{"future":"/Users/' + b'a1-6/hostile"}\n'
+                )
+                future.write_bytes(future_raw)
+                real_loader = validator._load_task5_converter
+
+                class FutureConverter:
+                    def __init__(self, converter):
+                        self._converter = converter
+
+                    def build_conversion(self, root):
+                        return self._converter.build_conversion(root)
+
+                    def render_documents(self, result):
+                        documents = self._converter.render_documents(result)
+                        return {
+                            **documents,
+                            "migration/macwin/generated/future.json": future_raw,
+                        }
+
+                def load_future_converter():
+                    converter, path, raw, identity = real_loader()
+                    return FutureConverter(converter), path, raw, identity
+
+                validator.ROOT = temporary_root
+                with mock.patch.object(
+                    validator, "_load_task5_converter", load_future_converter
+                ):
+                    errors = validator.validate_no_developer_paths()
+                if case == "safe":
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertTrue(
+                        any("contains developer path /Users/" in error for error in errors)
+                    )
+
     def test_repository_validator_rejects_extra_generated_developer_evidence(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(

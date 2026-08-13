@@ -358,7 +358,10 @@ class _GeneratedEvidenceBinding:
         regenerated = self.converter.render_documents(
             self.converter.build_conversion(ROOT)
         )
-        if type(regenerated) is not dict or regenerated != self.expected:
+        if type(regenerated) is not dict or any(
+            regenerated.get(relative) != raw
+            for relative, raw in self.expected.items()
+        ):
             raise ValueError("generated evidence semantics changed")
         for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
             self.verify_path(path)
@@ -726,9 +729,13 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             _load_task5_converter()
         )
         expected = converter.render_documents(converter.build_conversion(ROOT))
-        if type(expected) is not dict or set(expected) != TASK5_DOCUMENT_PATHS:
+        if type(expected) is not dict or not TASK5_DOCUMENT_PATHS.issubset(expected):
             raise ValueError("generated evidence set is invalid")
-        if any(type(raw) is not bytes or len(raw) > MAX_TASK5_DOCUMENT_BYTES for raw in expected.values()):
+        selected = {relative: expected[relative] for relative in TASK5_DOCUMENT_PATHS}
+        if any(
+            type(raw) is not bytes or len(raw) > MAX_TASK5_DOCUMENT_BYTES
+            for raw in selected.values()
+        ):
             raise ValueError("generated evidence bytes are invalid")
         generated_root = (ROOT / "migration" / "macwin" / "generated").absolute()
         root = generated_root.lstat()
@@ -743,10 +750,10 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             Path, tuple[bytes, tuple[int, int, int, int, int, int]]
         ] = {}
         committed: dict[str, bytes] = {}
-        for relative in sorted(expected, key=lambda value: value.encode("ascii")):
+        for relative in sorted(selected, key=lambda value: value.encode("ascii")):
             path = (ROOT / PurePosixPath(relative)).absolute()
             raw, identity = _read_bound_regular_file(path, MAX_TASK5_DOCUMENT_BYTES)
-            if raw != expected[relative] or hashlib.sha256(raw).digest() != hashlib.sha256(expected[relative]).digest():
+            if raw != selected[relative] or hashlib.sha256(raw).digest() != hashlib.sha256(selected[relative]).digest():
                 raise ValueError("generated evidence bytes do not match")
             leaves[path] = (raw, identity)
             committed[relative] = raw
@@ -756,7 +763,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
         binding = _GeneratedEvidenceBinding(
             generated_root,
             root_identity,
-            dict(expected),
+            selected,
             leaves,
             converter,
             converter_path,
