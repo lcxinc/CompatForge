@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +15,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MEMBER = re.compile(r'^\s*"([^"]+)"[,]?\s*$')
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+def validate_macwin_asset_migration() -> list[str]:
+    """Run the migration converter check once the Task 2 tool exists."""
+    converter = ROOT / "tools/convert_macwin_assets.py"
+    if not converter.exists():
+        # Temporary Task 1 boundary: Task 8 removes this absence-only skip.
+        return []
+
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "-B", str(converter), "--check"],
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode == 0:
+        return []
+
+    detail = completed.stderr.strip() or completed.stdout.strip()
+    message = f"Mac-Win asset migration check failed with exit {completed.returncode}"
+    if detail:
+        message += f": {detail}"
+    return [message]
 
 
 def validate_json() -> list[str]:
@@ -124,7 +153,8 @@ def validate_pe_inspection_fixture() -> list[str]:
 
 def main() -> int:
     errors = (
-        validate_json()
+        validate_macwin_asset_migration()
+        + validate_json()
         + validate_workspace_members()
         + validate_markdown_links()
         + validate_no_developer_paths()
