@@ -1214,6 +1214,216 @@ class MacWinConversionModelTests(unittest.TestCase):
             ):
                 converter.classify_source_pack(forged)
 
+    def test_model_type_gates_reject_hostile_fields_without_reflection(self) -> None:
+        converter = self.converter
+        source_pack = self.source_pack
+        source_asset = source_pack.assets[0]
+        record = self.result.records[0]
+
+        def explode(*_arguments, **_options):
+            raise AssertionError("hostile class\n\x1b[31mreflected")
+
+        hostile_type = type(
+            "Hostile\n\x1b[31mName",
+            (),
+            {
+                "__eq__": explode,
+                "__hash__": explode,
+                "casefold": explode,
+                "encode": explode,
+                "__str__": explode,
+            },
+        )
+        hostile = hostile_type()
+
+        source_pack_mutants = (
+            dataclasses.replace(source_pack, repository=hostile),
+            dataclasses.replace(source_pack, category_counts=(("catalog", True),)),
+            dataclasses.replace(source_pack, assets=list(source_pack.assets)),
+        )
+        for mutant in source_pack_mutants:
+            with self.subTest(boundary="source-pack"), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Asource pack model fields are invalid\Z",
+            ):
+                converter.classify_source_pack(mutant)
+
+        asset_mutants = (
+            dataclasses.replace(source_asset, category=[]),
+            dataclasses.replace(source_asset, sha256=[]),
+            dataclasses.replace(source_asset, byte_size=True),
+            dataclasses.replace(source_asset, external_refs=([],)),
+            dataclasses.replace(source_asset, raw=bytearray(source_asset.raw)),
+        )
+        for mutant in asset_mutants:
+            assets = tuple(
+                mutant if existing is source_asset else existing
+                for existing in source_pack.assets
+            )
+            forged = dataclasses.replace(source_pack, assets=assets)
+            with self.subTest(boundary="source-asset"), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Asource asset model fields are invalid\Z",
+            ):
+                converter.classify_source_pack(forged)
+
+        hostile_path = dataclasses.replace(
+            source_asset, source_path="hostile\n\x1b[31m/path"
+        )
+        assets = tuple(
+            hostile_path if existing is source_asset else existing
+            for existing in source_pack.assets
+        )
+        with self.assertRaisesRegex(
+            converter.ConversionError,
+            r"\Asource asset path is invalid\Z",
+        ):
+            converter.classify_source_pack(
+                dataclasses.replace(source_pack, assets=assets)
+            )
+
+        record_mutants = (
+            dataclasses.replace(record, source_path=[]),
+            dataclasses.replace(record, source_sha256=[]),
+            dataclasses.replace(record, status=[]),
+            dataclasses.replace(record, target_issue=1),
+            dataclasses.replace(record, evidence_locators=([],)),
+        )
+        for mutant in record_mutants:
+            records = tuple(
+                mutant if existing is record else existing
+                for existing in self.result.records
+            )
+            forged = dataclasses.replace(self.result, records=records)
+            with self.subTest(boundary="conversion-record"), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Aconversion result record fields are invalid\Z",
+            ):
+                converter.render_documents(forged)
+
+    def test_converter_import_is_lazy_and_preserves_bytecode_policy(self) -> None:
+        previous = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = False
+            with tempfile.TemporaryDirectory(
+                prefix=".macwin-converter-test-", dir=ROOT
+            ) as directory:
+                tools = Path(directory) / "tools"
+                tools.mkdir()
+                copied = tools / "convert_macwin_assets.py"
+                shutil.copyfile(ROOT / "tools/convert_macwin_assets.py", copied)
+                spec = importlib.util.spec_from_file_location(
+                    "isolated_macwin_converter", copied
+                )
+                self.assertIsNotNone(spec)
+                self.assertIsNotNone(spec.loader)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                try:
+                    try:
+                        spec.loader.exec_module(module)
+                    except Exception as error:
+                        self.fail(
+                            "converter import attempted sibling bootstrap: "
+                            f"{type(error).__name__}"
+                        )
+                finally:
+                    sys.modules.pop(spec.name, None)
+                self.assertFalse(sys.dont_write_bytecode)
+                with self.assertRaisesRegex(
+                    module.ConversionError,
+                    r"\Amigration dependencies are unavailable\Z",
+                ):
+                    module.load_source_pack(Path(directory))
+        finally:
+            sys.dont_write_bytecode = previous
+
+    def test_converter_cli_stabilizes_every_sibling_bootstrap_failure(self) -> None:
+        converter_source = ROOT / "tools/convert_macwin_assets.py"
+        common_source = ROOT / "tools/macwin_asset_common.py"
+        importer_source = ROOT / "tools/import_macwin_source_pack.py"
+        expected_error = "Mac-Win asset conversion failed.\n"
+        scenarios = (
+            "missing-common",
+            "missing-importer",
+            "corrupt-common",
+            "corrupt-importer",
+            "exiting-common",
+            "linked-common",
+            "linked-importer",
+            "unreadable-common",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory(
+                prefix=".macwin-converter-test-", dir=ROOT
+            ) as directory:
+                root = Path(directory)
+                tools = root / "tools"
+                tools.mkdir()
+                converter = tools / converter_source.name
+                shutil.copyfile(converter_source, converter)
+                common = tools / common_source.name
+                importer = tools / importer_source.name
+                if scenario != "missing-common":
+                    shutil.copyfile(common_source, common)
+                if scenario != "missing-importer":
+                    shutil.copyfile(importer_source, importer)
+                if scenario == "corrupt-common":
+                    common.write_bytes(b"\xffhostile\n\x1b[31m")
+                elif scenario == "corrupt-importer":
+                    importer.write_bytes(b"\xffhostile\n\x1b[31m")
+                elif scenario == "exiting-common":
+                    common.write_text(
+                        "raise SystemExit('hostile\\n\\x1b[31m')\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                elif scenario == "linked-common":
+                    common.unlink()
+                    outside = root / "outside-common.py"
+                    shutil.copyfile(common_source, outside)
+                    os.symlink(outside, common)
+                elif scenario == "linked-importer":
+                    importer.unlink()
+                    outside = root / "outside-importer.py"
+                    shutil.copyfile(importer_source, outside)
+                    os.symlink(outside, importer)
+
+                command = [sys.executable, "-B", str(converter), "--check"]
+                if scenario == "unreadable-common":
+                    denial_probe = (
+                        "import os,runpy,sys\n"
+                        "original_open=os.open\n"
+                        "def denied(path,*args,**kwargs):\n"
+                        " if str(path).endswith('macwin_asset_common.py'):\n"
+                        "  raise PermissionError('hostile\\n\\x1b[31m')\n"
+                        " return original_open(path,*args,**kwargs)\n"
+                        "os.open=denied\n"
+                        "target=sys.argv[1]\n"
+                        "sys.argv=[target,'--check']\n"
+                        "runpy.run_path(target,run_name='__main__')\n"
+                    )
+                    command = [
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        denial_probe,
+                        str(converter),
+                    ]
+                completed = subprocess.run(
+                    command,
+                    cwd=root,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=IMPORT_PROBE_TIMEOUT_SECONDS,
+                )
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertEqual(completed.stdout, "")
+                self.assertEqual(completed.stderr, expected_error)
+
     def test_each_source_leaf_is_read_once_by_the_bounded_bottom_primitive(self) -> None:
         converter = self.converter
         source_root = (ROOT / "migration/macwin/source").absolute()

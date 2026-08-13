@@ -20,8 +20,6 @@ if os.name == "nt":
     import msvcrt
 
 
-sys.dont_write_bytecode = True
-
 ROOT = Path(os.path.abspath(__file__)).parent.parent
 SOURCE_PACK_RELATIVE = PurePosixPath("migration/macwin/source")
 
@@ -166,15 +164,30 @@ def _load_trusted_tool(name: str):
         finally:
             sys.modules.pop(module_name, None)
         return module
-    except Exception:
+    except BaseException:
         raise RuntimeError("migration dependency could not be loaded") from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
 
 
-_COMMON = _load_trusted_tool("macwin_asset_common.py")
-_SOURCE_PACK = _load_trusted_tool("import_macwin_source_pack.py")
+_COMMON = None
+_SOURCE_PACK = None
+
+
+def _bootstrap_dependencies() -> None:
+    """Load both trusted siblings atomically on first library or CLI use."""
+
+    global _COMMON, _SOURCE_PACK
+    if _COMMON is not None and _SOURCE_PACK is not None:
+        return
+    try:
+        common = _load_trusted_tool("macwin_asset_common.py")
+        source_pack = _load_trusted_tool("import_macwin_source_pack.py")
+    except RuntimeError:
+        _fail("migration dependencies are unavailable")
+    _COMMON = common
+    _SOURCE_PACK = source_pack
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +460,7 @@ def _load_authenticated_asset(
 def load_source_pack(repository_root: Path) -> SourcePack:
     """Load and authenticate the complete committed offline source pack."""
 
+    _bootstrap_dependencies()
     if not isinstance(repository_root, Path):
         _fail("repository root is invalid")
     source_root = repository_root.absolute() / SOURCE_PACK_RELATIVE
@@ -643,6 +657,7 @@ def _append_bound_directory(
 def classify_source_pack(source_pack: SourcePack) -> ConversionResult:
     """Classify every authenticated identity into one closed migration result."""
 
+    _bootstrap_dependencies()
     _validate_source_pack_model(source_pack)
     recipe_paths = _validate_catalog_boundary(source_pack)
     records = tuple(
@@ -662,6 +677,7 @@ def build_conversion(repository_root: Path) -> ConversionResult:
 def render_documents(result: ConversionResult) -> dict[str, bytes]:
     """Render the closed Task 4 ledger in memory without writing output files."""
 
+    _bootstrap_dependencies()
     _validate_conversion_result(result)
     source_pack = result.source_pack
     document = {
@@ -686,9 +702,62 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
     return {"conversion-ledger.json": raw}
 
 
+def _is_exact_string_tuple(value: object) -> bool:
+    return type(value) is tuple and all(type(item) is str for item in value)
+
+
+def _validate_source_pack_field_types(source_pack: SourcePack) -> None:
+    string_fields = (
+        source_pack.repository,
+        source_pack.source_tag,
+        source_pack.source_tag_object,
+        source_pack.source_commit,
+        source_pack.inventory_commit,
+        source_pack.digest_algorithm,
+    )
+    if (
+        any(type(value) is not str for value in string_fields)
+        or type(source_pack.category_counts) is not tuple
+        or any(
+            type(item) is not tuple
+            or len(item) != 2
+            or type(item[0]) is not str
+            or type(item[1]) is not int
+            for item in source_pack.category_counts
+        )
+        or type(source_pack.assets) is not tuple
+    ):
+        _fail("source pack model fields are invalid")
+
+
+def _validate_source_asset_field_types(asset: SourceAsset) -> None:
+    string_fields = (
+        asset.category,
+        asset.source_path,
+        asset.source_commit,
+        asset.git_blob_oid,
+        asset.sha256,
+        asset.git_mode,
+        asset.kind,
+        asset.license_status,
+        asset.provenance_status,
+        asset.intended_owner,
+        asset.object_path,
+    )
+    if (
+        any(type(value) is not str for value in string_fields)
+        or type(asset.byte_size) is not int
+        or not _is_exact_string_tuple(asset.external_refs)
+        or not _is_exact_string_tuple(asset.development_dependencies)
+        or type(asset.raw) is not bytes
+    ):
+        _fail("source asset model fields are invalid")
+
+
 def _validate_source_pack_model(source_pack: SourcePack) -> None:
     if type(source_pack) is not SourcePack:
         _fail("source pack model is invalid")
+    _validate_source_pack_field_types(source_pack)
     if (
         source_pack.repository != APPROVED_REPOSITORY
         or source_pack.source_tag != APPROVED_SOURCE_TAG
@@ -697,7 +766,6 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
         or source_pack.inventory_commit != APPROVED_INVENTORY_COMMIT
         or source_pack.digest_algorithm != "sha256"
         or source_pack.category_counts != EXPECTED_CATEGORY_COUNTS
-        or type(source_pack.assets) is not tuple
         or len(source_pack.assets) != 90
     ):
         _fail("source pack model identity is invalid")
@@ -708,7 +776,10 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
     counts = {category: 0 for category, _count in EXPECTED_CATEGORY_COUNTS}
     executable_count = 0
     for asset in source_pack.assets:
-        if type(asset) is not SourceAsset or asset.category not in counts:
+        if type(asset) is not SourceAsset:
+            _fail("source asset model is invalid")
+        _validate_source_asset_field_types(asset)
+        if asset.category not in counts:
             _fail("source asset model is invalid")
         try:
             _COMMON.require_relative_posix_path(asset.source_path)
@@ -726,7 +797,6 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
             or _HEX_40.fullmatch(asset.git_blob_oid) is None
             or _HEX_64.fullmatch(asset.sha256) is None
             or asset.sha256 in digests
-            or type(asset.byte_size) is not int
             or asset.byte_size < 0
             or asset.byte_size > _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES
             or asset.git_mode not in {"100644", "100755"}
@@ -734,8 +804,6 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
             or asset.license_status != "unresolved"
             or asset.provenance_status != "unresolved"
             or asset.intended_owner != EXPECTED_OWNERS[asset.category]
-            or type(asset.external_refs) is not tuple
-            or type(asset.development_dependencies) is not tuple
             or len(asset.external_refs) > 512
             or len(asset.development_dependencies) > 512
             or len(set(asset.external_refs)) != len(asset.external_refs)
@@ -748,7 +816,6 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
             )
             or asset.object_path
             != f"objects/sha256/{asset.sha256[:2]}/{asset.sha256[2:]}"
-            or type(asset.raw) is not bytes
             or len(asset.raw) != asset.byte_size
             or hashlib.sha256(asset.raw).hexdigest() != asset.sha256
             or _git_blob_oid(asset.raw) != asset.git_blob_oid
@@ -959,13 +1026,49 @@ def _classify_publishable(
     )
 
 
-def _validate_conversion_result(result: ConversionResult) -> None:
-    if type(result) is not ConversionResult or type(result.records) is not tuple:
-        _fail("conversion result is invalid")
-    _validate_source_pack_model(result.source_pack)
-    if len(result.records) != 90 or any(
-        type(record) is not ConversionRecord for record in result.records
+def _validate_conversion_record_field_types(record: ConversionRecord) -> None:
+    string_fields = (
+        record.source_repository,
+        record.source_commit,
+        record.source_path,
+        record.source_sha256,
+        record.source_kind,
+        record.category,
+        record.intended_owner,
+        record.output_kind,
+        record.status,
+        record.action,
+    )
+    optional_strings = (
+        record.target_issue,
+        record.reason,
+        record.release_condition,
+    )
+    if (
+        any(type(value) is not str for value in string_fields)
+        or any(value is not None and type(value) is not str for value in optional_strings)
+        or not _is_exact_string_tuple(record.evidence_locators)
     ):
+        _fail("conversion result record fields are invalid")
+    try:
+        _COMMON.require_relative_posix_path(record.source_path)
+    except _COMMON.MigrationError:
+        _fail("conversion result record path is invalid")
+
+
+def _validate_conversion_result(result: ConversionResult) -> None:
+    if (
+        type(result) is not ConversionResult
+        or type(result.source_pack) is not SourcePack
+        or type(result.records) is not tuple
+    ):
+        _fail("conversion result is invalid")
+    for record in result.records:
+        if type(record) is not ConversionRecord:
+            _fail("conversion result coverage is invalid")
+        _validate_conversion_record_field_types(record)
+    _validate_source_pack_model(result.source_pack)
+    if len(result.records) != 90:
         _fail("conversion result coverage is invalid")
     paths = tuple(record.source_path for record in result.records)
     if (
