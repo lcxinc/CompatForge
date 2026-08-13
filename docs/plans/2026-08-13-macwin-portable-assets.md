@@ -382,7 +382,43 @@ git commit -s -m "feat: classify every Mac-Win migration input"
 - Create: `migration/macwin/generated/catalog.json`
 - Create: `migration/macwin/generated/recipes/*.json`
 - Create: `migration/macwin/generated/quarantine.json`
+- Modify: `scripts/validate_repository.py`
 - Modify: `tests/test_macwin_asset_migration.py`
+
+The frozen catalog can preserve reviewed developer-machine locators in
+quarantine evidence. The repository developer-path gate therefore exempts only
+the exact `catalog.json` and `quarantine.json` leaves after the Task 5 converter
+rebuilds both documents from the authenticated source pack, validates their
+closed application contracts, and proves exact canonical byte equality. The
+scan binds both generated leaf identities and raw bytes, revalidates the full
+documents and source pack after scanning, and grants no subtree or pattern
+exemption. Modified, forged, extra, unreferenced, linked, or replaced generated
+evidence remains subject to the ordinary developer-path failure.
+
+The reviewed Task 5 result for source commit
+`db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527` is 0 converted and 17
+quarantined candidates. Every candidate is blocked first by unresolved source
+license evidence; no placeholder Recipe is emitted.
+
+| Source ID | Status | First reason |
+| --- | --- | --- |
+| `7zip` | quarantined | `missing-license` |
+| `firefox` | quarantined | `missing-license` |
+| `hoyoplay-cn` | quarantined | `missing-license` |
+| `jasp-stats` | quarantined | `missing-license` |
+| `lenovo-app-store` | quarantined | `missing-license` |
+| `libreoffice` | quarantined | `missing-license` |
+| `ltspice` | quarantined | `missing-license` |
+| `macwin-core-capability-tests` | quarantined | `missing-license` |
+| `macwin-game-tests` | quarantined | `missing-license` |
+| `macwin-probes` | quarantined | `missing-license` |
+| `notepad-plus-plus` | quarantined | `missing-license` |
+| `portableapps-platform` | quarantined | `missing-license` |
+| `sqlitestudio` | quarantined | `missing-license` |
+| `steam` | quarantined | `missing-license` |
+| `sumatrapdf` | quarantined | `missing-license` |
+| `texstudio` | quarantined | `missing-license` |
+| `vlc` | quarantined | `missing-license` |
 
 **Step 1: Write failing Recipe/quarantine tests**
 
