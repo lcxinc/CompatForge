@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import ctypes
 import hashlib
 import ipaddress
 import os
@@ -18,7 +20,6 @@ from urllib.parse import unquote_to_bytes, urlsplit
 
 
 if os.name == "nt":
-    import ctypes
     from ctypes import wintypes
     import msvcrt
 
@@ -401,15 +402,41 @@ class _HeldSourceLeaf:
     raw: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _GeneratedLeafBinding:
+    identity: tuple[int, int, int, int, int, int]
+    raw: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _GeneratedTreeSnapshot:
+    root_identity: tuple[int, int, int, int, int, int]
+    directory_identities: tuple[
+        tuple[str, tuple[int, int, int, int, int, int]], ...
+    ]
+    leaves: tuple[tuple[str, _GeneratedLeafBinding], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldGeneratedDirectory:
+    path: Path
+    identity: tuple[int, int, int, int, int, int]
+    handle: object
+
+
 if os.name == "nt":
     _GENERIC_READ = 0x80000000
     _FILE_READ_ATTRIBUTES = 0x0080
     _FILE_SHARE_READ = 0x00000001
+    _FILE_SHARE_WRITE = 0x00000002
     _OPEN_EXISTING = 3
     _FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
     _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
     _FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
     _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+    _REPLACEFILE_WRITE_THROUGH = 0x00000001
+    _MOVEFILE_WRITE_THROUGH = 0x00000008
     _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
     class _FileAttributeTagInfo(ctypes.Structure):
@@ -441,6 +468,19 @@ if os.name == "nt":
     _CLOSE_HANDLE = _KERNEL32.CloseHandle
     _CLOSE_HANDLE.argtypes = (wintypes.HANDLE,)
     _CLOSE_HANDLE.restype = wintypes.BOOL
+    _REPLACE_FILE = _KERNEL32.ReplaceFileW
+    _REPLACE_FILE.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    _REPLACE_FILE.restype = wintypes.BOOL
+    _MOVE_FILE = _KERNEL32.MoveFileExW
+    _MOVE_FILE.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    _MOVE_FILE.restype = wintypes.BOOL
 
 
 def _open_source_leaf_descriptor(path: Path) -> int:
@@ -2969,15 +3009,946 @@ def _git_blob_oid(raw: bytes) -> str:
     return hashlib.sha1(header + raw, usedforsecurity=False).hexdigest()
 
 
-def main(arguments: tuple[str, ...]) -> int:
-    """Run the temporary read-only Task 4 repository validation boundary."""
+_TRANSACTION_DIRECTORY_NAME = ".compatforge-transaction"
+_MAX_GENERATED_LEAF_BYTES = 8 * 1024 * 1024
+_MAX_GENERATED_TREE_BYTES = 16 * 1024 * 1024
+_MAX_GENERATED_ENTRIES = 4096
 
-    if arguments != ("--check",):
+
+def _generated_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_nlink,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _plain_directory_identity(path: Path) -> tuple[int, int, int, int, int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        _fail("generated output directory is unavailable")
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or getattr(metadata, "st_reparse_tag", 0)
+    ):
+        _fail("generated output directory is unsafe")
+    return _generated_identity(metadata)
+
+
+def _hold_generated_directories(paths: list[Path]) -> list[_HeldGeneratedDirectory]:
+    held: list[_HeldGeneratedDirectory] = []
+    try:
+        for path in paths:
+            identity = _plain_directory_identity(path)
+            if os.name == "nt":
+                handle = _CREATE_FILE(
+                    str(path),
+                    _FILE_READ_ATTRIBUTES,
+                    _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                    None,
+                    _OPEN_EXISTING,
+                    _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+                    None,
+                )
+                if handle == _INVALID_HANDLE_VALUE:
+                    _fail("generated output directory could not be bound")
+                attributes = _FileAttributeTagInfo()
+                if not _GET_FILE_INFORMATION(
+                    handle,
+                    _FILE_ATTRIBUTE_TAG_INFO_CLASS,
+                    ctypes.byref(attributes),
+                    ctypes.sizeof(attributes),
+                ) or attributes.file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+                    _CLOSE_HANDLE(handle)
+                    _fail("generated output directory handle is unsafe")
+            else:
+                try:
+                    handle = os.open(
+                        path,
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_CLOEXEC", 0),
+                    )
+                except OSError:
+                    _fail("generated output directory could not be bound")
+                opened = os.fstat(handle)
+                if (
+                    not stat.S_ISDIR(opened.st_mode)
+                    or _generated_identity(opened)[:2] != identity[:2]
+                ):
+                    os.close(handle)
+                    _fail("generated output directory handle identity changed")
+            if _plain_directory_identity(path) != identity:
+                if os.name == "nt":
+                    _CLOSE_HANDLE(handle)
+                else:
+                    os.close(handle)
+                _fail("generated output directory binding changed")
+            held.append(_HeldGeneratedDirectory(path, identity, handle))
+        return held
+    except BaseException:
+        _close_generated_directories(held)
+        raise
+
+
+def _verify_held_generated_directories(
+    held: list[_HeldGeneratedDirectory],
+) -> None:
+    for directory in held:
+        if _plain_directory_identity(directory.path)[:2] != directory.identity[:2]:
+            _fail("generated output directory binding changed")
+        if os.name != "nt":
+            try:
+                opened = os.fstat(directory.handle)
+            except OSError:
+                _fail("generated output directory handle is unavailable")
+            if _generated_identity(opened)[:2] != directory.identity[:2]:
+                _fail("generated output directory handle identity changed")
+
+
+def _close_generated_directories(held: list[_HeldGeneratedDirectory]) -> None:
+    while held:
+        directory = held.pop()
+        if os.name == "nt":
+            _CLOSE_HANDLE(directory.handle)
+        else:
+            try:
+                os.close(directory.handle)
+            except OSError:
+                pass
+
+
+def _generated_root(repository_root: Path, *, create: bool) -> tuple[Path, bool]:
+    root = Path(os.path.abspath(repository_root))
+    _plain_directory_identity(root)
+    current = root
+    for component in ("migration", "macwin"):
+        current = current / component
+        _plain_directory_identity(current)
+    generated = current / "generated"
+    created = False
+    try:
+        generated.lstat()
+    except FileNotFoundError:
+        if not create:
+            _fail("generated output directory is unavailable")
+        try:
+            generated.mkdir()
+        except OSError:
+            _fail("generated output directory could not be created")
+        created = True
+    except OSError:
+        _fail("generated output directory is unavailable")
+    _plain_directory_identity(generated)
+    return generated, created
+
+
+def _read_generated_leaf(path: Path) -> _GeneratedLeafBinding:
+    descriptor: int | None = None
+    try:
+        before = path.lstat()
+        identity = _generated_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or getattr(before, "st_reparse_tag", 0)
+            or before.st_nlink != 1
+            or before.st_size > _MAX_GENERATED_LEAF_BYTES
+        ):
+            _fail("generated output leaf is unsafe")
+        if os.name == "nt":
+            descriptor = _open_source_leaf_descriptor(path)
+        else:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _generated_identity(opened)[:4] != identity[:4]
+        ):
+            _fail("generated output leaf identity changed")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, _MAX_GENERATED_LEAF_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_GENERATED_LEAF_BYTES:
+                _fail("generated output leaf exceeds the byte limit")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        final = os.fstat(descriptor)
+        after = path.lstat()
+        if (
+            _generated_identity(final) != _generated_identity(opened)
+            or _generated_identity(after) != identity
+            or len(raw) != identity[2]
+        ):
+            _fail("generated output leaf changed while it was read")
+        return _GeneratedLeafBinding(identity=identity, raw=raw)
+    except ConversionError:
+        raise
+    except OSError:
+        _fail("generated output leaf could not be read safely")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _scan_generated_tree(
+    generated: Path, *, ignore_transaction: bool = False
+) -> _GeneratedTreeSnapshot:
+    root_identity = _plain_directory_identity(generated)
+    directories: list[tuple[str, tuple[int, int, int, int, int, int]]] = []
+    leaves: list[tuple[str, _GeneratedLeafBinding]] = []
+    pending = [generated]
+    total = 0
+    while pending:
+        directory = pending.pop()
+        before = _plain_directory_identity(directory)
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            _fail("generated output directory could not be enumerated")
+        if len(entries) + len(directories) + len(leaves) > _MAX_GENERATED_ENTRIES:
+            _fail("generated output tree has too many entries")
+        for entry in entries:
+            if (
+                ignore_transaction
+                and directory == generated
+                and entry.name == _TRANSACTION_DIRECTORY_NAME
+            ):
+                continue
+            path = Path(entry.path)
+            relative_tail = path.relative_to(generated).as_posix()
+            relative = f"{GENERATED_ROOT}/{relative_tail}"
+            try:
+                _COMMON.require_relative_posix_path(relative)
+                metadata = entry.stat(follow_symlinks=False)
+            except (_COMMON.MigrationError, OSError):
+                _fail("generated output entry is unsafe")
+            if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+                _fail("generated output entry is linked")
+            if stat.S_ISDIR(metadata.st_mode):
+                identity = _generated_identity(metadata)
+                directories.append((relative_tail, identity))
+                pending.append(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                binding = _read_generated_leaf(path)
+                total += len(binding.raw)
+                if total > _MAX_GENERATED_TREE_BYTES:
+                    _fail("generated output tree exceeds the byte limit")
+                leaves.append((relative, binding))
+            else:
+                _fail("generated output entry is non-regular")
+        if _plain_directory_identity(directory) != before:
+            _fail("generated output directory identity changed")
+    if _plain_directory_identity(generated) != root_identity:
+        _fail("generated output root identity changed")
+    directories.sort(key=lambda item: item[0].encode("ascii"))
+    leaves.sort(key=lambda item: item[0].encode("ascii"))
+    return _GeneratedTreeSnapshot(root_identity, tuple(directories), tuple(leaves))
+
+
+def _read_bound_generated_snapshot(repository_root: Path) -> _GeneratedTreeSnapshot:
+    _bootstrap_dependencies()
+    generated, _created = _generated_root(repository_root, create=False)
+    first = _scan_generated_tree(generated)
+    repository = Path(os.path.abspath(repository_root))
+    paths = [
+        repository,
+        repository / "migration",
+        repository / "migration/macwin",
+        generated,
+        *[
+            generated / Path(*PurePosixPath(relative).parts)
+            for relative, _identity in first.directory_identities
+        ],
+    ]
+    held = _hold_generated_directories(paths)
+    try:
+        second = _scan_generated_tree(generated)
+        _verify_held_generated_directories(held)
+        if (
+            tuple((path, binding.raw) for path, binding in first.leaves)
+            != tuple((path, binding.raw) for path, binding in second.leaves)
+            or tuple(
+                (path, identity[:2]) for path, identity in first.directory_identities
+            )
+            != tuple(
+                (path, identity[:2]) for path, identity in second.directory_identities
+            )
+        ):
+            _fail("generated output tree changed while it was read")
+        return second
+    finally:
+        _close_generated_directories(held)
+
+
+def read_generated_documents(repository_root: Path) -> dict[str, bytes]:
+    """Bounded, no-follow read of the exact generated worktree."""
+
+    snapshot = _read_bound_generated_snapshot(repository_root)
+    return {path: binding.raw for path, binding in snapshot.leaves}
+
+
+def check_generated_documents(
+    repository_root: Path, expected: dict[str, bytes]
+) -> None:
+    """Compare every current generated path and byte with the renderer."""
+
+    _validate_output_document_map(expected)
+    snapshot = _read_bound_generated_snapshot(repository_root)
+    if (
+        {path: binding.raw for path, binding in snapshot.leaves} != expected
+        or {path for path, _identity in snapshot.directory_identities}
+        != _expected_output_directories(expected)
+    ):
+        _fail("generated output tree does not match the conversion")
+
+
+def _validate_output_document_map(documents: dict[str, bytes]) -> None:
+    _bootstrap_dependencies()
+    if type(documents) is not dict or not documents:
+        _fail("generated output document map is invalid")
+    total = 0
+    folded: set[str] = set()
+    if len(documents) > _MAX_GENERATED_ENTRIES:
+        _fail("generated output document map has too many entries")
+    for path, raw in documents.items():
+        if type(path) is not str or type(raw) is not bytes:
+            _fail("generated output document map is invalid")
+        try:
+            _COMMON.require_relative_posix_path(path)
+        except _COMMON.MigrationError:
+            _fail("generated output document path is invalid")
+        if (
+            not path.startswith(f"{GENERATED_ROOT}/")
+            or path == f"{GENERATED_ROOT}/{_TRANSACTION_DIRECTORY_NAME}"
+            or f"/{_TRANSACTION_DIRECTORY_NAME}/" in path
+            or len(raw) > _MAX_GENERATED_LEAF_BYTES
+        ):
+            _fail("generated output document path is invalid")
+        casefolded = path.casefold()
+        if casefolded in folded:
+            _fail("generated output document path is duplicated")
+        folded.add(casefolded)
+        total += len(raw)
+        if total > _MAX_GENERATED_TREE_BYTES:
+            _fail("generated output document map exceeds the byte limit")
+
+
+def _expected_output_directories(documents: dict[str, bytes]) -> set[str]:
+    expected: set[str] = set()
+    root = PurePosixPath(GENERATED_ROOT)
+    for relative in documents:
+        parent = PurePosixPath(relative).relative_to(root).parent
+        while parent != PurePosixPath("."):
+            expected.add(parent.as_posix())
+            parent = parent.parent
+    return expected
+
+
+def _make_plain_directories(root: Path, relative_parent: PurePosixPath) -> list[Path]:
+    created: list[Path] = []
+    current = root
+    for component in relative_parent.parts:
+        current = current / component
+        try:
+            current.lstat()
+        except FileNotFoundError:
+            try:
+                current.mkdir()
+            except OSError:
+                _fail("generated output directory could not be created")
+            created.append(current)
+        except OSError:
+            _fail("generated output directory is unavailable")
+        _plain_directory_identity(current)
+    return created
+
+
+def _stage_transaction_leaf(path: Path, raw: bytes) -> _GeneratedLeafBinding:
+    _make_plain_directories(path.parents[0], PurePosixPath())
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset : offset + 64 * 1024])
+            if written <= 0:
+                raise OSError("short transaction write")
+            offset += written
+        os.fsync(descriptor)
+    except OSError:
+        _fail("generated output could not be staged")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    binding = _read_generated_leaf(path)
+    if binding.raw != raw:
+        _fail("staged generated output failed readback")
+    return binding
+
+
+def _stage_document_map(root: Path, documents: dict[str, bytes]) -> dict[str, _GeneratedLeafBinding]:
+    bindings: dict[str, _GeneratedLeafBinding] = {}
+    for relative in sorted(documents, key=lambda value: value.encode("ascii")):
+        tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+        path = root / Path(*tail.parts)
+        _make_plain_directories(root, tail.parent)
+        bindings[relative] = _stage_transaction_leaf(path, documents[relative])
+    return bindings
+
+
+def _posix_rename(
+    source: Path, destination: Path, *, exchange: bool
+) -> None:
+    if sys.platform.startswith("linux"):
+        library = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(library, "renameat2", None)
+        if renameat2 is None:
+            _fail("atomic generated output replacement is unsupported")
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        source_descriptor = os.open(
+            source.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        destination_descriptor = os.open(
+            destination.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            flag = 0x2 if exchange else 0x1
+            result = renameat2(
+                source_descriptor,
+                os.fsencode(source.name),
+                destination_descriptor,
+                os.fsencode(destination.name),
+                flag,
+            )
+            if result != 0:
+                raise OSError(ctypes.get_errno(), "conditional rename failed")
+            os.fsync(source_descriptor)
+            os.fsync(destination_descriptor)
+        finally:
+            os.close(destination_descriptor)
+            os.close(source_descriptor)
+        return
+    if sys.platform == "darwin":
+        library = ctypes.CDLL(None, use_errno=True)
+        renamex = getattr(library, "renamex_np", None)
+        if renamex is None:
+            _fail("atomic generated output replacement is unsupported")
+        renamex.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        renamex.restype = ctypes.c_int
+        flag = 0x00000002 if exchange else 0x00000004
+        if renamex(os.fsencode(source), os.fsencode(destination), flag) != 0:
+            raise OSError(ctypes.get_errno(), "conditional rename failed")
+        _sync_directory(source.parent)
+        _sync_directory(destination.parent)
+        return
+    _fail("atomic generated output replacement is unsupported")
+
+
+def _atomic_move_no_replace(source: Path, destination: Path) -> None:
+    if os.name == "nt":
+        if not _MOVE_FILE(str(source), str(destination), _MOVEFILE_WRITE_THROUGH):
+            raise OSError(ctypes.get_last_error(), "conditional move failed")
+        return
+    _posix_rename(source, destination, exchange=False)
+
+
+def _atomic_replace_with_displaced(
+    source: Path, destination: Path, displaced: Path
+) -> None:
+    if os.name == "nt":
+        if not _REPLACE_FILE(
+            str(destination),
+            str(source),
+            str(displaced),
+            _REPLACEFILE_WRITE_THROUGH,
+            None,
+            None,
+        ):
+            raise OSError(ctypes.get_last_error(), "conditional replacement failed")
+        return
+    _posix_rename(source, destination, exchange=True)
+    _atomic_move_no_replace(source, displaced)
+
+
+def _install_staged_leaf(
+    staged: Path,
+    destination: Path,
+    expected_stage: _GeneratedLeafBinding,
+    expected_destination: _GeneratedLeafBinding | None,
+    held_directories: list[_HeldGeneratedDirectory] | None = None,
+) -> None:
+    """Authenticate both names immediately before one atomic replacement."""
+
+    if held_directories is not None:
+        _verify_held_generated_directories(held_directories)
+    if _read_generated_leaf(staged) != expected_stage:
+        _fail("staged generated output identity changed")
+    if expected_destination is None:
+        if os.path.lexists(destination):
+            _fail("generated output destination was substituted")
+    elif _read_generated_leaf(destination) != expected_destination:
+        _fail("generated output destination identity changed")
+    transaction = staged
+    while transaction.name != _TRANSACTION_DIRECTORY_NAME:
+        if transaction.parent == transaction:
+            _fail("staged generated output path is invalid")
+        transaction = transaction.parent
+    relative_tail = staged.relative_to(transaction / "new")
+    displaced = transaction / "displaced" / relative_tail
+    _make_plain_directories(transaction / "displaced", PurePosixPath(relative_tail.parent.as_posix()))
+    if expected_destination is None:
+        _atomic_move_no_replace(staged, destination)
+    else:
+        _atomic_replace_with_displaced(staged, destination, displaced)
+        if (
+            _read_generated_leaf(displaced).raw != expected_destination.raw
+        ):
+            _fail("generated output displaced identity changed")
+    installed = _read_generated_leaf(destination)
+    if installed.raw != expected_stage.raw:
+        _fail("generated output install verification failed")
+    _sync_directory(destination.parent)
+    if held_directories is not None:
+        _verify_held_generated_directories(held_directories)
+
+
+def _remove_entry_without_following(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        _fail("generated output rollback could not inspect an entry")
+    try:
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode) and not getattr(metadata, "st_reparse_tag", 0):
+            for entry in os.scandir(path):
+                _remove_entry_without_following(Path(entry.path))
+            path.rmdir()
+        else:
+            path.unlink()
+    except OSError:
+        _fail("generated output rollback could not remove an entry")
+
+
+def _restore_generated_snapshot(
+    generated: Path,
+    transaction: Path,
+    rollback_root: Path,
+    rollback_bindings: dict[str, _GeneratedLeafBinding],
+    snapshot: _GeneratedTreeSnapshot,
+    created_root: bool,
+) -> None:
+    try:
+        for entry in list(os.scandir(generated)):
+            if entry.name != _TRANSACTION_DIRECTORY_NAME:
+                _remove_entry_without_following(Path(entry.path))
+        for relative_tail, _identity in snapshot.directory_identities:
+            _make_plain_directories(generated, PurePosixPath(relative_tail))
+        for relative, binding in snapshot.leaves:
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            source = rollback_root / Path(*tail.parts)
+            destination = generated / Path(*tail.parts)
+            _make_plain_directories(generated, tail.parent)
+            if (
+                relative not in rollback_bindings
+                or _read_generated_leaf(source) != rollback_bindings[relative]
+                or rollback_bindings[relative].raw != binding.raw
+            ):
+                _fail("generated output rollback source changed")
+            _atomic_move_no_replace(source, destination)
+            if _read_generated_leaf(destination).raw != binding.raw:
+                _fail("generated output rollback verification failed")
+        _remove_entry_without_following(transaction)
+        restored = _scan_generated_tree(generated)
+        if (
+            tuple((path, binding.raw) for path, binding in restored.leaves)
+            != tuple((path, binding.raw) for path, binding in snapshot.leaves)
+            or tuple(path for path, _identity in restored.directory_identities)
+            != tuple(path for path, _identity in snapshot.directory_identities)
+        ):
+            _fail("generated output rollback was incomplete")
+        if created_root:
+            generated.rmdir()
+    except ConversionError:
+        raise
+    except OSError:
+        _fail("generated output rollback failed")
+
+
+def _sync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        os.fsync(descriptor)
+    except OSError:
+        _fail("generated output directory sync failed")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def write_generated_documents(
+    repository_root: Path, documents: dict[str, bytes]
+) -> None:
+    """Install the complete generated graph with staged rollback sources."""
+
+    _validate_output_document_map(documents)
+    generated, created_root = _generated_root(repository_root, create=True)
+    initial = _scan_generated_tree(generated)
+    initial_leaves = dict(initial.leaves)
+    expected_directories = _expected_output_directories(documents)
+    if (
+        {path: binding.raw for path, binding in initial.leaves} == documents
+        and {path for path, _identity in initial.directory_identities}
+        == expected_directories
+    ):
+        return
+    repository = Path(os.path.abspath(repository_root))
+    held_main = _hold_generated_directories(
+        [
+            repository,
+            repository / "migration",
+            repository / "migration/macwin",
+            generated,
+        ]
+    )
+    if held_main[-1].identity[:2] != initial.root_identity[:2]:
+        _close_generated_directories(held_main)
+        _fail("generated output root binding changed")
+    transaction = generated / _TRANSACTION_DIRECTORY_NAME
+    try:
+        transaction.mkdir()
+    except OSError:
+        _close_generated_directories(held_main)
+        if created_root:
+            try:
+                generated.rmdir()
+            except OSError:
+                pass
+        _fail("generated output transaction already exists")
+    new_root = transaction / "new"
+    rollback_root = transaction / "rollback"
+    displaced_root = transaction / "displaced"
+    rollback: dict[str, _GeneratedLeafBinding] = {}
+    commit_started = False
+    held_transaction: list[_HeldGeneratedDirectory] = []
+    try:
+        new_root.mkdir()
+        rollback_root.mkdir()
+        displaced_root.mkdir()
+        staged = _stage_document_map(new_root, documents)
+        rollback = _stage_document_map(
+            rollback_root,
+            {path: binding.raw for path, binding in initial.leaves},
+        )
+        if set(rollback) != set(initial_leaves):
+            _fail("generated output rollback staging is incomplete")
+        for relative in sorted(initial_leaves, key=lambda value: value.encode("ascii")):
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            _make_plain_directories(displaced_root, tail.parent)
+        _sync_directory(new_root)
+        _sync_directory(rollback_root)
+        _sync_directory(displaced_root)
+        _sync_directory(transaction)
+
+        commit_started = True
+        for relative in sorted(expected_directories, key=lambda value: value.encode("ascii")):
+            _make_plain_directories(generated, PurePosixPath(relative))
+
+        main_paths = [
+            *[
+                generated / Path(*PurePosixPath(relative).parts)
+                for relative in sorted(
+                    expected_directories, key=lambda value: value.encode("ascii")
+                )
+            ],
+        ]
+        held_main.extend(_hold_generated_directories(main_paths))
+        transaction_paths = [transaction, new_root, rollback_root, displaced_root]
+        for base, directory_names in (
+            (new_root, _expected_output_directories(documents)),
+            (
+                rollback_root,
+                _expected_output_directories(
+                    {path: binding.raw for path, binding in initial.leaves}
+                ),
+            ),
+            (
+                displaced_root,
+                _expected_output_directories(
+                    {path: binding.raw for path, binding in initial.leaves}
+                ),
+            ),
+        ):
+            transaction_paths.extend(
+                base / Path(*PurePosixPath(relative).parts)
+                for relative in sorted(
+                    directory_names, key=lambda value: value.encode("ascii")
+                )
+            )
+        held_transaction = _hold_generated_directories(transaction_paths)
+        all_held = [*held_main, *held_transaction]
+
+        for relative in sorted(documents, key=lambda value: value.encode("ascii")):
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            _install_staged_leaf(
+                new_root / Path(*tail.parts),
+                generated / Path(*tail.parts),
+                staged[relative],
+                initial_leaves.get(relative),
+                all_held,
+            )
+        for relative in sorted(
+            set(initial_leaves) - set(documents),
+            key=lambda value: value.encode("ascii"),
+            reverse=True,
+        ):
+            _verify_held_generated_directories(all_held)
+            tail = PurePosixPath(relative).relative_to(PurePosixPath(GENERATED_ROOT))
+            destination = generated / Path(*tail.parts)
+            if _read_generated_leaf(destination) != initial_leaves[relative]:
+                _fail("generated output destination identity changed")
+            displaced = displaced_root / Path(*tail.parts)
+            _atomic_move_no_replace(destination, displaced)
+            if _read_generated_leaf(displaced).raw != initial_leaves[relative].raw:
+                _fail("generated output stale leaf identity changed")
+            _sync_directory(destination.parent)
+            _verify_held_generated_directories(all_held)
+        for relative, _identity in sorted(
+            initial.directory_identities,
+            key=lambda item: len(PurePosixPath(item[0]).parts),
+            reverse=True,
+        ):
+            if relative not in expected_directories:
+                directory = generated / Path(*PurePosixPath(relative).parts)
+                try:
+                    directory.rmdir()
+                except OSError:
+                    _fail("generated output stale directory could not be removed")
+        installed = _scan_generated_tree(generated, ignore_transaction=True)
+        if {path: binding.raw for path, binding in installed.leaves} != documents:
+            _fail("generated output transaction verification failed")
+        if {path for path, _identity in installed.directory_identities} != expected_directories:
+            _fail("generated output directory set is not exact")
+        _verify_held_generated_directories(all_held)
+        _sync_directory(generated)
+        _close_generated_directories(held_transaction)
+        _remove_entry_without_following(transaction)
+        _sync_directory(generated)
+        check_generated_documents(repository_root, documents)
+    except BaseException as error:
+        try:
+            _close_generated_directories(held_transaction)
+            if commit_started:
+                _restore_generated_snapshot(
+                    generated,
+                    transaction,
+                    rollback_root,
+                    rollback,
+                    initial,
+                    created_root,
+                )
+            else:
+                _remove_entry_without_following(transaction)
+                if created_root:
+                    generated.rmdir()
+        except BaseException:
+            raise ConversionError("generated output rollback failed") from None
+        raise error
+    finally:
+        _close_generated_directories(held_transaction)
+        _close_generated_directories(held_main)
+
+
+def _record_output_identifiers(
+    result: ConversionResult, record: ConversionRecord
+) -> tuple[str, ...]:
+    identifiers = [record.source_path]
+    if record.output_kind == "recipe":
+        asset = next(
+            asset for asset in result.source_pack.assets if asset.source_path == record.source_path
+        )
+        source = _parse_json_object(asset)
+        identifier = source.get("id")
+        if type(identifier) is str:
+            identifiers.append(identifier)
+            if record.status == "converted":
+                identifiers.append(
+                    f"{GENERATED_ROOT}/recipes/{identifier}.json"
+                )
+    elif record.source_path in PORTABLE_ASSET_TABLE:
+        portable_id = PORTABLE_ASSET_TABLE[record.source_path][0]
+        identifiers.append(portable_id)
+        if record.status == "converted":
+            category = "probes" if record.category == "probes" else "fixtures"
+            identifiers.append(f"{GENERATED_ROOT}/{category}/{portable_id}.json")
+    return tuple(identifiers)
+
+
+def explain_conversion(result: ConversionResult, identity: str) -> bytes:
+    """Render one reviewed decision without resolving evidence locators."""
+
+    _bootstrap_dependencies()
+    _validate_conversion_result(result)
+    try:
+        identity_size = len(identity.encode("utf-8")) if type(identity) is str else 0
+    except UnicodeEncodeError:
+        _fail("migration explanation identity is unknown")
+    if type(identity) is not str or not identity or identity_size > 1024:
+        _fail("migration explanation identity is unknown")
+    matches = [
+        record
+        for record in result.records
+        if identity in _record_output_identifiers(result, record)
+    ]
+    if len(matches) != 1:
+        _fail("migration explanation identity is unknown")
+    record = matches[0]
+    document: dict[str, object] = {
+        "action": record.action,
+        "category": record.category,
+        "evidenceLocators": list(record.evidence_locators),
+        "intendedOwner": record.intended_owner,
+        "outputKind": record.output_kind,
+        "reason": record.reason,
+        "releaseCondition": record.release_condition,
+        "schemaVersion": "1",
+        "sourceCommit": record.source_commit,
+        "sourceKind": record.source_kind,
+        "sourcePath": record.source_path,
+        "sourceRepository": record.source_repository,
+        "sourceSha256": record.source_sha256,
+        "status": record.status,
+        "targetIssue": record.target_issue,
+    }
+    try:
+        return _COMMON.canonical_json_bytes(document)
+    except _COMMON.MigrationError:
+        _fail("migration explanation could not be rendered")
+
+
+class _UsageError(Exception):
+    pass
+
+
+def _write_standard_bytes(stream, raw: bytes) -> None:
+    binary = getattr(stream, "buffer", None)
+    if binary is not None:
+        binary.write(raw)
+    else:
+        stream.write(raw.decode("ascii"))
+
+
+class _StableArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        del message
+        _write_standard_bytes(
+            sys.stderr,
+            b"usage: convert_macwin_assets.py [--check | --write | --explain ID]\n",
+        )
+        raise _UsageError
+
+
+def _parse_cli(arguments: tuple[str, ...]) -> argparse.Namespace:
+    parser = _StableArgumentParser(
+        prog="convert_macwin_assets.py",
+        add_help=False,
+        allow_abbrev=False,
+        usage="%(prog)s [--check | --write | --explain ID]",
+    )
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true")
+    modes.add_argument("--write", action="store_true")
+    modes.add_argument("--explain", metavar="ID")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: tuple[str, ...]) -> int:
+    """Run the deterministic read, check, write, or explain boundary."""
+
+    try:
+        options = _parse_cli(arguments)
+    except _UsageError:
         return 2
     try:
-        render_documents(build_conversion(ROOT))
+        result = build_conversion(ROOT)
+        documents = render_documents(result)
+        validate_generated_graph(documents, result.source_pack)
+        if options.write:
+            try:
+                write_generated_documents(ROOT, documents)
+            except OSError:
+                _fail("generated output transaction failed")
+        elif options.explain is not None:
+            sys.stdout.buffer.write(explain_conversion(result, options.explain))
+        else:
+            check_generated_documents(ROOT, documents)
+            if not options.check:
+                counts = {status: 0 for status in STATUSES}
+                for record in result.records:
+                    counts[record.status] += 1
+                sys.stdout.buffer.write(
+                    (
+                    '{"converted":%d,"deferred":%d,"documents":%d,'
+                    '"quarantined":%d,"records":%d}\n'
+                    % (
+                        counts["converted"],
+                        counts["deferred"],
+                        len(documents),
+                        counts["quarantined"],
+                        len(result.records),
+                    )
+                    ).encode("ascii")
+                )
     except ConversionError:
-        print("Mac-Win asset conversion failed.", file=sys.stderr)
+        _write_standard_bytes(sys.stderr, b"Mac-Win asset conversion failed.\n")
         return 1
     return 0
 

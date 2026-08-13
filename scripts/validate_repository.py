@@ -77,13 +77,12 @@ DEVELOPER_PATH_VALIDATION_ERROR = "Repository developer-path validation failed"
 
 
 def validate_macwin_asset_migration() -> list[str]:
-    """Run the migration converter check once the Task 4 tool exists."""
+    """Run the required migration converter check."""
     converter = ROOT / "tools/convert_macwin_assets.py"
     try:
         converter_metadata = converter.lstat()
     except FileNotFoundError:
-        # Temporary Task 1 boundary: Task 8 removes this absence-only skip.
-        return []
+        return ["Mac-Win asset migration converter path is not a regular file"]
     except OSError:
         return ["Mac-Win asset migration converter path is not a regular file"]
     if not stat.S_ISREG(converter_metadata.st_mode) or getattr(
