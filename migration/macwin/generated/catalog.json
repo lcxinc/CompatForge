@@ -1,0 +1,175 @@
+{
+  "candidateCount": 17,
+  "candidates": [
+    {
+      "id": "7zip",
+      "name": "7-Zip",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json",
+      "sourceSha256": "fb320ed41e101182af879de445fca01f035a5aebea910683fe27a5b56805d55e",
+      "status": "quarantined"
+    },
+    {
+      "id": "firefox",
+      "name": "Mozilla Firefox",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json",
+      "sourceSha256": "5017cecb5c77738b1866016659a0357e2fa2e8efa093f6aeeae62a63c6e2c119",
+      "status": "quarantined"
+    },
+    {
+      "id": "hoyoplay-cn",
+      "name": "HoYoPlay",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json",
+      "sourceSha256": "2c66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7",
+      "status": "quarantined"
+    },
+    {
+      "id": "jasp-stats",
+      "name": "JASP Statistics",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json",
+      "sourceSha256": "ebaf01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4",
+      "status": "quarantined"
+    },
+    {
+      "id": "lenovo-app-store",
+      "name": "联想应用商店",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json",
+      "sourceSha256": "37c2abfd4fe1fd1d6e0ee85a79592112c0f85a7d1eb452375617b8bee874b10e",
+      "status": "quarantined"
+    },
+    {
+      "id": "libreoffice",
+      "name": "LibreOffice",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json",
+      "sourceSha256": "60b8de3c52df0380b039ae07e608c494a63f69d0483195bc4471afcb5384ff12",
+      "status": "quarantined"
+    },
+    {
+      "id": "ltspice",
+      "name": "LTspice",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json",
+      "sourceSha256": "03157bcc29c24fbd555c485bd14fab9f1a102a57b880086ee0aa25181eeacf0b",
+      "status": "quarantined"
+    },
+    {
+      "id": "macwin-core-capability-tests",
+      "name": "MacWin Core Capability Tests",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json",
+      "sourceSha256": "cb571265bfc4d8bfa98d7cbd83e375b0a70a3ca3cb1a087b44341003fd365788",
+      "status": "quarantined"
+    },
+    {
+      "id": "macwin-game-tests",
+      "name": "MacWin Game Graphics Tests",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json",
+      "sourceSha256": "4222d93460b38f09bcf956f63ef32d886e5a1a76aee0b9af02c8443a237b0027",
+      "status": "quarantined"
+    },
+    {
+      "id": "macwin-probes",
+      "name": "MacWin Probe Suite",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json",
+      "sourceSha256": "ca882ab37ceea4276f460ac8af76870b747b390de4c8b5abb1e3d6f85bda1d5a",
+      "status": "quarantined"
+    },
+    {
+      "id": "notepad-plus-plus",
+      "name": "Notepad++",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json",
+      "sourceSha256": "112981ee22936ab78d6511ff7672cf75c1b2a4bd179a4b7b0e0659f8c05ab1ce",
+      "status": "quarantined"
+    },
+    {
+      "id": "portableapps-platform",
+      "name": "PortableApps.com Platform",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json",
+      "sourceSha256": "f81ea7243ecd916d20e48e08d259cd24a152a444704b7f7c9332e96c0f62661a",
+      "status": "quarantined"
+    },
+    {
+      "id": "sqlitestudio",
+      "name": "SQLiteStudio",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json",
+      "sourceSha256": "a201c20e5ea4a92831d76a57ee49ae138ebef719f61812ee6a7190800e161ba6",
+      "status": "quarantined"
+    },
+    {
+      "id": "steam",
+      "name": "Steam",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json",
+      "sourceSha256": "5b405e719271aed976042c46763ec494405fd580215ad65e2da6efba32488565",
+      "status": "quarantined"
+    },
+    {
+      "id": "sumatrapdf",
+      "name": "SumatraPDF",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json",
+      "sourceSha256": "44705ba78b94ce1bee8709c45f4d385c9141f87e40a89ad133e969ec0894c0c3",
+      "status": "quarantined"
+    },
+    {
+      "id": "texstudio",
+      "name": "TeXstudio",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json",
+      "sourceSha256": "95ffa27ad03cadd6cd38f90883fa7fedbd2e77f0f874ec5d2eaac24017f9383d",
+      "status": "quarantined"
+    },
+    {
+      "id": "vlc",
+      "name": "VLC media player",
+      "reason": "missing-license",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json",
+      "sourceSha256": "35eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
+      "status": "quarantined"
+    }
+  ],
+  "catalogBoundary": {
+    "index": {
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.index.json",
+      "sourceSha256": "2c8bb75c7b294f6e75f45e08fb4b1e2050df0aa6260d96ccca50790e7229aa5c"
+    },
+    "signature": {
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.signature.json",
+      "sourceSha256": "8e34669b99d0c09b610ad79f0ed763699115fa57769f691e641ef6812c46e966"
+    }
+  },
+  "convertedCount": 0,
+  "quarantinedCount": 17,
+  "schemaVersion": "1",
+  "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+  "sourceRepository": "a1112/Mac-Win"
+}

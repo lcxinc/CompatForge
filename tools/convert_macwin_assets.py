@@ -73,6 +73,44 @@ QUARANTINE_REASONS = frozenset(
     }
 )
 STATUSES = frozenset({"converted", "deferred", "quarantined"})
+RECIPE_REASON_PRECEDENCE = (
+    "missing-license",
+    "missing-provenance",
+    "absolute-path",
+    "mutable-local-installation",
+    "missing-digest",
+    "unresolved-external-reference",
+    "unresolved-environment-path",
+    "unsupported-schema",
+    "unsupported-behavior",
+)
+RECIPE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "bottleTemplate",
+        "category",
+        "compatibilityRating",
+        "engineRequirements",
+        "env",
+        "id",
+        "installer",
+        "launchers",
+        "name",
+        "postInstall",
+        "publisher",
+        "warnings",
+    }
+)
+RECIPE_RELEASE_CONDITIONS = {
+    "absolute-path": "Replace host-absolute locators with reviewed portable references and regenerate the migration.",
+    "missing-digest": "Record the reviewed installer SHA-256 and regenerate the migration.",
+    "missing-license": "Record a reviewed source license and regenerate the migration.",
+    "missing-provenance": "Record reviewed source provenance and regenerate the migration.",
+    "mutable-local-installation": "Replace the mutable local installation with a pinned portable source and regenerate the migration.",
+    "unresolved-environment-path": "Close environment path dependencies over portable assets and regenerate the migration.",
+    "unresolved-external-reference": "Close the reviewed external dependency over a pinned source and regenerate the migration.",
+    "unsupported-behavior": "Remove or review unsupported source behavior and regenerate the migration.",
+    "unsupported-schema": "Publish complete reviewed Recipe fields and regenerate the migration.",
+}
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
 _LOADER_IDENTITY = object()
@@ -253,6 +291,12 @@ class ConversionRecord:
 class ConversionResult:
     source_pack: SourcePack
     records: tuple[ConversionRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeFinding:
+    reason: str
+    evidence_locator: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,31 +729,88 @@ def build_conversion(repository_root: Path) -> ConversionResult:
 
 
 def render_documents(result: ConversionResult) -> dict[str, bytes]:
-    """Render the closed Task 4 ledger in memory without writing output files."""
+    """Render the closed Task 5 catalog outputs without writing output files."""
 
     _bootstrap_dependencies()
     _validate_conversion_result(result)
     source_pack = result.source_pack
-    document = {
-        "schemaVersion": "1",
-        "source": {
-            "repository": source_pack.repository,
-            "sourceTag": source_pack.source_tag,
-            "sourceTagObject": source_pack.source_tag_object,
-            "sourceCommit": source_pack.source_commit,
-            "inventoryCommit": source_pack.inventory_commit,
-        },
-        "assetCount": len(result.records),
-        "categoryCounts": {
-            category: count for category, count in source_pack.category_counts
-        },
-        "records": [_record_document(record) for record in result.records],
+    assets = {asset.source_path: asset for asset in source_pack.assets}
+    records = {
+        record.source_path: record
+        for record in result.records
+        if record.output_kind == "recipe"
     }
+    candidates: list[dict[str, object]] = []
+    quarantine_records: list[dict[str, object]] = []
+    documents: dict[str, bytes] = {}
+    for source_path in sorted(records, key=lambda value: value.encode("ascii")):
+        record = records[source_path]
+        asset = assets[source_path]
+        source = _parse_json_object(asset)
+        identifier = source.get("id")
+        name = source.get("name")
+        if type(identifier) is not str or type(name) is not str:
+            _fail("catalog candidate identity is invalid")
+        entry: dict[str, object] = {
+            "id": identifier,
+            "name": name,
+            "sourceCommit": asset.source_commit,
+            "sourcePath": asset.source_path,
+            "sourceSha256": asset.sha256,
+            "status": record.status,
+        }
+        if record.status == "quarantined":
+            if record.reason is None:
+                _fail("catalog quarantine reason is missing")
+            entry["reason"] = record.reason
+            quarantine_records.append(_quarantine_document(record))
+        elif record.status == "converted":
+            _fail("reviewed Recipe evidence is unavailable")
+        else:
+            _fail("catalog candidate status is invalid")
+        candidates.append(entry)
+
+    catalog_assets = {
+        asset.source_path: asset
+        for asset in source_pack.assets
+        if asset.source_path in {CATALOG_INDEX_PATH, CATALOG_SIGNATURE_PATH}
+    }
+    if set(catalog_assets) != {CATALOG_INDEX_PATH, CATALOG_SIGNATURE_PATH}:
+        _fail("catalog boundary is incomplete")
+    converted_count = sum(entry["status"] == "converted" for entry in candidates)
+    quarantined_count = sum(
+        entry["status"] == "quarantined" for entry in candidates
+    )
+    catalog_document = {
+        "schemaVersion": "1",
+        "sourceRepository": source_pack.repository,
+        "sourceCommit": source_pack.source_commit,
+        "catalogBoundary": {
+            "index": _catalog_boundary_document(catalog_assets[CATALOG_INDEX_PATH]),
+            "signature": _catalog_boundary_document(
+                catalog_assets[CATALOG_SIGNATURE_PATH]
+            ),
+        },
+        "candidateCount": len(candidates),
+        "convertedCount": converted_count,
+        "quarantinedCount": quarantined_count,
+        "candidates": candidates,
+    }
+    quarantine_document = {
+        "schemaVersion": "1",
+        "records": quarantine_records,
+    }
+    _validate_task5_documents(catalog_document, quarantine_document, result)
     try:
-        raw = _COMMON.canonical_json_bytes(document)
+        documents["migration/macwin/generated/catalog.json"] = (
+            _COMMON.canonical_json_bytes(catalog_document)
+        )
+        documents["migration/macwin/generated/quarantine.json"] = (
+            _COMMON.canonical_json_bytes(quarantine_document)
+        )
     except _COMMON.MigrationError:
-        _fail("conversion ledger cannot be rendered")
-    return {"conversion-ledger.json": raw}
+        _fail("catalog outputs cannot be rendered")
+    return documents
 
 
 def _is_exact_string_tuple(value: object) -> bool:
@@ -930,6 +1031,386 @@ def _parse_json_object(asset: SourceAsset) -> dict[str, object]:
     return value
 
 
+def _add_recipe_finding(
+    findings: list[RecipeFinding], reason: str, evidence_locator: str
+) -> None:
+    if reason not in QUARANTINE_REASONS:
+        _fail("recipe finding is invalid")
+    if type(evidence_locator) is not str or not evidence_locator or len(evidence_locator) > 4096:
+        _fail("recipe evidence locator is invalid")
+    finding = RecipeFinding(reason=reason, evidence_locator=evidence_locator)
+    if finding not in findings:
+        findings.append(finding)
+
+
+def _is_host_absolute_locator(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    return (
+        value.startswith("/")
+        or value.startswith("~/")
+        or value.startswith("$HOME/")
+        or value.startswith("${HOME}/")
+        or re.match(r"^[A-Za-z]:/", value) is not None
+    )
+
+
+def _is_safe_guest_executable(value: object) -> bool:
+    if type(value) is not str or not value or len(value) > 1024:
+        return False
+    if _is_host_absolute_locator(value) or value.startswith(("\\\\", "\\\\?\\", "\\\\.\\")):
+        return False
+    if value.startswith("C:\\"):
+        parts = value[3:].split("\\")
+        return bool(parts) and all(part not in {"", ".", ".."} for part in parts)
+    try:
+        _COMMON.require_relative_posix_path(value)
+    except _COMMON.MigrationError:
+        return False
+    return True
+
+
+def _recipe_findings(
+    asset: SourceAsset, source: dict[str, object]
+) -> tuple[RecipeFinding, ...]:
+    """Return all reviewed Recipe blockers without probing any locator."""
+
+    if type(asset) is not SourceAsset or type(source) is not dict:
+        _fail("recipe candidate model is invalid")
+    findings: list[RecipeFinding] = []
+    source_locator = asset.source_path
+    if asset.license_status != "reviewed":
+        _add_recipe_finding(findings, "missing-license", f"{source_locator}#license")
+    if asset.provenance_status != "reviewed":
+        _add_recipe_finding(
+            findings, "missing-provenance", f"{source_locator}#provenance"
+        )
+    _add_recipe_finding(findings, "unsupported-schema", f"{source_locator}#tests")
+
+    for external_reference in asset.external_refs:
+        _add_recipe_finding(
+            findings, "unresolved-external-reference", external_reference
+        )
+    if set(source) != RECIPE_TOP_LEVEL_FIELDS:
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#source-fields"
+        )
+
+    for dependency in asset.development_dependencies:
+        if _is_host_absolute_locator(dependency):
+            _add_recipe_finding(findings, "absolute-path", dependency)
+        _add_recipe_finding(findings, "unresolved-external-reference", dependency)
+
+    installer = source.get("installer")
+    if type(installer) is not dict:
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#installer"
+        )
+    else:
+        allowed = {"arguments", "command", "fileName", "hints", "mode", "sha256", "url"}
+        if not set(installer).issubset(allowed):
+            _add_recipe_finding(
+                findings,
+                "unsupported-schema",
+                f"{source_locator}#installer-fields",
+            )
+        mode = installer.get("mode")
+        if mode == "alreadyInstalled":
+            _add_recipe_finding(
+                findings,
+                "mutable-local-installation",
+                f"{source_locator}#installer.mode",
+            )
+        elif mode == "localFile":
+            _add_recipe_finding(
+                findings,
+                "unresolved-external-reference",
+                f"{source_locator}#installer.mode",
+            )
+        elif mode not in {"download", "none"}:
+            _add_recipe_finding(
+                findings, "unsupported-schema", f"{source_locator}#installer.mode"
+            )
+        if mode == "download" and (
+            type(installer.get("sha256")) is not str
+            or _HEX_64.fullmatch(installer["sha256"]) is None
+        ):
+            _add_recipe_finding(
+                findings, "missing-digest", f"{source_locator}#installer.sha256"
+            )
+        if mode == "download" and (
+            type(installer.get("url")) is not str or not installer["url"]
+        ):
+            _add_recipe_finding(
+                findings,
+                "unresolved-external-reference",
+                f"{source_locator}#installer.url",
+            )
+        hints = installer.get("hints", [])
+        if type(hints) is not list or any(type(value) is not str for value in hints):
+            _add_recipe_finding(
+                findings, "unsupported-schema", f"{source_locator}#installer.hints"
+            )
+        else:
+            for hint in hints:
+                if _is_host_absolute_locator(hint):
+                    _add_recipe_finding(findings, "absolute-path", hint)
+        command = installer.get("command")
+        if command is not None and command != "msiexec":
+            _add_recipe_finding(
+                findings,
+                "unsupported-behavior",
+                f"{source_locator}#installer.command",
+            )
+
+    environment = source.get("env")
+    if type(environment) is not dict or any(
+        type(key) is not str or type(value) is not str
+        for key, value in environment.items()
+    ):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#env"
+        )
+    elif any(_is_host_absolute_locator(value) for value in environment.values()):
+        for value in environment.values():
+            if _is_host_absolute_locator(value):
+                _add_recipe_finding(findings, "unresolved-environment-path", value)
+
+    launchers = source.get("launchers")
+    if type(launchers) is not list or not launchers:
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#launchers"
+        )
+    else:
+        launcher_fields = {"args", "displayName", "envOverrides", "exePath", "id", "showInHome"}
+        for index, launcher in enumerate(launchers):
+            locator = f"{source_locator}#launchers/{index}"
+            if type(launcher) is not dict or set(launcher) != launcher_fields:
+                _add_recipe_finding(findings, "unsupported-schema", locator)
+                continue
+            executable = launcher.get("exePath")
+            if _is_host_absolute_locator(executable):
+                _add_recipe_finding(findings, "absolute-path", executable)
+            elif not _is_safe_guest_executable(executable):
+                _add_recipe_finding(findings, "unsupported-behavior", locator)
+            overrides = launcher.get("envOverrides")
+            if type(overrides) is not dict or any(
+                type(key) is not str or type(value) is not str
+                for key, value in overrides.items()
+            ):
+                _add_recipe_finding(findings, "unsupported-schema", locator)
+            else:
+                for value in overrides.values():
+                    if _is_host_absolute_locator(value):
+                        _add_recipe_finding(
+                            findings, "unresolved-environment-path", value
+                        )
+
+    post_install = source.get("postInstall")
+    if type(post_install) is not list:
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#postInstall"
+        )
+    elif post_install:
+        _add_recipe_finding(
+            findings, "unsupported-behavior", f"{source_locator}#postInstall"
+        )
+
+    bottle = source.get("bottleTemplate")
+    if (
+        type(bottle) is not dict
+        or set(bottle) != {"arch", "windowsVersion"}
+        or bottle.get("arch") != "win64"
+        or bottle.get("windowsVersion") not in {"win7", "win10", "win11"}
+    ):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#bottleTemplate"
+        )
+    requirements = source.get("engineRequirements")
+    if type(requirements) is not dict or not set(requirements).issubset(
+        {"minWineVersion", "requiresWin32", "supportedArch"}
+    ):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#engineRequirements"
+        )
+    elif (
+        type(requirements.get("minWineVersion")) is not str
+        or requirements.get("supportedArch") != ["win64"]
+        or (
+            "requiresWin32" in requirements
+            and type(requirements["requiresWin32"]) is not bool
+        )
+    ):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#engineRequirements"
+        )
+
+    scalar_fields = ("id", "name", "publisher", "category")
+    if any(type(source.get(field)) is not str or not source[field] for field in scalar_fields):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#identity"
+        )
+    if source.get("compatibilityRating") not in {
+        "excellent",
+        "good",
+        "limited",
+        "experimental",
+        "unknown",
+    }:
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#compatibilityRating"
+        )
+    warnings = source.get("warnings")
+    if type(warnings) is not list or any(
+        type(warning) is not str or not warning for warning in warnings
+    ):
+        _add_recipe_finding(
+            findings, "unsupported-schema", f"{source_locator}#warnings"
+        )
+    return tuple(findings)
+
+
+def _select_recipe_reason(findings: tuple[RecipeFinding, ...]) -> str | None:
+    reasons = {finding.reason for finding in findings}
+    return next((reason for reason in RECIPE_REASON_PRECEDENCE if reason in reasons), None)
+
+
+def _sorted_string_map(value: dict[str, object]) -> dict[str, str]:
+    if type(value) is not dict or any(
+        type(key) is not str or type(item) is not str for key, item in value.items()
+    ):
+        _fail("recipe string map is invalid")
+    return {
+        key: value[key]
+        for key in sorted(value, key=lambda item: item.encode("utf-8"))
+    }
+
+
+def _map_recipe_structure(source: dict[str, object]) -> dict[str, object]:
+    """Map only representable source structure; reviewed evidence is added later."""
+
+    if type(source) is not dict or set(source) != RECIPE_TOP_LEVEL_FIELDS:
+        _fail("recipe source fields are unsupported")
+    bottle = source["bottleTemplate"]
+    installer = source["installer"]
+    launchers = source["launchers"]
+    requirements = source["engineRequirements"]
+    if (
+        type(bottle) is not dict
+        or set(bottle) != {"arch", "windowsVersion"}
+        or bottle.get("arch") != "win64"
+        or bottle.get("windowsVersion") not in {"win7", "win10", "win11"}
+        or type(requirements) is not dict
+        or not set(requirements).issubset(
+            {"minWineVersion", "requiresWin32", "supportedArch"}
+        )
+        or type(requirements.get("minWineVersion")) is not str
+        or requirements.get("supportedArch") != ["win64"]
+        or (
+            "requiresWin32" in requirements
+            and type(requirements["requiresWin32"]) is not bool
+        )
+    ):
+        _fail("recipe bottle fields are unsupported")
+    if type(installer) is not dict or not set(installer).issubset(
+        {"arguments", "command", "fileName", "hints", "mode", "sha256", "url"}
+    ):
+        _fail("recipe installer fields are unsupported")
+    mode = installer.get("mode")
+    if mode not in {"download", "none"}:
+        _fail("recipe installer behavior is unsupported")
+    if installer.get("command") not in {None, "msiexec"}:
+        _fail("recipe installer behavior is unsupported")
+    arguments = installer.get("arguments", [])
+    if type(arguments) is not list or any(type(value) is not str for value in arguments):
+        _fail("recipe installer arguments are invalid")
+    mapped_installer: dict[str, object] = {"mode": mode, "arguments": list(arguments)}
+    if mode == "download":
+        if (
+            type(installer.get("url")) is not str
+            or not installer["url"]
+            or type(installer.get("fileName")) is not str
+            or not installer["fileName"]
+            or type(installer.get("sha256")) is not str
+            or _HEX_64.fullmatch(installer["sha256"]) is None
+        ):
+            _fail("recipe installer evidence is incomplete")
+        mapped_installer.update(
+            {
+                "url": installer["url"],
+                "fileName": installer["fileName"],
+                "sha256": installer["sha256"],
+            }
+        )
+        mapped_installer = {
+            key: mapped_installer[key]
+            for key in ("mode", "url", "fileName", "sha256", "arguments")
+        }
+
+    if type(launchers) is not list or not launchers:
+        _fail("recipe launchers are invalid")
+    mapped_launchers: list[dict[str, object]] = []
+    expected_launcher_fields = {"args", "displayName", "envOverrides", "exePath", "id", "showInHome"}
+    for launcher in launchers:
+        if (
+            type(launcher) is not dict
+            or set(launcher) != expected_launcher_fields
+            or type(launcher.get("id")) is not str
+            or not launcher["id"]
+            or type(launcher.get("displayName")) is not str
+            or not launcher["displayName"]
+            or not _is_safe_guest_executable(launcher.get("exePath"))
+            or type(launcher.get("args")) is not list
+            or any(type(value) is not str for value in launcher["args"])
+            or type(launcher.get("showInHome")) is not bool
+        ):
+            _fail("recipe launcher fields are unsupported")
+        mapped_launchers.append(
+            {
+                "id": launcher["id"],
+                "name": launcher["displayName"],
+                "executable": launcher["exePath"],
+                "arguments": list(launcher["args"]),
+                "environment": _sorted_string_map(launcher["envOverrides"]),
+            }
+        )
+    for field in ("id", "name", "publisher", "category"):
+        if type(source[field]) is not str or not source[field]:
+            _fail("recipe identity fields are invalid")
+    rating = source["compatibilityRating"]
+    if rating not in {"excellent", "good", "limited", "experimental", "unknown"}:
+        _fail("recipe compatibility rating is invalid")
+    warnings = source["warnings"]
+    if type(warnings) is not list or any(
+        type(warning) is not str or not warning for warning in warnings
+    ):
+        _fail("recipe warnings are invalid")
+    if source["postInstall"] != []:
+        _fail("recipe post-install behavior is unsupported")
+    return {
+        "schemaVersion": "2",
+        "id": source["id"],
+        "metadata": {
+            "name": source["name"],
+            "publisher": source["publisher"],
+            "category": source["category"],
+        },
+        "installer": mapped_installer,
+        "bottle": {
+            "windowsVersion": bottle["windowsVersion"],
+            "guestArchitecture": "x86_64",
+            "environment": _sorted_string_map(source["env"]),
+        },
+        "launchers": mapped_launchers,
+        "compatibility": {
+            "rating": rating,
+            "platforms": [],
+            "warnings": list(warnings),
+        },
+        "fixes": [],
+    }
+
+
 def _classify_asset(
     source_pack: SourcePack,
     asset: SourceAsset,
@@ -958,7 +1439,37 @@ def _classify_asset(
             release_condition=None,
         )
     if asset.source_path in recipe_paths:
-        return _classify_publishable(base, asset, "recipe", "convert-recipe")
+        source = _parse_json_object(asset)
+        findings = _recipe_findings(asset, source)
+        reason = _select_recipe_reason(findings)
+        if reason is not None:
+            evidence = tuple(
+                sorted(
+                    {finding.evidence_locator for finding in findings},
+                    key=lambda value: value.encode("utf-8"),
+                )
+            )
+            return ConversionRecord(
+                **base,
+                output_kind="recipe",
+                status="quarantined",
+                action="quarantine",
+                target_issue=None,
+                reason=reason,
+                evidence_locators=evidence,
+                release_condition=RECIPE_RELEASE_CONDITIONS[reason],
+            )
+        _map_recipe_structure(source)
+        return ConversionRecord(
+            **base,
+            output_kind="recipe",
+            status="converted",
+            action="convert-recipe",
+            target_issue=None,
+            reason=None,
+            evidence_locators=(),
+            release_condition=None,
+        )
     if asset.category == "probes":
         return _classify_publishable(
             base, asset, "portable-probe", "export-portable-probe"
@@ -1123,6 +1634,169 @@ def _record_document(record: ConversionRecord) -> dict[str, object]:
         "evidenceLocators": list(record.evidence_locators),
         "releaseCondition": record.release_condition,
     }
+
+
+def _catalog_boundary_document(asset: SourceAsset) -> dict[str, str]:
+    return {
+        "sourceCommit": asset.source_commit,
+        "sourcePath": asset.source_path,
+        "sourceSha256": asset.sha256,
+    }
+
+
+def _quarantine_document(record: ConversionRecord) -> dict[str, object]:
+    if (
+        record.status != "quarantined"
+        or record.reason is None
+        or record.release_condition is None
+        or not record.evidence_locators
+    ):
+        _fail("quarantine record is incomplete")
+    return {
+        "sourcePath": record.source_path,
+        "sourceCommit": record.source_commit,
+        "sourceSha256": record.source_sha256,
+        "category": record.category,
+        "status": "quarantined",
+        "reason": record.reason,
+        "evidenceLocators": list(record.evidence_locators),
+        "intendedOwner": record.intended_owner,
+        "releaseCondition": record.release_condition,
+    }
+
+
+def _validate_task5_documents(
+    catalog: dict[str, object],
+    quarantine: dict[str, object],
+    result: ConversionResult,
+) -> None:
+    """Validate Task 5 application contracts independently of serialization."""
+
+    catalog_fields = {
+        "schemaVersion",
+        "sourceRepository",
+        "sourceCommit",
+        "catalogBoundary",
+        "candidateCount",
+        "convertedCount",
+        "quarantinedCount",
+        "candidates",
+    }
+    if type(catalog) is not dict or set(catalog) != catalog_fields:
+        _fail("generated catalog fields are invalid")
+    if (
+        catalog["schemaVersion"] != "1"
+        or catalog["sourceRepository"] != result.source_pack.repository
+        or catalog["sourceCommit"] != result.source_pack.source_commit
+        or type(catalog["candidateCount"]) is not int
+        or type(catalog["convertedCount"]) is not int
+        or type(catalog["quarantinedCount"]) is not int
+        or catalog["candidateCount"] != 17
+        or catalog["convertedCount"] + catalog["quarantinedCount"] != 17
+        or type(catalog["candidates"]) is not list
+        or len(catalog["candidates"]) != 17
+    ):
+        _fail("generated catalog counts are invalid")
+    boundary = catalog["catalogBoundary"]
+    if type(boundary) is not dict or set(boundary) != {"index", "signature"}:
+        _fail("generated catalog boundary is invalid")
+    source_assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    for name, path in (
+        ("index", CATALOG_INDEX_PATH),
+        ("signature", CATALOG_SIGNATURE_PATH),
+    ):
+        if boundary.get(name) != _catalog_boundary_document(source_assets[path]):
+            _fail("generated catalog boundary is invalid")
+
+    recipe_records = {
+        record.source_path: record
+        for record in result.records
+        if record.output_kind == "recipe"
+    }
+    candidate_paths: list[str] = []
+    converted_count = 0
+    quarantined_count = 0
+    identifiers: set[str] = set()
+    for entry in catalog["candidates"]:
+        if type(entry) is not dict:
+            _fail("generated catalog candidate is invalid")
+        status = entry.get("status")
+        expected_fields = {
+            "id",
+            "name",
+            "sourceCommit",
+            "sourcePath",
+            "sourceSha256",
+            "status",
+        }
+        if status == "quarantined":
+            expected_fields.add("reason")
+            quarantined_count += 1
+        elif status == "converted":
+            expected_fields.update({"recipePath", "recipeSha256"})
+            converted_count += 1
+        else:
+            _fail("generated catalog candidate status is invalid")
+        if set(entry) != expected_fields:
+            _fail("generated catalog candidate fields are invalid")
+        source_path = entry["sourcePath"]
+        identifier = entry["id"]
+        if (
+            type(source_path) is not str
+            or source_path not in recipe_records
+            or type(identifier) is not str
+            or not identifier
+            or identifier in identifiers
+        ):
+            _fail("generated catalog candidate identity is invalid")
+        asset = source_assets[source_path]
+        record = recipe_records[source_path]
+        source = _parse_json_object(asset)
+        if (
+            entry["name"] != source.get("name")
+            or identifier != source.get("id")
+            or entry["sourceCommit"] != asset.source_commit
+            or entry["sourceSha256"] != asset.sha256
+            or status != record.status
+            or (status == "quarantined" and entry["reason"] != record.reason)
+        ):
+            _fail("generated catalog candidate provenance is invalid")
+        candidate_paths.append(source_path)
+        identifiers.add(identifier)
+    if (
+        candidate_paths
+        != sorted(candidate_paths, key=lambda value: value.encode("ascii"))
+        or set(candidate_paths) != set(recipe_records)
+        or converted_count != catalog["convertedCount"]
+        or quarantined_count != catalog["quarantinedCount"]
+    ):
+        _fail("generated catalog candidate coverage is invalid")
+
+    if type(quarantine) is not dict or set(quarantine) != {"schemaVersion", "records"}:
+        _fail("generated quarantine fields are invalid")
+    quarantine_records = quarantine["records"]
+    if quarantine["schemaVersion"] != "1" or type(quarantine_records) is not list:
+        _fail("generated quarantine contract is invalid")
+    expected_quarantine = [
+        _quarantine_document(recipe_records[path])
+        for path in candidate_paths
+        if recipe_records[path].status == "quarantined"
+    ]
+    if quarantine_records != expected_quarantine:
+        _fail("generated quarantine records are invalid")
+    for record in quarantine_records:
+        if set(record) != {
+            "sourcePath",
+            "sourceCommit",
+            "sourceSha256",
+            "category",
+            "status",
+            "reason",
+            "evidenceLocators",
+            "intendedOwner",
+            "releaseCondition",
+        }:
+            _fail("generated quarantine record fields are invalid")
 
 
 def _git_blob_oid(raw: bytes) -> str:

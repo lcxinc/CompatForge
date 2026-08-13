@@ -1,0 +1,299 @@
+{
+  "records": [
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json#tests",
+        "https://www.7-zip.org/a/7z2601-x64.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json",
+      "sourceSha256": "fb320ed41e101182af879de445fca01f035a5aebea910683fe27a5b56805d55e",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json#tests",
+        "https://download.mozilla.org/?product=firefox-msi-latest-ssl&os=win64&lang=zh-CN"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json",
+      "sourceSha256": "5017cecb5c77738b1866016659a0357e2fa2e8efa093f6aeeae62a63c6e2c119",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "/Users/a1-6/project/Mac-Win/refs/prefixes/hoyoplay-x86_64/drive_c/Program Files/miHoYo Launcher/1.16.1.364/HYP.exe",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json#installer.mode",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json",
+      "sourceSha256": "2c66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json#installer.mode",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json#tests",
+        "https://github.com/jasp-stats/jasp-desktop/releases/download/v0.97.1/JASP-0.97.1-Windows-Community.msi"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json",
+      "sourceSha256": "ebaf01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json#installer.mode",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json",
+      "sourceSha256": "37c2abfd4fe1fd1d6e0ee85a79592112c0f85a7d1eb452375617b8bee874b10e",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json#tests",
+        "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json",
+      "sourceSha256": "60b8de3c52df0380b039ae07e608c494a63f69d0483195bc4471afcb5384ff12",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json#installer.command",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json#tests",
+        "https://ltspice.analog.com/software/LTspice64.msi"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json",
+      "sourceSha256": "03157bcc29c24fbd555c485bd14fab9f1a102a57b880086ee0aa25181eeacf0b",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/00_console_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/15_iphlpapi_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/30_d3d11_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/45_d3d9_legacy_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/10_tls_winhttp_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/15_iphlpapi_probe.exe",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json",
+      "sourceSha256": "cb571265bfc4d8bfa98d7cbd83e375b0a70a3ca3cb1a087b44341003fd365788",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/wine",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json",
+      "sourceSha256": "4222d93460b38f09bcf956f63ef32d886e5a1a76aee0b9af02c8443a237b0027",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+        "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/90_ipc_file_mapping_probe.exe",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json",
+      "sourceSha256": "ca882ab37ceea4276f460ac8af76870b747b390de4c8b5abb1e3d6f85bda1d5a",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json#tests",
+        "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.2/npp.8.9.6.2.Installer.x64.msi"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json",
+      "sourceSha256": "112981ee22936ab78d6511ff7672cf75c1b2a4bd179a4b7b0e0659f8c05ab1ce",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json#installer.command",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json#installer.mode",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json#tests"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json",
+      "sourceSha256": "f81ea7243ecd916d20e48e08d259cd24a152a444704b7f7c9332e96c0f62661a",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json#tests",
+        "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json",
+      "sourceSha256": "a201c20e5ea4a92831d76a57ee49ae138ebef719f61812ee6a7190800e161ba6",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json#tests",
+        "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json",
+      "sourceSha256": "5b405e719271aed976042c46763ec494405fd580215ad65e2da6efba32488565",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json#tests",
+        "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json",
+      "sourceSha256": "44705ba78b94ce1bee8709c45f4d385c9141f87e40a89ad133e969ec0894c0c3",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json#tests",
+        "https://github.com/texstudio-org/texstudio/releases/download/4.9.5/Texstudio-4.9.5-win-qt6-signed.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json",
+      "sourceSha256": "95ffa27ad03cadd6cd38f90883fa7fedbd2e77f0f874ec5d2eaac24017f9383d",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "evidenceLocators": [
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json#license",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json#provenance",
+        "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json#tests",
+        "https://get.videolan.org/vlc/3.0.23/win64/vlc-3.0.23-win64.exe"
+      ],
+      "intendedOwner": "compatforge/catalog",
+      "reason": "missing-license",
+      "releaseCondition": "Record a reviewed source license and regenerate the migration.",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json",
+      "sourceSha256": "35eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
+      "status": "quarantined"
+    }
+  ],
+  "schemaVersion": "1"
+}

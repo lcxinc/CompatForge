@@ -1509,7 +1509,7 @@ class MacWinConversionModelTests(unittest.TestCase):
                 "success",
                 converter._COMMON,
                 converter._SOURCE_PACK,
-                rendered["conversion-ledger.json"],
+                tuple(sorted(rendered.items())),
             )
 
         with mock.patch.object(
@@ -1676,14 +1676,17 @@ class MacWinConversionModelTests(unittest.TestCase):
             ready.wait(timeout=5)
             try:
                 result = converter.build_conversion(ROOT)
-                document = converter.render_documents(result)["conversion-ledger.json"]
+                documents = converter.render_documents(result)
             except BaseException as error:
                 return ("error", type(error).__name__, str(error))
             return (
                 "success",
                 converter._COMMON,
                 converter._SOURCE_PACK,
-                hashlib.sha256(document).hexdigest(),
+                tuple(
+                    (path, hashlib.sha256(raw).hexdigest())
+                    for path, raw in sorted(documents.items())
+                ),
             )
 
         with mock.patch("builtins.exec", side_effect=synchronized_exec), mock.patch.object(
@@ -1838,7 +1841,13 @@ class MacWinConversionModelTests(unittest.TestCase):
         ):
             result = converter.classify_source_pack(self.source_pack)
             documents = converter.render_documents(result)
-        self.assertEqual(set(documents), {"conversion-ledger.json"})
+        self.assertEqual(
+            set(documents),
+            {
+                "migration/macwin/generated/catalog.json",
+                "migration/macwin/generated/quarantine.json",
+            },
+        )
 
     def test_single_pass_loader_rejects_post_read_mutation_without_rereading(self) -> None:
         converter = self.converter
@@ -2084,14 +2093,17 @@ class MacWinConversionModelTests(unittest.TestCase):
             repeated = converter.build_conversion(ROOT)
             second = converter.render_documents(repeated)
         self.assertEqual(second, first)
-        self.assertEqual(set(first), {"conversion-ledger.json"})
-        common = _load_macwin_asset_common()
-        ledger = common.parse_json_bytes(
-            first["conversion-ledger.json"], label="conversion ledger"
+        self.assertEqual(
+            set(first),
+            {
+                "migration/macwin/generated/catalog.json",
+                "migration/macwin/generated/quarantine.json",
+            },
         )
-        self.assertEqual(ledger["assetCount"], 90)
-        self.assertEqual(len(ledger["records"]), 90)
-        self.assertEqual(common.canonical_json_bytes(ledger), first["conversion-ledger.json"])
+        common = _load_macwin_asset_common()
+        for path, raw in first.items():
+            document = common.parse_json_bytes(raw, label=path)
+            self.assertEqual(common.canonical_json_bytes(document), raw)
 
     @staticmethod
     def _replace_record(result, record, **changes):
@@ -2100,6 +2112,409 @@ class MacWinConversionModelTests(unittest.TestCase):
             replacement if existing is record else existing for existing in result.records
         )
         return dataclasses.replace(result, records=records)
+
+
+class MacWinRecipeConversionTests(unittest.TestCase):
+    EXPECTED_RECIPE_DECISIONS = {
+        "7zip": "missing-license",
+        "firefox": "missing-license",
+        "hoyoplay-cn": "missing-license",
+        "jasp-stats": "missing-license",
+        "lenovo-app-store": "missing-license",
+        "libreoffice": "missing-license",
+        "ltspice": "missing-license",
+        "macwin-core-capability-tests": "missing-license",
+        "macwin-game-tests": "missing-license",
+        "macwin-probes": "missing-license",
+        "notepad-plus-plus": "missing-license",
+        "portableapps-platform": "missing-license",
+        "sqlitestudio": "missing-license",
+        "steam": "missing-license",
+        "sumatrapdf": "missing-license",
+        "texstudio": "missing-license",
+        "vlc": "missing-license",
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.common = _load_macwin_asset_common()
+        cls.result = cls.converter.build_conversion(ROOT)
+        cls.assets = {
+            asset.source_path: asset for asset in cls.result.source_pack.assets
+        }
+
+    def test_real_catalog_count_and_each_reviewed_decision_are_sealed(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        catalog_path = "migration/macwin/generated/catalog.json"
+        quarantine_path = "migration/macwin/generated/quarantine.json"
+        self.assertEqual(set(documents), {catalog_path, quarantine_path})
+        catalog = self.common.parse_json_bytes(
+            documents[catalog_path], label="generated catalog"
+        )
+        quarantine = self.common.parse_json_bytes(
+            documents[quarantine_path], label="generated quarantine"
+        )
+
+        self.assertEqual(catalog["candidateCount"], 17)
+        self.assertEqual(catalog["convertedCount"], 0)
+        self.assertEqual(catalog["quarantinedCount"], 17)
+        self.assertEqual(catalog["catalogBoundary"]["index"]["sourcePath"], self.converter.CATALOG_INDEX_PATH)
+        self.assertEqual(catalog["catalogBoundary"]["signature"]["sourcePath"], self.converter.CATALOG_SIGNATURE_PATH)
+        actual = {
+            entry["id"]: entry["reason"] for entry in catalog["candidates"]
+        }
+        self.assertEqual(actual, self.EXPECTED_RECIPE_DECISIONS)
+        self.assertEqual(
+            [entry["sourcePath"] for entry in catalog["candidates"]],
+            sorted(
+                (entry["sourcePath"] for entry in catalog["candidates"]),
+                key=lambda value: value.encode("ascii"),
+            ),
+        )
+        self.assertEqual(len(quarantine["records"]), 17)
+        self.assertEqual(
+            {record["sourcePath"] for record in quarantine["records"]},
+            {entry["sourcePath"] for entry in catalog["candidates"]},
+        )
+
+    def test_supported_source_structure_maps_without_inventing_evidence(self) -> None:
+        asset = self._recipe_asset("7zip")
+        source = self.converter._parse_json_object(asset)
+        draft = self.converter._map_recipe_structure(source)
+        self.assertEqual(
+            set(draft),
+            {
+                "schemaVersion",
+                "id",
+                "metadata",
+                "installer",
+                "bottle",
+                "launchers",
+                "compatibility",
+                "fixes",
+            },
+        )
+        self.assertNotIn("license", draft["metadata"])
+        self.assertNotIn("tests", draft)
+        self.assertNotIn("provenance", draft)
+        self.assertEqual(draft["bottle"]["guestArchitecture"], "x86_64")
+        self.assertEqual(draft["bottle"]["windowsVersion"], "win11")
+        self.assertEqual(list(draft["bottle"]["environment"]), [])
+        self.assertEqual(
+            draft["launchers"],
+            [
+                {
+                    "id": "7zip-file-manager",
+                    "name": "7-Zip File Manager",
+                    "executable": "C:\\Program Files\\7-Zip\\7zFM.exe",
+                    "arguments": [],
+                    "environment": {},
+                }
+            ],
+        )
+        self.assertEqual(
+            draft["installer"],
+            {
+                "mode": "download",
+                "url": "https://www.7-zip.org/a/7z2601-x64.exe",
+                "fileName": "7z2601-x64.exe",
+                "sha256": "d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d",
+                "arguments": ["/S"],
+            },
+        )
+        self.assertEqual(draft["compatibility"]["rating"], "excellent")
+        self.assertEqual(draft["compatibility"]["platforms"], [])
+        self.assertEqual(
+            draft["compatibility"]["warnings"], source["warnings"]
+        )
+
+    def test_environment_and_launcher_maps_are_sorted(self) -> None:
+        asset = self._recipe_asset("firefox")
+        source = self.converter._parse_json_object(asset)
+        draft = self.converter._map_recipe_structure(source)
+        self.assertEqual(
+            list(draft["bottle"]["environment"]),
+            sorted(source["env"], key=lambda value: value.encode("utf-8")),
+        )
+        self.assertEqual(
+            list(draft["launchers"][0]["environment"]),
+            sorted(
+                source["launchers"][0]["envOverrides"],
+                key=lambda value: value.encode("utf-8"),
+            ),
+        )
+        self.assertNotIn("command", draft["installer"])
+        self.assertEqual(draft["installer"]["arguments"], source["installer"]["arguments"])
+
+    def test_every_rejection_rule_is_detected_with_fixed_precedence(self) -> None:
+        asset = self._recipe_asset("7zip")
+        base = self.converter._parse_json_object(asset)
+        cases = {}
+
+        candidate = copy.deepcopy(base)
+        candidate["installer"]["mode"] = "alreadyInstalled"
+        cases["mutable"] = (candidate, "mutable-local-installation")
+
+        candidate = copy.deepcopy(base)
+        candidate["installer"]["hints"] = ["/Users/reviewer/private/installer.exe"]
+        cases["absolute-hint"] = (candidate, "absolute-path")
+
+        candidate = copy.deepcopy(base)
+        candidate["installer"].pop("sha256")
+        cases["missing-digest"] = (candidate, "missing-digest")
+
+        candidate = copy.deepcopy(base)
+        candidate["postInstall"] = [{"command": "host-shell"}]
+        cases["post-install"] = (candidate, "unsupported-behavior")
+
+        candidate = copy.deepcopy(base)
+        candidate["unknownField"] = "must not be copied"
+        cases["unknown-field"] = (candidate, "unsupported-schema")
+
+        candidate = copy.deepcopy(base)
+        candidate["launchers"][0]["exePath"] = "../host.exe"
+        cases["unsafe-launcher"] = (candidate, "unsupported-behavior")
+
+        for name, (candidate, expected) in cases.items():
+            with self.subTest(case=name):
+                findings = self.converter._recipe_findings(asset, candidate)
+                reasons = tuple(finding.reason for finding in findings)
+                self.assertIn(expected, reasons)
+                self.assertEqual(
+                    self.converter._select_recipe_reason(findings),
+                    "missing-license",
+                    "the frozen asset's missing license has fixed first precedence",
+                )
+
+        provenance_only = dataclasses.replace(asset, license_status="reviewed")
+        findings = self.converter._recipe_findings(provenance_only, base)
+        self.assertEqual(
+            self.converter._select_recipe_reason(findings), "missing-provenance"
+        )
+
+    def test_quarantine_keeps_inert_evidence_and_never_probes_it(self) -> None:
+        with mock.patch.object(
+            Path, "open", side_effect=AssertionError("evidence opened")
+        ), mock.patch.object(
+            Path, "exists", side_effect=AssertionError("evidence probed")
+        ), mock.patch.object(
+            Path, "stat", side_effect=AssertionError("evidence stated")
+        ), mock.patch.object(
+            os.path, "expandvars", side_effect=AssertionError("environment expanded")
+        ), mock.patch.object(
+            os.path, "expanduser", side_effect=AssertionError("home expanded")
+        ):
+            documents = self.converter.render_documents(self.result)
+        quarantine = self.common.parse_json_bytes(
+            documents["migration/macwin/generated/quarantine.json"],
+            label="generated quarantine",
+        )
+        records = {record["sourcePath"]: record for record in quarantine["records"]}
+        download_record = records[self._recipe_asset("7zip").source_path]
+        self.assertIn(
+            "https://www.7-zip.org/a/7z2601-x64.exe",
+            download_record["evidenceLocators"],
+        )
+        for identifier in (
+            "hoyoplay-cn",
+            "macwin-core-capability-tests",
+            "macwin-game-tests",
+            "macwin-probes",
+        ):
+            record = records[self._recipe_asset(identifier).source_path]
+            evidence = record["evidenceLocators"]
+            self.assertEqual(
+                evidence, sorted(set(evidence), key=lambda value: value.encode("utf-8"))
+            )
+            self.assertTrue(any(value.startswith("/Users/") for value in evidence))
+
+    def test_outputs_are_closed_canonical_and_match_committed_goldens(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        recipe_schema = json.loads((ROOT / "schemas/recipe.schema.json").read_bytes())
+        quarantine_schema = json.loads(
+            (ROOT / "schemas/quarantine.schema.json").read_bytes()
+        )
+        for relative, raw in documents.items():
+            with self.subTest(path=relative):
+                value = self.common.parse_json_bytes(raw, label=relative)
+                self.assertEqual(self.common.canonical_json_bytes(value), raw)
+                self.assertLessEqual(len(raw), self.common.MAX_METADATA_BYTES)
+                committed = ROOT / PurePosixPath(relative)
+                self.assertTrue(committed.is_file())
+                self.assertEqual(committed.read_bytes(), raw)
+                if relative.endswith("quarantine.json"):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, quarantine_schema, quarantine_schema
+                    )
+                elif "/recipes/" in relative:
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, recipe_schema, recipe_schema
+                    )
+
+    def test_catalog_digest_traceability_and_task5_scope_are_exact(self) -> None:
+        documents = self.converter.render_documents(self.result)
+        catalog = self.common.parse_json_bytes(
+            documents["migration/macwin/generated/catalog.json"],
+            label="generated catalog",
+        )
+        for entry in catalog["candidates"]:
+            asset = self.assets[entry["sourcePath"]]
+            self.assertEqual(entry["sourceSha256"], asset.sha256)
+            self.assertEqual(entry["sourceCommit"], asset.source_commit)
+            if entry["status"] == "converted":
+                raw = documents[entry["recipePath"]]
+                self.assertEqual(entry["recipeSha256"], hashlib.sha256(raw).hexdigest())
+        self.assertFalse(
+            any(
+                "/probes/" in path
+                or "/fixtures/" in path
+                or "/mappings/" in path
+                or path.endswith("/index.json")
+                for path in documents
+            )
+        )
+
+    def test_repository_validator_exempts_only_exact_rebuilt_task5_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            self.assertEqual(validator.validate_no_developer_paths(), [])
+
+            quarantine = temporary_root / "migration/macwin/generated/quarantine.json"
+            original = quarantine.read_bytes()
+            value = json.loads(original)
+            value["records"][0]["releaseCondition"] = "self-consistent forgery"
+            quarantine.write_bytes(self.common.canonical_json_bytes(value))
+            errors = validator.validate_no_developer_paths()
+            self.assertIn("Mac-Win generated evidence validation failed", errors)
+
+    def test_repository_validator_rejects_extra_generated_developer_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            hostile = temporary_root / "migration/macwin/generated/unreferenced.json"
+            hostile.write_text(
+                '{"path":"/Users/' + 'a1-6/unreviewed"}\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+            validator.ROOT = temporary_root
+            errors = validator.validate_no_developer_paths()
+            self.assertTrue(
+                any(
+                    hostile.name in error
+                    and "contains developer path /Users/" + "a1-6/" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
+    def test_repository_validator_rejects_task5_replacement_before_scan(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            target = temporary_root / "migration/macwin/generated/quarantine.json"
+            raw = target.read_bytes()
+            original_rglob = Path.rglob
+            injected = False
+
+            def replace_before_scan(path: Path, pattern: str):
+                nonlocal injected
+                if path == temporary_root and not injected:
+                    injected = True
+                    replaced = target.with_name("replaced-quarantine.json")
+                    target.replace(replaced)
+                    target.write_bytes(raw)
+                return original_rglob(path, pattern)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(Path, "rglob", replace_before_scan):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertIn("Mac-Win generated evidence validation failed", errors)
+
+    def test_repository_validator_revalidates_task5_evidence_after_skip(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            target = temporary_root / "migration/macwin/generated/quarantine.json"
+            original_rglob = Path.rglob
+            injected = False
+
+            def mutate_after_skip(path: Path, pattern: str):
+                nonlocal injected
+                values = original_rglob(path, pattern)
+                if path != temporary_root or injected:
+                    yield from values
+                    return
+                for value in values:
+                    yield value
+                    if value == target:
+                        raw = target.read_bytes()
+                        target.write_bytes(raw[:-1] + b" \n")
+                        injected = True
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(Path, "rglob", mutate_after_skip):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertIn("Mac-Win generated evidence validation failed", errors)
+
+    def test_repository_validator_rejects_a_linked_converter_parent(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            tools = temporary_root / "tools"
+            external = temporary_root / "external-tools"
+            tools.replace(external)
+            try:
+                tools.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlink unavailable: {error}")
+            validator.ROOT = temporary_root
+            errors = validator.validate_no_developer_paths()
+            self.assertIn("Mac-Win generated evidence validation failed", errors)
+
+    @staticmethod
+    def _copy_validator_fixture(temporary_root: Path) -> None:
+        source = temporary_root / "migration/macwin/source"
+        source.parent.mkdir(parents=True)
+        shutil.copytree(ROOT / "migration/macwin/source", source)
+        generated = temporary_root / "migration/macwin/generated"
+        generated.mkdir()
+        for name in ("catalog.json", "quarantine.json"):
+            shutil.copyfile(ROOT / "migration/macwin/generated" / name, generated / name)
+        tools = temporary_root / "tools"
+        tools.mkdir()
+        for name in (
+            "convert_macwin_assets.py",
+            "import_macwin_source_pack.py",
+            "macwin_asset_common.py",
+        ):
+            shutil.copyfile(ROOT / "tools" / name, tools / name)
+
+    def _recipe_asset(self, identifier: str):
+        suffix = f"/recipes/{identifier}.json"
+        return next(
+            asset for asset in self.result.source_pack.assets if asset.source_path.endswith(suffix)
+        )
 
 
 class MigrationLayoutTests(unittest.TestCase):
@@ -2701,7 +3116,7 @@ class MigrationLayoutTests(unittest.TestCase):
             "repository validator is missing the temporary migration-check hook",
         )
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             root = Path(directory)
             self._write_minimal_valid_repository(root)
             validator.ROOT = root
@@ -2713,10 +3128,18 @@ class MigrationLayoutTests(unittest.TestCase):
             ):
                 result = validator.main()
 
-            self.assertEqual(result, 0, standard_error.getvalue())
+            self.assertEqual(result, 1, standard_error.getvalue())
+            self.assertIn(
+                "Mac-Win generated evidence validation failed",
+                standard_error.getvalue(),
+            )
             self.assertEqual(
                 (root / "migration-check-invocation.json").read_text(encoding="utf-8"),
                 '["--check"]',
+            )
+            self.assertFalse(
+                (ROOT / "migration-check-invocation.json").exists(),
+                "loading the legacy fake converter must not pollute the real repository",
             )
 
     @staticmethod
@@ -2779,9 +3202,10 @@ class MigrationLayoutTests(unittest.TestCase):
             "import json\n"
             "import sys\n"
             "from pathlib import Path\n"
-            "Path('migration-check-invocation.json').write_text(\n"
-            "    json.dumps(sys.argv[1:]), encoding='utf-8'\n"
-            ")\n",
+            "if __name__ == '__main__':\n"
+            "    Path('migration-check-invocation.json').write_text(\n"
+            "        json.dumps(sys.argv[1:]), encoding='utf-8'\n"
+            "    )\n",
             encoding="utf-8",
             newline="\n",
         )

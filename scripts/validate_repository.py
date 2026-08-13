@@ -14,7 +14,9 @@ import os
 import re
 import stat
 import subprocess
+import types
 from pathlib import Path
+from pathlib import PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +36,13 @@ MIGRATION_ENVIRONMENT_NAMES = frozenset(
     }
 )
 SOURCE_PACK_VALIDATOR = Path(__file__).resolve().parents[1] / "tools" / "import_macwin_source_pack.py"
+TASK5_DOCUMENT_PATHS = frozenset(
+    {
+        "migration/macwin/generated/catalog.json",
+        "migration/macwin/generated/quarantine.json",
+    }
+)
+MAX_TASK5_DOCUMENT_BYTES = 1024 * 1024
 
 
 def validate_macwin_asset_migration() -> list[str]:
@@ -187,16 +196,246 @@ def _validated_macwin_source_pack_binding() -> tuple[object | None, list[str]]:
     return binding, []
 
 
-def _scan_developer_paths(binding: object | None) -> list[str]:
+def _filesystem_identity(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_nlink,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _validate_bound_path_chain(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    bindings: list[
+        tuple[Path, tuple[int, int, int, int, int, int]]
+    ] = []
+    for part in absolute.parts[1:]:
+        current /= part
+        metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+            raise ValueError("generated evidence path is linked")
+        if current != absolute and not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("generated evidence path is invalid")
+        bindings.append((current, _filesystem_identity(metadata)))
+    for component, identity in bindings:
+        if _filesystem_identity(component.lstat()) != identity:
+            raise ValueError("generated evidence path identity changed")
+
+
+def _read_bound_regular_file(
+    path: Path, maximum: int
+) -> tuple[bytes, tuple[int, int, int, int, int, int]]:
+    _validate_bound_path_chain(path)
+    before = path.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_reparse_tag", 0)
+        or before.st_nlink != 1
+        or before.st_size > maximum
+    ):
+        raise ValueError("generated evidence leaf is invalid")
+    identity = _filesystem_identity(before)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or _filesystem_identity(opened)[:4] != identity[:4]:
+            raise ValueError("generated evidence identity changed")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum:
+                raise ValueError("generated evidence exceeds the byte limit")
+            chunks.append(chunk)
+        final = os.fstat(descriptor)
+        if _filesystem_identity(final) != _filesystem_identity(opened):
+            raise ValueError("generated evidence identity changed")
+    finally:
+        os.close(descriptor)
+    after = path.lstat()
+    if _filesystem_identity(after) != identity:
+        raise ValueError("generated evidence identity changed")
+    _validate_bound_path_chain(path)
+    return b"".join(chunks), identity
+
+
+class _GeneratedEvidenceBinding:
+    """Bind exact Task 5 output paths to converter-rebuilt canonical bytes."""
+
+    def __init__(
+        self,
+        generated_root: Path,
+        root_identity: tuple[int, int, int, int, int, int],
+        expected: dict[str, bytes],
+        leaves: dict[Path, tuple[bytes, tuple[int, int, int, int, int, int]]],
+        converter: object,
+        converter_path: Path,
+        converter_raw: bytes,
+        converter_identity: tuple[int, int, int, int, int, int],
+    ) -> None:
+        self.generated_root = generated_root
+        self.root_identity = root_identity
+        self.expected = expected
+        self.leaves = leaves
+        self.converter = converter
+        self.converter_path = converter_path
+        self.converter_raw = converter_raw
+        self.converter_identity = converter_identity
+
+    def contains(self, path: Path) -> bool:
+        return path.absolute() in self.leaves
+
+    def verify_path(self, path: Path) -> bytes:
+        absolute = path.absolute()
+        expected = self.leaves.get(absolute)
+        if expected is None:
+            raise ValueError("generated evidence path is not authenticated")
+        raw, identity = _read_bound_regular_file(absolute, MAX_TASK5_DOCUMENT_BYTES)
+        if identity != expected[1] or raw != expected[0]:
+            raise ValueError("generated evidence changed")
+        return raw
+
+    def revalidate(self) -> None:
+        root = self.generated_root.lstat()
+        if (
+            not stat.S_ISDIR(root.st_mode)
+            or stat.S_ISLNK(root.st_mode)
+            or getattr(root, "st_reparse_tag", 0)
+            or _filesystem_identity(root) != self.root_identity
+        ):
+            raise ValueError("generated evidence root changed")
+        converter_raw, converter_identity = _read_bound_regular_file(
+            self.converter_path, MAX_TASK5_DOCUMENT_BYTES
+        )
+        if (
+            converter_raw != self.converter_raw
+            or converter_identity != self.converter_identity
+        ):
+            raise ValueError("generated evidence converter changed")
+        regenerated = self.converter.render_documents(
+            self.converter.build_conversion(ROOT)
+        )
+        if type(regenerated) is not dict or regenerated != self.expected:
+            raise ValueError("generated evidence semantics changed")
+        for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
+            self.verify_path(path)
+        final_root = self.generated_root.lstat()
+        if _filesystem_identity(final_root) != self.root_identity:
+            raise ValueError("generated evidence root changed")
+
+
+def _load_task5_converter() -> tuple[
+    object,
+    Path,
+    bytes,
+    tuple[int, int, int, int, int, int],
+]:
+    path = ROOT / "tools" / "convert_macwin_assets.py"
+    raw, identity = _read_bound_regular_file(path, MAX_TASK5_DOCUMENT_BYTES)
+    module_name = f"_repository_macwin_task5_converter_{id(raw):x}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    sys.modules[module_name] = module
+    try:
+        exec(compile(raw, str(path), "exec"), module.__dict__)
+    finally:
+        if sys.modules.get(module_name) is module:
+            sys.modules.pop(module_name, None)
+    after_raw, after_identity = _read_bound_regular_file(
+        path, MAX_TASK5_DOCUMENT_BYTES
+    )
+    if after_raw != raw or after_identity != identity:
+        raise ValueError("generated evidence converter changed")
+    return module, path, raw, identity
+
+
+def _validated_macwin_generated_evidence_binding() -> tuple[
+    _GeneratedEvidenceBinding | None, list[str]
+]:
+    """Rebuild, compare, and bind only the two approved Task 5 leaves."""
+
+    try:
+        converter, converter_path, converter_raw, converter_identity = (
+            _load_task5_converter()
+        )
+        expected = converter.render_documents(converter.build_conversion(ROOT))
+        if type(expected) is not dict or set(expected) != TASK5_DOCUMENT_PATHS:
+            raise ValueError("generated evidence set is invalid")
+        if any(type(raw) is not bytes or len(raw) > MAX_TASK5_DOCUMENT_BYTES for raw in expected.values()):
+            raise ValueError("generated evidence bytes are invalid")
+        generated_root = (ROOT / "migration" / "macwin" / "generated").absolute()
+        root = generated_root.lstat()
+        if (
+            not stat.S_ISDIR(root.st_mode)
+            or stat.S_ISLNK(root.st_mode)
+            or getattr(root, "st_reparse_tag", 0)
+        ):
+            raise ValueError("generated evidence root is invalid")
+        root_identity = _filesystem_identity(root)
+        leaves: dict[
+            Path, tuple[bytes, tuple[int, int, int, int, int, int]]
+        ] = {}
+        for relative in sorted(expected, key=lambda value: value.encode("ascii")):
+            path = (ROOT / PurePosixPath(relative)).absolute()
+            raw, identity = _read_bound_regular_file(path, MAX_TASK5_DOCUMENT_BYTES)
+            if raw != expected[relative] or hashlib.sha256(raw).digest() != hashlib.sha256(expected[relative]).digest():
+                raise ValueError("generated evidence bytes do not match")
+            leaves[path] = (raw, identity)
+        if len(leaves) != 2:
+            raise ValueError("generated evidence leaf set is invalid")
+        binding = _GeneratedEvidenceBinding(
+            generated_root,
+            root_identity,
+            dict(expected),
+            leaves,
+            converter,
+            converter_path,
+            converter_raw,
+            converter_identity,
+        )
+        binding.revalidate()
+    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None, ["Mac-Win generated evidence validation failed"]
+    return binding, []
+
+
+def _scan_developer_paths(
+    source_binding: object | None,
+    generated_binding: _GeneratedEvidenceBinding | None = None,
+) -> list[str]:
     errors: list[str] = []
     forbidden = ("/Users/a1-6/", "/home/a1-6/")
     for path in sorted(ROOT.rglob("*")):
-        if binding is not None and binding.contains(path):
-            binding.verify_path(path)
+        if source_binding is not None and source_binding.contains(path):
+            source_binding.verify_path(path)
             continue
-        if not path.is_file() or ".git" in path.parts:
+        if generated_binding is not None and generated_binding.contains(path):
+            generated_binding.verify_path(path)
             continue
-        if path.resolve() == Path(__file__).resolve():
+        try:
+            metadata = path.lstat()
+        except OSError:
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_reparse_tag", 0)
+            or ".git" in path.parts
+        ):
+            continue
+        if path.absolute() == Path(__file__).absolute():
             continue
         try:
             content = path.read_text(encoding="utf-8")
@@ -209,14 +448,53 @@ def _scan_developer_paths(binding: object | None) -> list[str]:
 
 
 def validate_no_developer_paths() -> list[str]:
-    binding, errors = _validated_macwin_source_pack_binding()
-    if binding is None:
-        return [*errors, *_scan_developer_paths(None)]
+    source_binding, errors = _validated_macwin_source_pack_binding()
+    if source_binding is None:
+        return [*errors, *_scan_developer_paths(None, None)]
+    generated_binding, generated_errors = (
+        _validated_macwin_generated_evidence_binding()
+    )
+    if generated_binding is None:
+        try:
+            scanned_errors = _scan_developer_paths(source_binding, None)
+            source_binding.revalidate()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return [
+                "Mac-Win source pack validation failed",
+                *generated_errors,
+                *_scan_developer_paths(None, None),
+            ]
+        return [*generated_errors, *scanned_errors]
     try:
-        scanned_errors = _scan_developer_paths(binding)
-        binding.revalidate()
+        scanned_errors = _scan_developer_paths(source_binding, generated_binding)
     except (OSError, RuntimeError, TypeError, ValueError):
-        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None)]
+        try:
+            source_binding.revalidate()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return [
+                "Mac-Win source pack validation failed",
+                "Mac-Win generated evidence validation failed",
+                *_scan_developer_paths(None, None),
+            ]
+        return [
+            "Mac-Win generated evidence validation failed",
+            *_scan_developer_paths(source_binding, None),
+        ]
+    try:
+        source_binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None, None)]
+    try:
+        generated_binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return [
+            "Mac-Win generated evidence validation failed",
+            *_scan_developer_paths(source_binding, None),
+        ]
+    try:
+        source_binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ["Mac-Win source pack validation failed", *_scan_developer_paths(None, None)]
     return scanned_errors
 
 
