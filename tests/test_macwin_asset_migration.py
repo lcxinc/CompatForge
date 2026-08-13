@@ -8626,12 +8626,11 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
             descriptor = os.open(external_file, os.O_RDWR)
             try:
-                with self._audit_write_scope(generated), self.assertRaisesRegex(
-                    AssertionError, "side effect blocked"
-                ):
-                    os.write(descriptor, b"mutated!")
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    os.write(descriptor, b"original")
+                with self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                    with self._audit_write_scope(generated):
+                        os.write(descriptor, b"mutated!")
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        os.write(descriptor, b"original")
             finally:
                 os.close(descriptor)
             self.assertEqual(external_file.read_bytes(), b"original")
@@ -8661,6 +8660,57 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 else:
                     linked = self._snapshot_git_metadata()
                     self.assertNotEqual(missing, linked)
+
+    def test_write_audit_rejects_preopened_stream_and_native_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "migration/macwin/generated"
+            generated.mkdir(parents=True)
+            outside = root / "outside"
+            outside.write_bytes(b"original")
+
+            with outside.open("rb"):
+                with self._audit_write_scope(generated) as events:
+                    pass
+            self.assertEqual(events, [])
+
+            with outside.open("r+b", buffering=0) as stream:
+                with self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                    with self._audit_write_scope(generated):
+                        stream.write(b"mutated")
+                        stream.seek(0)
+                        stream.write(b"original")
+            self.assertEqual(outside.read_bytes(), b"original")
+
+            if os.name == "nt":
+                import ctypes
+
+                descriptor = os.open(outside, os.O_RDWR)
+                try:
+                    runtime = ctypes.CDLL("ucrtbase", use_errno=True)
+                    native_write = runtime._write
+                    native_write.argtypes = (
+                        ctypes.c_int,
+                        ctypes.c_void_p,
+                        ctypes.c_uint,
+                    )
+                    native_write.restype = ctypes.c_int
+                    mutated = ctypes.create_string_buffer(b"mutated")
+                    original = ctypes.create_string_buffer(b"original")
+                    with self.assertRaisesRegex(AssertionError, "side effect blocked"):
+                        with self._audit_write_scope(generated):
+                            self.assertEqual(
+                                native_write(descriptor, mutated, len(b"mutated")),
+                                len(b"mutated"),
+                            )
+                            os.lseek(descriptor, 0, os.SEEK_SET)
+                            self.assertEqual(
+                                native_write(descriptor, original, len(b"original")),
+                                len(b"original"),
+                            )
+                finally:
+                    os.close(descriptor)
+                self.assertEqual(outside.read_bytes(), b"original")
 
     def test_snapshot_rejects_a_directory_swap_before_external_content_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -9004,6 +9054,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
     @contextlib.contextmanager
     def _audit_write_scope(self, approved_root: Path):
         approved_root = approved_root.absolute()
+        self._reject_preexisting_writable_regular_descriptors()
         events: list[Path] = []
         patches = []
         root_metadata = os.lstat(approved_root)
@@ -9167,6 +9218,82 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             for patcher in patches:
                 stack.enter_context(patcher)
             yield events
+
+    @staticmethod
+    def _reject_preexisting_writable_regular_descriptors() -> None:
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+
+            runtime = ctypes.CDLL("ucrtbase")
+            get_maximum = runtime._getmaxstdio
+            get_maximum.argtypes = ()
+            get_maximum.restype = ctypes.c_int
+            candidates = range(get_maximum())
+            ntdll = ctypes.WinDLL("ntdll")
+            query = ntdll.NtQueryInformationFile
+            query.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.c_int,
+            )
+            query.restype = ctypes.c_long
+            write_access = (
+                0x0002
+                | 0x0004
+                | 0x0010
+                | 0x0100
+                | 0x00010000
+                | 0x00040000
+                | 0x00080000
+            )
+
+            def descriptor_is_writable(descriptor: int) -> bool:
+                handle = msvcrt.get_osfhandle(descriptor)
+                status = (ctypes.c_ubyte * (2 * ctypes.sizeof(ctypes.c_void_p)))()
+                access = ctypes.c_uint32()
+                if query(
+                    ctypes.c_void_p(handle),
+                    status,
+                    ctypes.byref(access),
+                    ctypes.sizeof(access),
+                    8,
+                ) != 0:
+                    raise AssertionError("side effect blocked")
+                return bool(access.value & write_access)
+        else:
+            import fcntl
+            import resource
+
+            candidates = None
+            for directory in (Path("/proc/self/fd"), Path("/dev/fd")):
+                try:
+                    candidates = tuple(
+                        int(entry.name)
+                        for entry in os.scandir(directory)
+                        if entry.name.isascii() and entry.name.isdecimal()
+                    )
+                except OSError:
+                    continue
+                break
+            if candidates is None:
+                maximum, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+                candidates = range(maximum)
+
+            def descriptor_is_writable(descriptor: int) -> bool:
+                flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+                return flags & os.O_ACCMODE != os.O_RDONLY
+
+        for descriptor in candidates:
+            try:
+                metadata = os.fstat(descriptor)
+                writable = descriptor_is_writable(descriptor)
+            except (OSError, ValueError):
+                continue
+            if stat.S_ISREG(metadata.st_mode) and writable:
+                raise AssertionError("side effect blocked")
 
     @staticmethod
     def _path_is_within(path: Path, root: Path) -> bool:
