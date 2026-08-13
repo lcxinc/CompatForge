@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import copy
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -46,6 +47,22 @@ def _load_macwin_asset_common():
         raise AssertionError("could not load Mac-Win migration JSON boundary module")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_macwin_asset_converter():
+    path = ROOT / "tools/convert_macwin_assets.py"
+    if not path.is_file():
+        raise AssertionError("Mac-Win migration converter is missing")
+    spec = importlib.util.spec_from_file_location("macwin_asset_converter_contract", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load Mac-Win migration converter")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
     return module
 
 
@@ -987,6 +1004,268 @@ class MigrationSchemaTests(unittest.TestCase):
             "portable-fixture.schema.json": {**copy.deepcopy(portable), "kind": "source"},
             "recipe.schema.json": recipe,
         }
+
+
+class MacWinConversionModelTests(unittest.TestCase):
+    EXPECTED_CATEGORY_COUNTS = {
+        "bottle-schema": 4,
+        "catalog": 19,
+        "fixtures": 30,
+        "patches": 11,
+        "probes": 26,
+    }
+    EXPECTED_OWNERS = {
+        "bottle-schema": "compatforge/bottle-schema",
+        "catalog": "compatforge/catalog",
+        "fixtures": "compatforge/probes",
+        "patches": "compatforge/patches",
+        "probes": "compatforge/probes",
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.source_pack = cls.converter.load_source_pack(ROOT)
+        cls.result = cls.converter.build_conversion(ROOT)
+
+    def test_every_source_identity_has_one_closed_ordered_ledger_record(self) -> None:
+        converter = self.converter
+        source_pack = self.source_pack
+        result = self.result
+        self.assertEqual(len(source_pack.assets), 90)
+        self.assertEqual(len(result.records), 90)
+        self.assertEqual(result.source_pack, source_pack)
+
+        paths = tuple(record.source_path for record in result.records)
+        self.assertEqual(paths, tuple(sorted(paths, key=lambda item: item.encode("ascii"))))
+        self.assertEqual(len(set(paths)), 90)
+        self.assertEqual(paths, tuple(asset.source_path for asset in source_pack.assets))
+
+        counts = {category: 0 for category in self.EXPECTED_CATEGORY_COUNTS}
+        for asset, record in zip(source_pack.assets, result.records, strict=True):
+            counts[asset.category] += 1
+            self.assertEqual(asset.intended_owner, self.EXPECTED_OWNERS[asset.category])
+            self.assertEqual(record.source_repository, source_pack.repository)
+            self.assertEqual(record.source_commit, asset.source_commit)
+            self.assertEqual(record.source_path, asset.source_path)
+            self.assertEqual(record.source_sha256, asset.sha256)
+            self.assertEqual(record.source_kind, asset.kind)
+            self.assertEqual(record.category, asset.category)
+            self.assertEqual(record.intended_owner, asset.intended_owner)
+        self.assertEqual(counts, self.EXPECTED_CATEGORY_COUNTS)
+
+        self.assertEqual(
+            tuple(converter.ConversionRecord.__dataclass_fields__),
+            (
+                "source_repository",
+                "source_commit",
+                "source_path",
+                "source_sha256",
+                "source_kind",
+                "category",
+                "intended_owner",
+                "output_kind",
+                "status",
+                "action",
+                "target_issue",
+                "reason",
+                "evidence_locators",
+                "release_condition",
+            ),
+        )
+
+    def test_catalog_boundaries_and_all_recipe_candidates_are_classified(self) -> None:
+        records = tuple(
+            record for record in self.result.records if record.category == "catalog"
+        )
+        boundaries = {
+            record.source_path.rsplit("/", 1)[-1]: record
+            for record in records
+            if record.output_kind == "catalog-boundary"
+        }
+        self.assertEqual(set(boundaries), {"catalog.index.json", "catalog.signature.json"})
+        for record in boundaries.values():
+            self.assertEqual(record.status, "converted")
+            self.assertEqual(record.action, "retain-catalog-boundary")
+            self.assertIsNone(record.reason)
+            self.assertIsNone(record.target_issue)
+
+        recipes = tuple(record for record in records if record.output_kind == "recipe")
+        self.assertEqual(len(recipes), 17)
+        self.assertTrue(
+            all("/recipes/" in record.source_path for record in recipes), recipes
+        )
+        for record in recipes:
+            self.assertIn(record.status, {"converted", "quarantined"})
+            self.assertEqual(
+                record.action,
+                "convert-recipe" if record.status == "converted" else "quarantine",
+            )
+
+    def test_non_catalog_categories_use_only_the_approved_result_contracts(self) -> None:
+        expected = {
+            "probes": ("portable-probe", None, None),
+            "fixtures": ("portable-fixture", None, None),
+            "patches": ("patch-mapping", "deferred", "MW-ASSET-002"),
+            "bottle-schema": (
+                "bottle-schema-mapping",
+                "deferred",
+                "MW-ASSET-003",
+            ),
+        }
+        for record in self.result.records:
+            if record.category not in expected:
+                continue
+            output_kind, fixed_status, target = expected[record.category]
+            self.assertEqual(record.output_kind, output_kind)
+            if fixed_status is None:
+                self.assertIn(record.status, {"converted", "quarantined"})
+                expected_action = (
+                    f"export-{output_kind}"
+                    if record.status == "converted"
+                    else "quarantine"
+                )
+                self.assertEqual(record.action, expected_action)
+                self.assertIsNone(record.target_issue)
+            else:
+                self.assertEqual(record.status, fixed_status)
+                self.assertEqual(record.target_issue, target)
+                self.assertEqual(
+                    record.action,
+                    "defer-patch"
+                    if record.category == "patches"
+                    else "defer-bottle-schema",
+                )
+                self.assertIsNone(record.reason)
+
+    def test_model_rejects_incomplete_duplicate_extra_and_forged_results(self) -> None:
+        converter = self.converter
+        result = self.result
+        first = result.records[0]
+        quarantined = next(record for record in result.records if record.status == "quarantined")
+        mutants = {
+            "missing": dataclasses.replace(result, records=result.records[:-1]),
+            "extra": dataclasses.replace(result, records=(*result.records, first)),
+            "duplicate": dataclasses.replace(
+                result, records=(first, first, *result.records[2:])
+            ),
+            "unstable-order": dataclasses.replace(
+                result, records=tuple(reversed(result.records))
+            ),
+            "wrong-category": self._replace_record(
+                result, first, category="catalog"
+            ),
+            "wrong-action": self._replace_record(result, first, action="quarantine"),
+            "unsupported-status": self._replace_record(
+                result, first, status="portable"
+            ),
+            "unsupported-reason": self._replace_record(
+                result, quarantined, reason="invented-reason"
+            ),
+            "wrong-commit": self._replace_record(
+                result, first, source_commit="0" * 40
+            ),
+            "wrong-digest": self._replace_record(
+                result, first, source_sha256="0" * 64
+            ),
+            "wrong-owner": self._replace_record(
+                result, first, intended_owner="compatforge/other"
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), self.assertRaises(converter.ConversionError):
+                converter.render_documents(mutant)
+
+    def test_unknown_or_ambiguous_source_facts_fail_closed(self) -> None:
+        converter = self.converter
+        source_pack = self.source_pack
+        catalog_asset = next(
+            asset
+            for asset in source_pack.assets
+            if asset.source_path.endswith("/catalog.index.json")
+        )
+        recipe_asset = next(
+            asset for asset in source_pack.assets if "/recipes/" in asset.source_path
+        )
+        cases = (
+            dataclasses.replace(catalog_asset, category="unknown"),
+            dataclasses.replace(
+                recipe_asset,
+                source_path=(
+                    "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/"
+                    "recipes/nested/ambiguous.json"
+                ),
+            ),
+            dataclasses.replace(recipe_asset, raw=b"{}"),
+        )
+        for asset in cases:
+            assets = tuple(
+                asset if existing.source_path == recipe_asset.source_path else existing
+                for existing in source_pack.assets
+            )
+            if asset is cases[0]:
+                assets = tuple(
+                    asset if existing.source_path == catalog_asset.source_path else existing
+                    for existing in source_pack.assets
+                )
+            forged = dataclasses.replace(source_pack, assets=assets)
+            with self.subTest(asset=asset.source_path), self.assertRaises(
+                converter.ConversionError
+            ):
+                converter.classify_source_pack(forged)
+
+    def test_each_authenticated_source_object_enters_the_model_once(self) -> None:
+        converter = self.converter
+        seen: list[str] = []
+        original = converter._load_authenticated_asset_bytes
+
+        def observe(binding, source_root, record):
+            seen.append(record["sourcePath"])
+            return original(binding, source_root, record)
+
+        with mock.patch.object(
+            converter, "_load_authenticated_asset_bytes", side_effect=observe
+        ):
+            loaded = converter.load_source_pack(ROOT)
+        self.assertEqual(len(loaded.assets), 90)
+        self.assertEqual(len(seen), 90)
+        self.assertEqual(len(set(seen)), 90)
+
+    def test_conversion_is_byte_deterministic_and_has_no_locator_side_effects(self) -> None:
+        converter = self.converter
+        first = converter.render_documents(self.result)
+        with mock.patch.object(
+            Path, "exists", side_effect=AssertionError("locator existence probed")
+        ), mock.patch.object(
+            Path, "is_file", side_effect=AssertionError("locator file type probed")
+        ), mock.patch.object(
+            Path, "is_dir", side_effect=AssertionError("locator directory probed")
+        ), mock.patch.object(
+            subprocess, "run", side_effect=AssertionError("subprocess invoked")
+        ), mock.patch.object(
+            os, "getenv", side_effect=AssertionError("environment inspected")
+        ), mock.patch.object(
+            os.path, "expanduser", side_effect=AssertionError("home expanded")
+        ):
+            repeated = converter.build_conversion(ROOT)
+            second = converter.render_documents(repeated)
+        self.assertEqual(second, first)
+        self.assertEqual(set(first), {"conversion-ledger.json"})
+        common = _load_macwin_asset_common()
+        ledger = common.parse_json_bytes(
+            first["conversion-ledger.json"], label="conversion ledger"
+        )
+        self.assertEqual(ledger["assetCount"], 90)
+        self.assertEqual(len(ledger["records"]), 90)
+        self.assertEqual(common.canonical_json_bytes(ledger), first["conversion-ledger.json"])
+
+    @staticmethod
+    def _replace_record(result, record, **changes):
+        replacement = dataclasses.replace(record, **changes)
+        records = tuple(
+            replacement if existing is record else existing for existing in result.records
+        )
+        return dataclasses.replace(result, records=records)
 
 
 class MigrationLayoutTests(unittest.TestCase):
