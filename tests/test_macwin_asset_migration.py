@@ -2559,6 +2559,82 @@ class MacWinRecipeConversionTests(unittest.TestCase):
                 ["Repository developer-path validation failed"],
             )
 
+    def test_repository_validator_rejects_scanned_directory_replaced_by_external_symlink(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory, tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-external-", dir=ROOT
+        ) as external_directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            ordinary = temporary_root / "ordinary-empty"
+            ordinary.mkdir()
+            external = Path(external_directory)
+            (external / "hostile.txt").write_bytes(
+                b"/Users/" + b"a1-6/external\n"
+            )
+            original_revalidate = validator._OrdinaryFileBinding.revalidate
+            injected = False
+
+            def replace_directory(binding) -> None:
+                nonlocal injected
+                if not injected:
+                    ordinary.rmdir()
+                    try:
+                        ordinary.symlink_to(external, target_is_directory=True)
+                    except OSError as error:
+                        self.skipTest(f"directory symlink unavailable: {error}")
+                    injected = True
+                original_revalidate(binding)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator._OrdinaryFileBinding,
+                "revalidate",
+                replace_directory,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(
+                errors,
+                ["Repository developer-path validation failed"],
+            )
+
+    def test_repository_validator_rejects_late_child_in_scanned_directory(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task5-validator-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            self._copy_validator_fixture(temporary_root)
+            ordinary = temporary_root / "ordinary-directory"
+            ordinary.mkdir()
+            original_revalidate = validator._OrdinaryFileBinding.revalidate
+            injected = False
+
+            def add_late_child(binding) -> None:
+                nonlocal injected
+                if not injected:
+                    (ordinary / "unreferenced.txt").write_bytes(
+                        b"/Users/" + b"a1-6/late-child\n"
+                    )
+                    injected = True
+                original_revalidate(binding)
+
+            validator.ROOT = temporary_root
+            with mock.patch.object(
+                validator._OrdinaryFileBinding,
+                "revalidate",
+                add_late_child,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(injected)
+            self.assertEqual(
+                errors,
+                ["Repository developer-path validation failed"],
+            )
+
     def test_repository_validator_rejects_task5_replacement_before_scan(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
         with tempfile.TemporaryDirectory(

@@ -346,13 +346,75 @@ class _DeveloperPathScanError(ValueError):
     """Signal an untrusted ordinary repository path without reflecting it."""
 
 
+def _ordinary_entry_kind(metadata: os.stat_result) -> str:
+    if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+        raise _DeveloperPathScanError()
+    if stat.S_ISDIR(metadata.st_mode):
+        return "directory"
+    if stat.S_ISREG(metadata.st_mode):
+        return "regular"
+    raise _DeveloperPathScanError()
+
+
+def _read_bound_directory(
+    path: Path,
+) -> tuple[
+    tuple[int, int, int, int, int, int],
+    tuple[tuple[str, str], ...],
+]:
+    try:
+        _validate_bound_path_chain(path)
+        before = path.lstat()
+        if _ordinary_entry_kind(before) != "directory":
+            raise _DeveloperPathScanError()
+        identity = _filesystem_identity(before)
+        entries: list[tuple[str, str]] = []
+        with os.scandir(path) as iterator:
+            for entry in iterator:
+                if entry.name == ".git":
+                    continue
+                metadata = entry.stat(follow_symlinks=False)
+                entries.append((entry.name, _ordinary_entry_kind(metadata)))
+        after = path.lstat()
+        if _filesystem_identity(after) != identity:
+            raise _DeveloperPathScanError()
+        _validate_bound_path_chain(path)
+    except _DeveloperPathScanError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise _DeveloperPathScanError() from None
+    return identity, tuple(
+        sorted(entries, key=lambda item: item[0].encode("utf-8"))
+    )
+
+
 class _OrdinaryFileBinding:
-    """Retain exact ordinary leaf identities and digests through validation."""
+    """Retain exact ordinary directory and leaf bindings through validation."""
 
     def __init__(self) -> None:
+        self.directories: dict[
+            Path,
+            tuple[
+                tuple[int, int, int, int, int, int],
+                tuple[tuple[str, str], ...],
+            ],
+        ] = {}
         self.leaves: dict[
             Path, tuple[bytes, tuple[int, int, int, int, int, int]]
         ] = {}
+
+    def add_directory(
+        self,
+        path: Path,
+        expected_entries: tuple[tuple[str, str], ...],
+    ) -> None:
+        absolute = path.absolute()
+        if absolute in self.directories:
+            raise _DeveloperPathScanError()
+        identity, entries = _read_bound_directory(absolute)
+        if entries != expected_entries:
+            raise _DeveloperPathScanError()
+        self.directories[absolute] = (identity, entries)
 
     def add(
         self,
@@ -365,7 +427,17 @@ class _OrdinaryFileBinding:
             raise _DeveloperPathScanError()
         self.leaves[absolute] = (hashlib.sha256(raw).digest(), identity)
 
+    def _revalidate_directories(self) -> None:
+        for path in sorted(
+            self.directories, key=lambda value: str(value).encode("utf-8")
+        ):
+            expected_identity, expected_entries = self.directories[path]
+            identity, entries = _read_bound_directory(path)
+            if identity != expected_identity or entries != expected_entries:
+                raise _DeveloperPathScanError()
+
     def revalidate(self) -> None:
+        self._revalidate_directories()
         for path in sorted(self.leaves, key=lambda value: str(value).encode("utf-8")):
             expected_digest, expected_identity = self.leaves[path]
             try:
@@ -381,6 +453,7 @@ class _OrdinaryFileBinding:
                 or hashlib.sha256(raw).digest() != expected_digest
             ):
                 raise _DeveloperPathScanError()
+        self._revalidate_directories()
 
 
 def _load_task5_converter() -> tuple[
@@ -470,25 +543,49 @@ def _scan_developer_paths(
         paths = sorted(ROOT.rglob("*"))
     except OSError:
         raise _DeveloperPathScanError() from None
+    entries: list[tuple[Path, str]] = []
+    expected_children: dict[Path, list[tuple[str, str]]] = {
+        ROOT.absolute(): []
+    }
     for path in paths:
+        if ".git" in path.parts:
+            continue
+        try:
+            kind = _ordinary_entry_kind(path.lstat())
+        except _DeveloperPathScanError:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError):
+            raise _DeveloperPathScanError() from None
+        absolute = path.absolute()
+        entries.append((absolute, kind))
+        expected_children.setdefault(absolute.parent, []).append(
+            (absolute.name, kind)
+        )
+        if kind == "directory":
+            expected_children.setdefault(absolute, [])
+
+    for directory in sorted(
+        expected_children, key=lambda value: str(value).encode("utf-8")
+    ):
+        expected = tuple(
+            sorted(
+                expected_children[directory],
+                key=lambda item: item[0].encode("utf-8"),
+            )
+        )
+        ordinary_binding.add_directory(directory, expected)
+
+    for path, kind in entries:
+        if kind == "directory":
+            continue
         if source_binding is not None and source_binding.contains(path):
             source_binding.verify_path(path)
             continue
         if generated_binding is not None and generated_binding.contains(path):
             generated_binding.verify_path(path)
             continue
-        if ".git" in path.parts or path.absolute() == Path(__file__).absolute():
+        if path == Path(__file__).absolute():
             continue
-        try:
-            metadata = path.lstat()
-        except OSError:
-            raise _DeveloperPathScanError() from None
-        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
-            raise _DeveloperPathScanError()
-        if stat.S_ISDIR(metadata.st_mode):
-            continue
-        if not stat.S_ISREG(metadata.st_mode):
-            raise _DeveloperPathScanError()
         try:
             raw, identity = _read_bound_regular_file(
                 path,
