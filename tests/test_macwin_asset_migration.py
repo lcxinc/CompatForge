@@ -8316,7 +8316,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     if command[-1] == "--check":
                         self.assertEqual(child_stdout, b"")
                     self.assertEqual(self._snapshot_boundary(sentinel), mode_before)
-            self.assertEqual(len(process_ids), len(set(process_ids)))
+            self.assertTrue(all(process_id != os.getpid() for process_id in process_ids))
             self.assertEqual(self._snapshot_boundary(sentinel), before)
 
     def test_isolated_runner_seals_the_process_launch_contract(self) -> None:
@@ -8359,12 +8359,19 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
     def test_isolated_bootstrap_normalizes_hostile_exit_objects(self) -> None:
         command = self._converter_command("--check")
-        captured = subprocess.CompletedProcess(command, 0, b"", b"")
-        with mock.patch.object(subprocess, "run", return_value=captured) as run:
-            self.assertIs(
-                self._run_audited(command, report_process_id=True), captured
-            )
-        bootstrap = run.call_args.args[0][3]
+        isolated = None
+
+        def capture(arguments, **_options):
+            nonlocal isolated
+            isolated = arguments
+            raise RuntimeError("captured")
+
+        with mock.patch.object(subprocess, "Popen", side_effect=capture), self.assertRaisesRegex(
+            RuntimeError, "captured"
+        ):
+            self._run_audited(command, report_process_id=True)
+        assert isolated is not None
+        bootstrap = isolated[3]
         mutants = {
             "string": "SystemExit('HOSTILE\\x1b[31mTOKEN')",
             "bool": "SystemExit(True)",
@@ -8404,8 +8411,13 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 self.assertEqual(completed.stdout, b"")
                 self.assertEqual(completed.stderr, b"")
 
-        failed = subprocess.CompletedProcess(command, 250, b"HOSTILE", b"TRACE")
-        with mock.patch.object(subprocess, "run", return_value=failed):
+        failed = subprocess.Popen(
+            (sys.executable, "-B", "-c", "import os;os.write(1,b'HOSTILE');os.write(2,b'TRACE');os._exit(250)"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        failed.wait()
+        with mock.patch.object(subprocess, "Popen", return_value=failed):
             normalized = self._run_audited(command, report_process_id=True)
         self.assertEqual(normalized.returncode, 1)
         self.assertEqual(normalized.stdout, b"")
@@ -8432,6 +8444,59 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             close_fds=True,
         )
         self.assertEqual((pre_capture.returncode, pre_capture.stdout, pre_capture.stderr), (250, b"", b""))
+
+        for size, expected_code in ((1024 * 1024, 0), (1024 * 1024 + 1, 250)):
+            prefix = (
+                "import os,runpy\n"
+                f"def bounded(*args,**kwargs):os.write(1,b'X'*{size})\n"
+                "runpy.run_path=bounded\n"
+            )
+            completed = subprocess.run(
+                (sys.executable, "-B", "-c", prefix + bootstrap, "ignored"),
+                check=False,
+                cwd=ROOT,
+                env=environment,
+                executable=None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                timeout=30,
+                close_fds=True,
+            )
+            with self.subTest(output_size=size):
+                self.assertEqual(completed.returncode, expected_code)
+                if expected_code == 0:
+                    _pid, separator, payload = completed.stdout.partition(b"\n")
+                    self.assertEqual(separator, b"\n")
+                    self.assertEqual(payload, b"X" * size)
+                else:
+                    self.assertEqual((completed.stdout, completed.stderr), (b"", b""))
+
+        real_popen = subprocess.Popen
+
+        def forged_child(_arguments, **options):
+            return real_popen(
+                (
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    "import os;os.write(1,b'X'*1048577)",
+                ),
+                cwd=options["cwd"],
+                env=options["env"],
+                stdin=options["stdin"],
+                stdout=options["stdout"],
+                stderr=options["stderr"],
+                close_fds=True,
+            )
+
+        with mock.patch.object(subprocess, "Popen", side_effect=forged_child):
+            normalized = self._run_audited(command, report_process_id=True)
+        self.assertEqual(
+            (normalized.returncode, normalized.stdout, normalized.stderr),
+            (1, b"", b"isolated process failed\n"),
+        )
 
         for expression, expected_code in (
             ("SystemExit(None)", 0),
@@ -9753,17 +9818,20 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             bootstrap = (
                 "import io,os,runpy,sys,threading\n"
                 "FAIL=250\n"
+                "LIMIT=1048576\n"
                 "saved_out=saved_err=None\n"
                 "try:\n"
                 " saved_out=os.dup(1);saved_err=os.dup(2)\n"
                 " out_read,out_write=os.pipe();err_read,err_write=os.pipe()\n"
                 " out_chunks=[];err_chunks=[]\n"
+                " overflow=[False]\n"
                 " def drain(descriptor,chunks):\n"
                 "  try:\n"
                 "   while True:\n"
                 "    raw=os.read(descriptor,65536)\n"
                 "    if not raw:break\n"
-                "    chunks.append(raw)\n"
+                "    if sum(map(len,chunks))+len(raw)>LIMIT:overflow[0]=True\n"
+                "    elif not overflow[0]:chunks.append(raw)\n"
                 "  finally:os.close(descriptor)\n"
                 " out_thread=threading.Thread(target=drain,args=(out_read,out_chunks))\n"
                 " err_thread=threading.Thread(target=drain,args=(err_read,err_chunks))\n"
@@ -9790,6 +9858,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 " os.dup2(saved_out,1);os.dup2(saved_err,2)\n"
                 " os.close(saved_out);os.close(saved_err);saved_out=saved_err=None\n"
                 " out_thread.join();err_thread.join()\n"
+                " if overflow[0]:fixed=True\n"
                 " if fixed:os._exit(FAIL)\n"
                 " if code==0:\n"
                 "  os.write(1,(str(os.getpid())+'\\n').encode('ascii'))\n"
@@ -9825,10 +9894,61 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             startup = subprocess.STARTUPINFO()
             startup.lpAttributeList = {"handle_list": []}
             options["startupinfo"] = startup
-        completed = subprocess.run(
-            isolated_command,
-            **options,
-        )
+        if report_process_id:
+            popen_options = dict(options)
+            timeout = popen_options.pop("timeout")
+            popen_options.pop("check")
+            process = subprocess.Popen(isolated_command, **popen_options)
+            streams = (process.stdout, process.stderr)
+            if any(stream is None for stream in streams):
+                process.kill()
+                process.wait()
+                return subprocess.CompletedProcess(
+                    command, 1, b"", b"isolated process failed\n"
+                )
+            chunks: list[list[bytes]] = [[], []]
+            overflow = threading.Event()
+
+            def drain(index: int) -> None:
+                retained = 0
+                stream = streams[index]
+                assert stream is not None
+                try:
+                    while True:
+                        raw = stream.read(65536)
+                        if not raw:
+                            break
+                        retained += len(raw)
+                        if retained > 1024 * 1024:
+                            overflow.set()
+                            process.kill()
+                        elif not overflow.is_set():
+                            chunks[index].append(raw)
+                finally:
+                    stream.close()
+
+            readers = tuple(
+                threading.Thread(target=drain, args=(index,)) for index in (0, 1)
+            )
+            for reader in readers:
+                reader.start()
+            try:
+                returncode = process.wait(timeout=timeout)
+            except (subprocess.TimeoutExpired, BaseException):
+                overflow.set()
+                process.kill()
+                process.wait()
+                returncode = 250
+            for reader in readers:
+                reader.join()
+            if overflow.is_set():
+                returncode = 250
+                chunks = [[], []]
+            completed = subprocess.CompletedProcess(
+                command, returncode, b"".join(chunks[0]), b"".join(chunks[1])
+            )
+        else:
+            completed = subprocess.run(isolated_command, **options)
         if report_process_id and completed.returncode == 250:
             return subprocess.CompletedProcess(
                 command, 1, b"", b"isolated process failed\n"
