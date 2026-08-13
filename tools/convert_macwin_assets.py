@@ -74,6 +74,7 @@ QUARANTINE_REASONS = frozenset(
         "unsupported-schema",
     }
 )
+MAX_EVIDENCE_LOCATORS = 512
 STATUSES = frozenset({"converted", "deferred", "quarantined"})
 RECIPE_REASON_PRECEDENCE = (
     "missing-license",
@@ -175,6 +176,15 @@ PORTABLE_ASSET_TABLE = {
     "scripts/validate-pgadmin-page-report.py": ("scripts-validate-pgadmin-page-report-py", "source", "text/x-python"),
     "scripts/visual-acceptance-macwin.sh": ("scripts-visual-acceptance-macwin-sh", "shell", "text/x-shellscript"),
     "scripts/wic-codecs-minimal.reg": ("scripts-wic-codecs-minimal-reg", "registry", "text/x-ms-regedit"),
+}
+PORTABLE_REFERENCE_TABLE = {path: () for path in PORTABLE_ASSET_TABLE}
+_PORTABLE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{1,127}\Z")
+_PORTABLE_MEDIA_TYPE = re.compile(
+    r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\Z"
+)
+_PORTABLE_KINDS = {
+    "probes": frozenset({"shell", "registry", "source", "binary", "data", "other"}),
+    "fixtures": frozenset({"registry", "source", "binary", "data", "other"}),
 }
 _HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -778,6 +788,7 @@ def classify_source_pack(source_pack: SourcePack) -> ConversionResult:
 
     _bootstrap_dependencies()
     _validate_source_pack_model(source_pack)
+    _validate_portable_contract_tables(source_pack)
     recipe_paths = _validate_catalog_boundary(source_pack)
     records = tuple(
         _classify_asset(source_pack, asset, recipe_paths) for asset in source_pack.assets
@@ -945,6 +956,8 @@ def _portable_document(
         or record.source_path != asset.source_path
         or record.source_sha256 != asset.sha256
         or asset.source_path not in PORTABLE_ASSET_TABLE
+        or asset.license_status != "reviewed"
+        or asset.provenance_status != "reviewed"
         or asset.external_refs
         or asset.development_dependencies
     ):
@@ -971,7 +984,7 @@ def _portable_document(
         "contentSha256": asset.sha256,
         "mediaType": media_type,
         "executable": False,
-        "referencedAssetIds": [],
+        "referencedAssetIds": list(PORTABLE_REFERENCE_TABLE[asset.source_path]),
         "intendedOwner": record.intended_owner,
         "license": {"status": asset.license_status},
         "provenance": {"status": asset.provenance_status},
@@ -1132,6 +1145,94 @@ def _validate_source_pack_model(source_pack: SourcePack) -> None:
         _fail("source assets are not ordered")
     if tuple(sorted(counts.items())) != EXPECTED_CATEGORY_COUNTS or executable_count != 11:
         _fail("source asset category coverage is invalid")
+
+
+def _validate_portable_contract_tables(source_pack: SourcePack) -> None:
+    portable_assets = {
+        asset.source_path: asset
+        for asset in source_pack.assets
+        if asset.category in {"probes", "fixtures"}
+    }
+    if (
+        type(PORTABLE_ASSET_TABLE) is not dict
+        or set(PORTABLE_ASSET_TABLE) != set(portable_assets)
+    ):
+        _fail("portable asset table is invalid")
+    identifiers: dict[str, str] = {}
+    folded_identifiers: set[str] = set()
+    for path in sorted(PORTABLE_ASSET_TABLE, key=lambda value: value.encode("ascii")):
+        entry = PORTABLE_ASSET_TABLE[path]
+        asset = portable_assets[path]
+        if (
+            type(entry) is not tuple
+            or len(entry) != 3
+            or any(type(value) is not str for value in entry)
+        ):
+            _fail("portable asset table is invalid")
+        identifier, kind, media_type = entry
+        folded = identifier.casefold()
+        try:
+            _COMMON.require_relative_posix_path(
+                f"migration/macwin/generated/probes/{identifier}.json"
+            )
+        except _COMMON.MigrationError:
+            _fail("portable asset table is invalid")
+        if (
+            _PORTABLE_ID.fullmatch(identifier) is None
+            or identifier in identifiers
+            or folded in folded_identifiers
+            or kind not in _PORTABLE_KINDS[asset.category]
+            or not 3 <= len(media_type) <= 127
+            or _PORTABLE_MEDIA_TYPE.fullmatch(media_type) is None
+            or not 0 < asset.byte_size <= _SOURCE_PACK.MAX_SOURCE_OBJECT_BYTES
+            or asset.git_mode not in {"100644", "100755"}
+        ):
+            _fail("portable asset table is invalid")
+        identifiers[identifier] = path
+        folded_identifiers.add(folded)
+
+    if (
+        type(PORTABLE_REFERENCE_TABLE) is not dict
+        or set(PORTABLE_REFERENCE_TABLE) != set(portable_assets)
+    ):
+        _fail("portable reference graph is invalid")
+    graph: dict[str, tuple[str, ...]] = {}
+    for path in sorted(PORTABLE_REFERENCE_TABLE, key=lambda value: value.encode("ascii")):
+        references = PORTABLE_REFERENCE_TABLE[path]
+        if (
+            type(references) is not tuple
+            or len(references) > 90
+            or any(type(value) is not str for value in references)
+            or len(set(references)) != len(references)
+            or tuple(sorted(references, key=lambda value: value.encode("ascii")))
+            != references
+            or any(value not in identifiers or identifiers[value] == path for value in references)
+        ):
+            _fail("portable reference graph is invalid")
+        graph[PORTABLE_ASSET_TABLE[path][0]] = references
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    for root in sorted(graph, key=lambda value: value.encode("ascii")):
+        if root in visited:
+            continue
+        stack: list[tuple[str, bool]] = [(root, False)]
+        while stack:
+            node, leaving = stack.pop()
+            if leaving:
+                visiting.remove(node)
+                visited.add(node)
+                continue
+            if node in visited:
+                continue
+            if node in visiting:
+                _fail("portable reference graph is invalid")
+            visiting.add(node)
+            stack.append((node, True))
+            for child in reversed(graph[node]):
+                if child in visiting:
+                    _fail("portable reference graph is invalid")
+                if child not in visited:
+                    stack.append((child, False))
 
 
 def _validate_catalog_boundary(source_pack: SourcePack) -> frozenset[str]:
@@ -1905,17 +2006,7 @@ def _classify_publishable(
     output_kind: str,
     converted_action: str,
 ) -> ConversionRecord:
-    evidence = tuple(
-        sorted(
-            {
-                *((f"{asset.source_path}#license",) if asset.license_status == "unresolved" else ()),
-                *((f"{asset.source_path}#provenance",) if asset.provenance_status == "unresolved" else ()),
-                *asset.external_refs,
-                *asset.development_dependencies,
-            },
-            key=lambda value: value.encode("utf-8"),
-        )
-    )
+    evidence = _portable_evidence_locators(asset)
     if asset.license_status == "unresolved":
         return ConversionRecord(
             **base,
@@ -1964,6 +2055,23 @@ def _classify_publishable(
         evidence_locators=(),
         release_condition=None,
     )
+
+
+def _portable_evidence_locators(asset: SourceAsset) -> tuple[str, ...]:
+    evidence = tuple(
+        sorted(
+            {
+                *((f"{asset.source_path}#license",) if asset.license_status == "unresolved" else ()),
+                *((f"{asset.source_path}#provenance",) if asset.provenance_status == "unresolved" else ()),
+                *asset.external_refs,
+                *asset.development_dependencies,
+            },
+            key=lambda value: value.encode("utf-8"),
+        )
+    )
+    if len(evidence) > MAX_EVIDENCE_LOCATORS:
+        _fail("portable evidence locator set is invalid")
+    return evidence
 
 
 def _portable_dependency_reason(asset: SourceAsset) -> str | None:
@@ -2031,6 +2139,7 @@ def _validate_conversion_result(result: ConversionResult) -> None:
             _fail("conversion result coverage is invalid")
         _validate_conversion_record_field_types(record)
     _validate_source_pack_model(result.source_pack)
+    _validate_portable_contract_tables(result.source_pack)
     if len(result.records) != 90:
         _fail("conversion result coverage is invalid")
     paths = tuple(record.source_path for record in result.records)

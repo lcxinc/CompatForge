@@ -738,6 +738,15 @@ class MigrationSchemaTests(unittest.TestCase):
                 self.assertEqual(properties["source"], {"$ref": "#/$defs/sourceIdentity"})
                 self.assertEqual(properties["license"], {"$ref": "#/$defs/reviewStatus"})
                 self.assertEqual(properties["provenance"], {"$ref": "#/$defs/reviewStatus"})
+                self.assertEqual(
+                    schema["$defs"]["reviewStatus"]["properties"]["status"],
+                    {"const": "reviewed"},
+                )
+        source_pack = self._schema("macwin-source-pack.schema.json")
+        self.assertEqual(
+            source_pack["$defs"]["reviewStatus"]["properties"]["status"],
+            {"const": "unresolved"},
+        )
 
     def test_recipe_v2_provenance_is_additive_closed_and_all_or_none(self) -> None:
         recipe = self._schema("recipe.schema.json")
@@ -929,7 +938,8 @@ class MigrationSchemaTests(unittest.TestCase):
             "gitBlobOid": "b" * 40,
             "gitMode": "100755",
         }
-        review = {"status": "unresolved"}
+        unresolved_review = {"status": "unresolved"}
+        reviewed = {"status": "reviewed"}
         asset = {
             "category": "probes",
             "sourcePath": source["sourcePath"],
@@ -939,8 +949,8 @@ class MigrationSchemaTests(unittest.TestCase):
             "byteSize": 1,
             "gitMode": "100755",
             "kind": "probe",
-            "license": review,
-            "provenance": review,
+            "license": unresolved_review,
+            "provenance": unresolved_review,
             "intendedOwner": "compatforge/probes",
             "externalRefs": [],
             "developmentDependencies": [],
@@ -957,8 +967,8 @@ class MigrationSchemaTests(unittest.TestCase):
             "status": "deferred",
             "targetIssue": "MW-ASSET-002",
             "intendedOwner": "compatforge/patches",
-            "license": review,
-            "provenance": review,
+            "license": unresolved_review,
+            "provenance": unresolved_review,
         }
         quarantine = {
             "sourcePath": "scripts/example.sh",
@@ -982,8 +992,8 @@ class MigrationSchemaTests(unittest.TestCase):
             "executable": False,
             "referencedAssetIds": [],
             "intendedOwner": "compatforge/probes",
-            "license": review,
-            "provenance": review,
+            "license": reviewed,
+            "provenance": reviewed,
         }
         recipe = json.loads((ROOT / "examples/recipes/7zip.json").read_bytes())
         recipe["provenance"] = {
@@ -2231,20 +2241,25 @@ class MacWinPortableAssetTests(unittest.TestCase):
         asset = next(
             asset for asset in self.result.source_pack.assets if asset.category == "probes"
         )
+        reviewed_asset = dataclasses.replace(
+            asset, license_status="reviewed", provenance_status="reviewed"
+        )
         record = next(
             record for record in self.result.records if record.source_path == asset.source_path
         )
-        portable = self.converter._portable_document(
-            asset,
-            dataclasses.replace(
-                record,
-                status="converted",
-                action="export-portable-probe",
-                reason=None,
-                evidence_locators=(),
-                release_condition=None,
-            ),
+        converted_record = dataclasses.replace(
+            record,
+            status="converted",
+            action="export-portable-probe",
+            reason=None,
+            evidence_locators=(),
+            release_condition=None,
         )
+        with self.assertRaisesRegex(
+            self.converter.ConversionError, "portable asset evidence is incomplete"
+        ):
+            self.converter._portable_document(asset, converted_record)
+        portable = self.converter._portable_document(reviewed_asset, converted_record)
         self.assertFalse(portable["executable"])
         self.assertEqual(portable["source"]["sourceSha256"], asset.sha256)
         self.assertEqual(portable["source"]["gitBlobOid"], asset.git_blob_oid)
@@ -2252,8 +2267,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
         self.assertEqual(portable["contentSha256"], asset.sha256)
         self.assertTrue(portable["contentPath"].startswith("migration/macwin/generated/probes/content/sha256/"))
         self.assertEqual(portable["referencedAssetIds"], [])
-        self.assertEqual(portable["license"], {"status": asset.license_status})
-        self.assertEqual(portable["provenance"], {"status": asset.provenance_status})
+        self.assertEqual(portable["license"], {"status": "reviewed"})
+        self.assertEqual(portable["provenance"], {"status": "reviewed"})
         self.assertEqual(asset.git_mode, "100755")
         schema = json.loads(
             (ROOT / "schemas/portable-probe.schema.json").read_bytes()
@@ -2274,24 +2289,51 @@ class MacWinPortableAssetTests(unittest.TestCase):
         self.assertIn("migration/macwin/generated/mappings/patches.json", documents)
         self.assertIn("migration/macwin/generated/mappings/bottle-schemas.json", documents)
 
-    def test_modified_source_rejects_before_any_task6_output_construction(self) -> None:
-        asset = next(
-            asset for asset in self.result.source_pack.assets if asset.category == "probes"
-        )
-        replacement = dataclasses.replace(asset, raw=asset.raw + b"x")
-        source_pack = dataclasses.replace(
-            self.result.source_pack,
-            assets=tuple(
-                replacement if existing is asset else existing
-                for existing in self.result.source_pack.assets
-            ),
-        )
-        with mock.patch.object(
-            self.converter,
-            "_portable_document",
-            side_effect=AssertionError("output constructed before authentication"),
-        ), self.assertRaises(self.converter.ConversionError):
-            self.converter.classify_source_pack(source_pack)
+    def test_real_source_failures_precede_portable_output_rendering(self) -> None:
+        asset = self.assets["scripts/analyze-window-image.py"]
+        for case in ("mutated", "missing"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-task6-source-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                source = temporary_root / "migration/macwin/source"
+                shutil.copytree(ROOT / "migration/macwin/source", source)
+                object_path = source / PurePosixPath(asset.object_path)
+                if case == "mutated":
+                    object_path.write_bytes(asset.raw + b"x")
+                else:
+                    object_path.unlink()
+                with mock.patch.object(
+                    self.converter,
+                    "_portable_document",
+                    wraps=self.converter._portable_document,
+                ) as render_spy, self.assertRaises(self.converter.ConversionError):
+                    self.converter.build_conversion(temporary_root)
+                render_spy.assert_not_called()
+
+    def test_real_linked_source_rejects_before_portable_output_rendering(self) -> None:
+        asset = self.assets["scripts/analyze-window-image.py"]
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-task6-source-link-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            source = temporary_root / "migration/macwin/source"
+            shutil.copytree(ROOT / "migration/macwin/source", source)
+            object_path = source / PurePosixPath(asset.object_path)
+            outside = temporary_root / "outside-object"
+            outside.write_bytes(asset.raw)
+            object_path.unlink()
+            try:
+                object_path.symlink_to(outside)
+            except OSError as error:
+                self.skipTest(f"file symlink unavailable: {error}")
+            with mock.patch.object(
+                self.converter,
+                "_portable_document",
+                wraps=self.converter._portable_document,
+            ) as render_spy, self.assertRaises(self.converter.ConversionError):
+                self.converter.build_conversion(temporary_root)
+            render_spy.assert_not_called()
 
     def test_repository_oracle_closes_task6_leaves_and_scans_extra_evidence(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -2476,6 +2518,252 @@ class MacWinPortableAssetTests(unittest.TestCase):
             manifest,
         )
         self.assertEqual(documents[manifest["contentPath"]], replacement.raw)
+
+    def test_reviewed_closed_probe_and_fixture_use_the_real_portable_renderer(self) -> None:
+        paths = (
+            "scripts/analyze-window-image.py",
+            "scripts/fixtures/meshlab-cube.obj",
+        )
+        replacements = {
+            path: dataclasses.replace(
+                self.assets[path],
+                license_status="reviewed",
+                provenance_status="reviewed",
+            )
+            for path in paths
+        }
+        source_pack = dataclasses.replace(
+            self.result.source_pack,
+            assets=tuple(
+                replacements.get(asset.source_path, asset)
+                for asset in self.result.source_pack.assets
+            ),
+        )
+        result = self.converter.classify_source_pack(source_pack)
+        with mock.patch.object(
+            self.converter,
+            "_portable_document",
+            wraps=self.converter._portable_document,
+        ) as render_spy:
+            documents = self.converter.render_documents(result)
+
+        rendered_paths = tuple(
+            call.args[0].source_path for call in render_spy.call_args_list
+        )
+        self.assertEqual(set(rendered_paths), set(paths))
+        for path in paths:
+            self.assertGreaterEqual(rendered_paths.count(path), 1)
+        for path in paths:
+            identifier, _kind, _media_type = self.converter.PORTABLE_ASSET_TABLE[
+                path
+            ]
+            category = (
+                "probes" if self.assets[path].category == "probes" else "fixtures"
+            )
+            manifest_path = f"migration/macwin/generated/{category}/{identifier}.json"
+            manifest = self.common.parse_json_bytes(
+                documents[manifest_path], label=manifest_path
+            )
+            self.assertEqual(manifest["source"]["sourcePath"], path)
+            self.assertEqual(documents[manifest["contentPath"]], replacements[path].raw)
+
+    def test_portable_schemas_require_reviewed_license_and_provenance(self) -> None:
+        jsonschema = importlib.import_module("jsonschema")
+        cases = (
+            ("scripts/analyze-window-image.py", "portable-probe.schema.json"),
+            ("scripts/fixtures/meshlab-cube.obj", "portable-fixture.schema.json"),
+        )
+        for path, schema_name in cases:
+            with self.subTest(schema=schema_name):
+                asset = self.assets[path]
+                reviewed = dataclasses.replace(
+                    asset, license_status="reviewed", provenance_status="reviewed"
+                )
+                result = self.converter.classify_source_pack(
+                    self._replace_asset(self.result.source_pack, asset, reviewed)
+                )
+                record = next(
+                    item for item in result.records if item.source_path == path
+                )
+                manifest = self.converter._portable_document(reviewed, record)
+                schema = json.loads((ROOT / "schemas" / schema_name).read_bytes())
+                jsonschema.Draft202012Validator(schema).validate(manifest)
+                for field in ("license", "provenance"):
+                    mutant = copy.deepcopy(manifest)
+                    mutant[field] = {"status": "unresolved"}
+                    with self.subTest(field=field), self.assertRaises(
+                        jsonschema.ValidationError
+                    ):
+                        jsonschema.Draft202012Validator(schema).validate(mutant)
+
+    def test_portable_evidence_union_is_bounded_after_deduplication(self) -> None:
+        jsonschema = importlib.import_module("jsonschema")
+        schema = json.loads((ROOT / "schemas/quarantine.schema.json").read_bytes())
+        asset = self.assets["scripts/analyze-window-image.py"]
+
+        for count in (511, 512):
+            with self.subTest(count=count):
+                locators = tuple(
+                    f"https://example.invalid/{index:03d}"
+                    for index in range(count - 2)
+                )
+                replacement = dataclasses.replace(
+                    asset,
+                    external_refs=locators,
+                )
+                result = self.converter.classify_source_pack(
+                    self._replace_asset(self.result.source_pack, asset, replacement)
+                )
+                documents = self.converter.render_documents(result)
+                quarantine = self.common.parse_json_bytes(
+                    documents["migration/macwin/generated/quarantine.json"],
+                    label="bounded quarantine",
+                )
+                jsonschema.Draft202012Validator(schema).validate(quarantine)
+                record = next(
+                    item
+                    for item in quarantine["records"]
+                    if item["sourcePath"] == asset.source_path
+                )
+                self.assertEqual(len(record["evidenceLocators"]), count)
+
+        shared = tuple(
+            f"https://example.invalid/{index:03d}" for index in range(510)
+        )
+        deduplicated = dataclasses.replace(
+            asset,
+            external_refs=shared,
+            development_dependencies=(shared[-1],),
+        )
+        result = self.converter.classify_source_pack(
+            self._replace_asset(self.result.source_pack, asset, deduplicated)
+        )
+        record = next(
+            item for item in result.records if item.source_path == asset.source_path
+        )
+        self.assertEqual(len(record.evidence_locators), 512)
+
+        oversized = dataclasses.replace(
+            asset,
+            external_refs=shared + ("https://example.invalid/510",),
+        )
+        with self.assertRaisesRegex(
+            self.converter.ConversionError,
+            "portable evidence locator set is invalid",
+        ):
+            self.converter.classify_source_pack(
+                self._replace_asset(self.result.source_pack, asset, oversized)
+            )
+
+    def test_portable_asset_table_is_unconditionally_closed(self) -> None:
+        converter = self.converter
+        table = converter.PORTABLE_ASSET_TABLE
+        self.assertEqual(len(table), 56)
+        probe_path = "scripts/analyze-window-image.py"
+        fixture_path = "scripts/fixtures/meshlab-cube.obj"
+        probe = table[probe_path]
+        fixture = table[fixture_path]
+        mutants = {
+            "missing": {key: value for key, value in table.items() if key != probe_path},
+            "extra": {
+                **table,
+                "scripts/extra.py": (
+                    "scripts-extra-py",
+                    "source",
+                    "text/x-python",
+                ),
+            },
+            "tuple": {**table, probe_path: probe[:2]},
+            "media": {**table, probe_path: (probe[0], probe[1], "Text/Plain")},
+            "duplicate-id": {
+                **table,
+                fixture_path: (probe[0], fixture[1], fixture[2]),
+            },
+            "fixture-kind": {
+                **table,
+                fixture_path: (fixture[0], "shell", fixture[2]),
+            },
+            "invalid-id": {
+                **table,
+                probe_path: ("Invalid/Id", probe[1], probe[2]),
+            },
+            "reserved-id": {
+                **table,
+                probe_path: ("con", probe[1], probe[2]),
+            },
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), mock.patch.object(
+                converter, "PORTABLE_ASSET_TABLE", mutant
+            ), self.assertRaisesRegex(
+                converter.ConversionError, "portable asset table is invalid"
+            ):
+                converter.classify_source_pack(self.result.source_pack)
+
+        with mock.patch.object(
+            converter, "PORTABLE_ASSET_TABLE", mutants["media"]
+        ), self.assertRaisesRegex(
+            converter.ConversionError,
+            "portable asset table is invalid",
+        ):
+            converter.render_documents(self.result)
+
+    def test_portable_asset_size_and_mode_rules_reject_source_mutants(self) -> None:
+        asset = self.assets["scripts/analyze-window-image.py"]
+        empty = b""
+        empty_sha = hashlib.sha256(empty).hexdigest()
+        empty_oid = hashlib.sha1(b"blob 0\0").hexdigest()
+        mutants = {
+            "zero-size": dataclasses.replace(
+                asset,
+                raw=empty,
+                byte_size=0,
+                sha256=empty_sha,
+                git_blob_oid=empty_oid,
+                object_path=f"objects/sha256/{empty_sha[:2]}/{empty_sha[2:]}",
+            ),
+            "invalid-mode": dataclasses.replace(asset, git_mode="100600"),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), self.assertRaises(
+                self.converter.ConversionError
+            ):
+                self.converter.classify_source_pack(
+                    self._replace_asset(self.result.source_pack, asset, mutant)
+                )
+
+    def test_portable_reference_graph_is_closed_acyclic_and_bounded(self) -> None:
+        converter = self.converter
+        references = converter.PORTABLE_REFERENCE_TABLE
+        paths = tuple(converter.PORTABLE_ASSET_TABLE)
+        first, second = paths[:2]
+        first_id = converter.PORTABLE_ASSET_TABLE[first][0]
+        second_id = converter.PORTABLE_ASSET_TABLE[second][0]
+        mutants = {
+            "missing": {key: value for key, value in references.items() if key != first},
+            "unknown": {**references, first: ("unknown-id",)},
+            "self": {**references, first: (first_id,)},
+            "cycle": {**references, first: (second_id,), second: (first_id,)},
+            "duplicate": {**references, first: (second_id, second_id)},
+            "oversized": {**references, first: tuple(second_id for _ in range(91))},
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), mock.patch.object(
+                converter, "PORTABLE_REFERENCE_TABLE", mutant
+            ), self.assertRaisesRegex(
+                converter.ConversionError, "portable reference graph is invalid"
+            ):
+                converter.classify_source_pack(self.result.source_pack)
+
+    @staticmethod
+    def _replace_asset(source_pack, original, replacement):
+        return dataclasses.replace(
+            source_pack,
+            assets=tuple(
+                replacement if existing is original else existing
+                for existing in source_pack.assets
+            ),
+        )
 
 
 class MacWinRecipeConversionTests(unittest.TestCase):

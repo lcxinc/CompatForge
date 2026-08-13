@@ -77,7 +77,7 @@
       "additionalProperties": false,
       "required": ["status"],
       "properties": {
-        "status": { "enum": ["reviewed", "unresolved"] }
+        "status": { "const": "reviewed" }
       }
     },
     "sourceIdentity": {
