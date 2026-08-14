@@ -1,5 +1,7 @@
 use crate::contract::{LegacyBottleManifest, MAX_MANIFEST_BYTES};
-use crate::digest::{canonical_compact_json, canonical_pretty_json_lf, copy_and_digest, digest_reader, sha256_bytes};
+use crate::digest::{
+    canonical_compact_json, canonical_pretty_json_lf, copy_and_digest, digest_reader, sha256_bytes, STREAM_BUFFER_BYTES,
+};
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_id;
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,14 @@ pub const MAX_SNAPSHOT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const SCHEMA_VERSION: &str = "1";
 const LEGACY_FORMAT: &str = "macwin-bottle-v1";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! {
+    static TEMPORARY_PATH_OVERRIDE: std::cell::RefCell<Option<(String, PathBuf)>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static SNAPSHOT_COMPARISON_BYTES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,6 +80,51 @@ struct SourceFile {
 enum SourceEntry {
     File(SourceFile),
     Directory(String),
+}
+
+#[derive(Debug)]
+struct OwnedTemporaryPath {
+    path: PathBuf,
+    owned: bool,
+}
+
+impl OwnedTemporaryPath {
+    fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            owned: false,
+        }
+    }
+
+    fn create_new(&mut self) -> io::Result<File> {
+        debug_assert!(!self.owned);
+        let file = OpenOptions::new().write(true).create_new(true).open(&self.path)?;
+        self.owned = true;
+        Ok(file)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn remove(&mut self) -> io::Result<()> {
+        debug_assert!(self.owned);
+        fs::remove_file(&self.path)?;
+        self.owned = false;
+        Ok(())
+    }
+
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for OwnedTemporaryPath {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl SourceEntry {
@@ -205,35 +260,29 @@ impl BottleStore {
     fn publish_object(&self, source: &SourceFile) -> Result<String, BottleMigrationError> {
         let object_directory = self.root.join("objects").join("sha256");
         fs::create_dir_all(&object_directory).map_err(|_| transaction_failed())?;
-        let temporary = temporary_path(&object_directory, "object");
-        let result = (|| {
+        let mut temporary = OwnedTemporaryPath::new(temporary_path(&object_directory, "object"));
+        (|| {
             let mut input = File::open(&source.source_path).map_err(|_| source_changed())?;
-            let mut output = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|_| transaction_failed())?;
+            let mut output = temporary.create_new().map_err(|_| transaction_failed())?;
             let (digest, copied) = copy_and_digest(&mut input, &mut output).map_err(|_| source_changed())?;
             if copied != source.size || copied > MAX_FILE_BYTES {
                 return Err(source_changed());
             }
             output.sync_all().map_err(|_| transaction_failed())?;
+            drop(output);
             let digest_hex = digest_hex(&digest).ok_or_else(transaction_failed)?;
             let target = object_directory.join(digest_hex);
             if target.exists() {
                 self.verify_object(&digest, copied)?;
-                fs::remove_file(&temporary).map_err(|_| transaction_failed())?;
+                temporary.remove().map_err(|_| transaction_failed())?;
                 return Ok(digest);
             }
-            fs::rename(&temporary, &target).map_err(|_| transaction_failed())?;
+            fs::rename(temporary.path(), &target).map_err(|_| transaction_failed())?;
+            temporary.disarm();
             sync_directory(&object_directory)?;
             self.verify_object(&digest, copied)?;
             Ok(digest)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
+        })()
     }
 
     fn verify_object(&self, digest: &str, size: u64) -> Result<(), BottleMigrationError> {
@@ -256,31 +305,22 @@ impl BottleStore {
         let directory = self.root.join("snapshots").join("sha256");
         fs::create_dir_all(&directory).map_err(|_| transaction_failed())?;
         let target = directory.join(format!("{digest_hex}.json"));
-        if target.exists() {
-            let existing = fs::read(&target).map_err(|_| snapshot_corrupt())?;
-            return if existing == bytes {
-                Ok(())
-            } else {
-                Err(snapshot_corrupt())
-            };
+        match fs::symlink_metadata(&target) {
+            Ok(_) => return compare_existing_snapshot(&target, bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(snapshot_corrupt()),
         }
 
-        let temporary = temporary_path(&directory, "snapshot");
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|_| transaction_failed())?;
+        let mut temporary = OwnedTemporaryPath::new(temporary_path(&directory, "snapshot"));
+        (|| {
+            let mut file = temporary.create_new().map_err(|_| transaction_failed())?;
             file.write_all(bytes).map_err(|_| transaction_failed())?;
             file.sync_all().map_err(|_| transaction_failed())?;
-            fs::rename(&temporary, &target).map_err(|_| transaction_failed())?;
+            drop(file);
+            fs::rename(temporary.path(), &target).map_err(|_| transaction_failed())?;
+            temporary.disarm();
             sync_directory(&directory)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
+        })()
     }
 
     fn verify_legacy_manifest_object(&self, snapshot: &BottleSnapshot) -> Result<(), BottleMigrationError> {
@@ -422,6 +462,40 @@ fn resolve_store_root_without_writing(root: &Path) -> Result<PathBuf, BottleMigr
     }
 }
 
+fn compare_existing_snapshot(path: &Path, expected: &[u8]) -> Result<(), BottleMigrationError> {
+    if expected.len() > MAX_SNAPSHOT_MANIFEST_BYTES {
+        return Err(snapshot_corrupt());
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| snapshot_corrupt())?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() != u64::try_from(expected.len()).expect("an in-memory length fits u64")
+    {
+        return Err(snapshot_corrupt());
+    }
+
+    let mut file = File::open(path).map_err(|_| snapshot_corrupt())?;
+    let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
+    let mut offset = 0_usize;
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| snapshot_corrupt())?;
+        if read == 0 {
+            return if offset == expected.len() {
+                Ok(())
+            } else {
+                Err(snapshot_corrupt())
+            };
+        }
+        #[cfg(test)]
+        SNAPSHOT_COMPARISON_BYTES_READ.set(SNAPSHOT_COMPARISON_BYTES_READ.get().saturating_add(read));
+        let end = offset.checked_add(read).ok_or_else(snapshot_corrupt)?;
+        if expected.get(offset..end) != Some(&buffer[..read]) {
+            return Err(snapshot_corrupt());
+        }
+        offset = end;
+    }
+}
+
 fn normalize_absolute_path(path: &Path) -> Result<PathBuf, BottleMigrationError> {
     if !path.is_absolute() {
         return Err(unsafe_entry());
@@ -532,6 +606,16 @@ fn digest_hex(digest: &str) -> Option<&str> {
 }
 
 fn temporary_path(directory: &Path, label: &str) -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEMPORARY_PATH_OVERRIDE.with(|slot| {
+        let matches = slot
+            .borrow()
+            .as_ref()
+            .is_some_and(|(expected_label, _)| expected_label == label);
+        matches.then(|| slot.borrow_mut().take().expect("a matching override exists").1)
+    }) {
+        return path;
+    }
     let counter = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     directory.join(format!(".{label}.tmp-{}-{counter}", std::process::id()))
 }
@@ -575,6 +659,7 @@ mod tests {
     };
     use crate::DiagnosticCode;
     use std::fs;
+    use std::io::Write as _;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::SystemTime;
@@ -703,6 +788,20 @@ mod tests {
             .count()
     }
 
+    fn override_next_temporary_path(label: &str, path: &Path) {
+        super::TEMPORARY_PATH_OVERRIDE.with(|slot| {
+            assert!(slot.replace(Some((label.to_owned(), path.to_path_buf()))).is_none());
+        });
+    }
+
+    fn reset_snapshot_comparison_probe() {
+        super::SNAPSHOT_COMPARISON_BYTES_READ.set(0);
+    }
+
+    fn snapshot_comparison_bytes_read() -> usize {
+        super::SNAPSHOT_COMPARISON_BYTES_READ.get()
+    }
+
     #[test]
     fn snapshot_regular_files_are_content_addressed_and_source_read_only() {
         let temporary = TemporaryDirectory::new("snapshot-regular");
@@ -786,13 +885,138 @@ mod tests {
         bottle_store.snapshot(&source).unwrap();
         fs::write(
             store.join("objects/sha256/d3b26e1f1ce13bde26578063b679fab4dbba401f23bc8ed938f8f4d5713f5048"),
-            b"tampered",
+            b"tampered bytes\n",
         )
         .unwrap();
 
         let error = bottle_store.verify_snapshot(SNAPSHOT_DIGEST).unwrap_err();
         assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
         assert_eq!(error.to_string(), "Bottle snapshot is corrupt");
+    }
+
+    #[test]
+    fn object_temp_collision_preserves_the_unowned_sentinel() {
+        let temporary = TemporaryDirectory::new("object-temp-collision");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let object_directory = store.join("objects/sha256");
+        fs::create_dir_all(&object_directory).unwrap();
+        let sentinel = super::temporary_path(&object_directory, "object");
+        fs::write(&sentinel, b"foreign object sentinel").unwrap();
+        override_next_temporary_path("object", &sentinel);
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::TransactionFailed);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"foreign object sentinel");
+        assert!(!store.join("snapshots").exists());
+    }
+
+    #[test]
+    fn snapshot_temp_collision_preserves_the_unowned_sentinel() {
+        let temporary = TemporaryDirectory::new("snapshot-temp-collision");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let snapshot_directory = store.join("snapshots/sha256");
+        fs::create_dir_all(&snapshot_directory).unwrap();
+        let sentinel = super::temporary_path(&snapshot_directory, "snapshot");
+        fs::write(&sentinel, b"foreign snapshot sentinel").unwrap();
+        override_next_temporary_path("snapshot", &sentinel);
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::TransactionFailed);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"foreign snapshot sentinel");
+        assert_eq!(
+            fs::read_dir(&snapshot_directory).unwrap().count(),
+            1,
+            "no snapshot manifest may publish after the collision"
+        );
+    }
+
+    #[test]
+    fn owned_temp_guard_cleans_error_and_unwind_paths() {
+        let temporary = TemporaryDirectory::new("owned-temp-cleanup");
+        let error_path = temporary.path().join("error.tmp");
+        {
+            let mut guard = super::OwnedTemporaryPath::new(&error_path);
+            let mut file = guard.create_new().unwrap();
+            file.write_all(b"partial").unwrap();
+        }
+        assert!(!error_path.exists());
+
+        let unwind_path = temporary.path().join("unwind.tmp");
+        let result = std::panic::catch_unwind(|| {
+            let mut guard = super::OwnedTemporaryPath::new(&unwind_path);
+            let mut file = guard.create_new().unwrap();
+            file.write_all(b"partial").unwrap();
+            panic!("controlled unwind");
+        });
+        assert!(result.is_err());
+        assert!(!unwind_path.exists());
+    }
+
+    #[test]
+    fn disarmed_temp_guard_never_deletes_a_replacement() {
+        let temporary = TemporaryDirectory::new("owned-temp-disarm");
+        let temporary_path = temporary.path().join("owned.tmp");
+        let published_path = temporary.path().join("published");
+        let mut guard = super::OwnedTemporaryPath::new(&temporary_path);
+        let mut file = guard.create_new().unwrap();
+        file.write_all(b"published").unwrap();
+        drop(file);
+        fs::rename(&temporary_path, &published_path).unwrap();
+        guard.disarm();
+        fs::write(&temporary_path, b"foreign replacement").unwrap();
+        drop(guard);
+
+        assert_eq!(fs::read(&published_path).unwrap(), b"published");
+        assert_eq!(fs::read(&temporary_path).unwrap(), b"foreign replacement");
+    }
+
+    #[test]
+    fn existing_snapshot_comparison_rejects_oversize_and_nonregular_without_reading() {
+        let temporary = TemporaryDirectory::new("snapshot-compare-preflight");
+        let oversized = temporary.path().join("oversized.json");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(u64::try_from(super::MAX_SNAPSHOT_MANIFEST_BYTES).unwrap() + 1)
+            .unwrap();
+        reset_snapshot_comparison_probe();
+        let error = super::compare_existing_snapshot(&oversized, b"expected\n").unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(snapshot_comparison_bytes_read(), 0);
+
+        let directory = temporary.path().join("directory.json");
+        fs::create_dir(&directory).unwrap();
+        reset_snapshot_comparison_probe();
+        let error = super::compare_existing_snapshot(&directory, b"expected\n").unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(snapshot_comparison_bytes_read(), 0);
+    }
+
+    #[test]
+    fn existing_snapshot_comparison_streams_exact_bytes_and_rejects_wrong_bytes() {
+        const EXPECTED: &[u8] = b"canonical\n";
+        let temporary = TemporaryDirectory::new("snapshot-compare-content");
+        let target = temporary.path().join("snapshot.json");
+
+        fs::write(&target, b"wrongbyte\n").unwrap();
+        reset_snapshot_comparison_probe();
+        let error = super::compare_existing_snapshot(&target, EXPECTED).unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(snapshot_comparison_bytes_read(), EXPECTED.len());
+
+        fs::write(&target, b"small").unwrap();
+        reset_snapshot_comparison_probe();
+        let error = super::compare_existing_snapshot(&target, EXPECTED).unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(snapshot_comparison_bytes_read(), 0);
+
+        fs::write(&target, EXPECTED).unwrap();
+        reset_snapshot_comparison_probe();
+        super::compare_existing_snapshot(&target, EXPECTED).unwrap();
+        assert_eq!(snapshot_comparison_bytes_read(), EXPECTED.len());
     }
 
     #[test]
