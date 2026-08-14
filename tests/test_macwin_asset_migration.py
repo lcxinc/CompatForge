@@ -14159,17 +14159,28 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         mutants = {
             "numeric-status": raw + b"The current result is 3 converted + 5 deferred + 82 quarantined.\n",
             "word-status": raw + b"There are three converted records.\n",
+            "word-status-inverted": raw + b"Converted records total three.\n",
+            "circled-status": raw + "Converted records total ③.\n".encode("utf-8"),
+            "superscript-status": raw + "Deferred records total ⁵.\n".encode("utf-8"),
+            "chinese-status": raw + "Quarantined records total 八十二。\n".encode("utf-8"),
             "table-status": raw + b"| converted | 3 |\n",
             "duplicate-patch-row": raw + patch_row,
             "duplicate-seal-row": raw + seal_row,
             "extra-seal-row": raw + b"| `migration/macwin/generated/extra.json` | 1 | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |\n",
             "extra-malformed-table-row": raw + b"| extra | invalid |\n",
+            "extra-commonmark-table-no-leading-pipe": raw
+            + b"Extra | Value\n--- | ---\nfoo | bar\n",
+            "extra-commonmark-table-indented": raw
+            + b" Extra | Value\n --- | ---\n foo | bar\n",
+            "extra-fenced-command-block": raw
+            + b"```bash\npython -c unsafe\n```\n",
             "missing-command": raw.replace(
                 b"cargo fmt --all -- --check\n", b"", 1
             ),
             "closed-open-owner": raw.replace(
                 b"`MW-ARCH-001` remains open", b"`MW-ARCH-001` is closed", 1
             ),
+            "unquoted-closed-owner": raw + b"MW-ASSET-002 is closed.\n",
         }
         for name, mutant in mutants.items():
             with self.subTest(mutant=name), self.assertRaises(ValueError):
@@ -14237,193 +14248,180 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         return text
 
     def _validate_provenance_semantics(self, text: str) -> None:
-        required = (
-            "11 patches -> 0 retained / 11 quarantined",
-            "2 converted + 4 deferred + 84 quarantined",
-            "JASP tag `v0.97.1`",
-            "commit `28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2`",
-            "Wine annotated tag `wine-11.11`",
-            "tag object `b08651f36865a3e1d9300d792df322d2ee8a807e`",
-            "commit `f6c044e1890e84a4aa5e77e76ba7276a615630e1`",
-            "Project license context is not patch-specific license evidence.",
-            "No patch was applied or executed.",
-            "`MW-ASSET-002`",
-            "[README](../../README.md)",
-            "[testing entry point](../testing.md)",
-            "`MW-ASSET-003` remains open",
-            "`MW-ARCH-001` remains open",
-            "Record patch-specific license evidence and repeat review.",
-            "missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained",
-            "python -S -B -m unittest tests.test_macwin_asset_migration",
-            "cargo fmt --all -- --check",
-            "cargo check --workspace --all-targets --locked",
-            "cargo test --workspace --all-targets --locked",
-            "cargo clippy --workspace --all-targets --locked -- -D warnings",
-        )
-        if any(fact not in text for fact in required):
-            raise ValueError("patch provenance facts are incomplete")
-        unique_facts = (
-            "repository `a1112/Mac-Win`",
-            "source tag\n`mw-migration-baseline-db12d5e`",
-            "JASP tag `v0.97.1`",
-            "Wine annotated tag `wine-11.11`",
-            "Project license context is not patch-specific license evidence.",
-            "No patch was applied or executed.",
-            "missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained",
-            "Record patch-specific license evidence and repeat review.",
-        )
-        if any(text.count(fact) != 1 for fact in unique_facts):
-            raise ValueError("patch provenance identity facts are contradictory")
-        expected_oids = (
-            "9f10d003382ce7ffbb269376c03477e17516302f",
-            "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
-            "97f8423094d25325d8f864eb6f49a9e8628dbb93",
-            "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
-            "b08651f36865a3e1d9300d792df322d2ee8a807e",
-            "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
-        )
-        actual_oids = tuple(
-            re.findall(r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])", text)
-        )
-        if actual_oids != expected_oids:
-            raise ValueError("patch provenance frozen identities are contradictory")
+        expected_review_rows = self._review_rows()
         parsed_seals = self._parse_provenance_seal_rows(text)
         parsed_review_rows = self._parse_patch_review_rows(text)
-        expected_review_rows = self._review_rows()
         if parsed_seals != self.PROVENANCE_SEALS:
             raise ValueError("patch provenance evidence seals are incomplete")
         if parsed_review_rows != expected_review_rows:
             raise ValueError("patch provenance review rows are incomplete")
-        table_lines = tuple(line for line in text.splitlines() if line.startswith("|"))
-        if table_lines != self._expected_provenance_table_lines(expected_review_rows):
+        expected_table_lines = self._expected_provenance_table_lines(
+            expected_review_rows
+        )
+        expected_tables = (
+            expected_table_lines[:4],
+            expected_table_lines[4:17],
+            expected_table_lines[17:],
+        )
+        if self._parse_commonmark_tables(text) != expected_tables:
             raise ValueError("patch provenance tables are not closed")
-
-        global_claims = tuple(
-            tuple(map(int, match))
-            for match in re.findall(
-                r"\b(\d+) converted\s*\+\s*(\d+) deferred\s*\+\s*(\d+) quarantined\b",
-                text,
-            )
-        )
-        patch_claims = tuple(
-            tuple(map(int, match))
-            for match in re.findall(
-                r"\b(\d+) patches -> (\d+) retained / (\d+) quarantined\b",
-                text,
-            )
-        )
-        if global_claims != ((2, 4, 84),) or patch_claims != ((11, 0, 11),):
-            raise ValueError("patch provenance status summary is contradictory")
-        allowed = {
-            "converted": {2},
-            "deferred": {4},
-            "quarantined": {11, 84},
-            "retained": {0},
-        }
-        for value, status in re.findall(
-            r"\b(\d+)\s+(converted|deferred|quarantined|retained)\b", text
+        if self._parse_fenced_blocks(text) != (
+            ("```text", self.PROVENANCE_COMMANDS, "```"),
         ):
-            if int(value) not in allowed[status]:
-                raise ValueError("patch provenance numeric status is contradictory")
-        for status, value in re.findall(
-            r"\b(converted|deferred|quarantined|retained)(?: records?)?\s*(?:[:=]|\|)\s*(\d+)\b",
-            text,
-        ):
-            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
-            if int(value) != expected[status]:
-                raise ValueError("patch provenance table status is contradictory")
-        for value, status in re.findall(
-            r"\b(\d+)\s*(?:\|)\s*(converted|deferred|quarantined|retained)\b",
-            text,
-        ):
-            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
-            if int(value) != expected[status]:
-                raise ValueError("patch provenance reverse table status is contradictory")
-        english = self._english_number_words()
-        number_words = "|".join(
-            re.escape(word).replace(r"\-", "[- ]")
-            for word in sorted(english, key=len, reverse=True)
-        )
-        for word, status in re.findall(
-            rf"\b({number_words})\s+(converted|deferred|quarantined|retained)\b",
-            text.casefold(),
-        ):
-            normalized = word.replace(" ", "-")
-            if normalized in english and english[normalized] not in allowed[status]:
-                raise ValueError("patch provenance word status is contradictory")
-        for status, word in re.findall(
-            rf"\b(converted|deferred|quarantined|retained)(?: records?)?\s*(?:is|are|[:=]|\|)\s*({number_words})\b",
-            text.casefold(),
-        ):
-            normalized = word.replace(" ", "-")
-            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
-            if normalized in english and english[normalized] != expected[status]:
-                raise ValueError("patch provenance reverse word status is contradictory")
-
-        fenced = re.findall(r"^```text\n(?P<body>.*?)^```$", text, flags=re.MULTILINE | re.DOTALL)
-        if len(fenced) != 1 or tuple(fenced[0].splitlines()) != self.PROVENANCE_COMMANDS:
             raise ValueError("patch provenance verification commands are incomplete")
-        links = tuple(re.findall(r"\[[^\]]+\]\(([^)]+)\)", text))
-        if links != ("../../README.md", "../testing.md"):
-            raise ValueError("patch provenance entry links are incomplete")
-        issue_counts = {
-            issue: text.count(f"`{issue}`")
-            for issue in ("MW-ASSET-002", "MW-ASSET-003", "MW-ARCH-001")
+        if text != self._expected_provenance_text(expected_review_rows):
+            raise ValueError("patch provenance document is outside the closed grammar")
+
+    @classmethod
+    def _expected_provenance_text(
+        cls,
+        review_rows: tuple[tuple[str, str, int, int, int, int, str, str], ...],
+    ) -> str:
+        table_lines = cls._expected_provenance_table_lines(review_rows)
+        replacements = {
+            "@EVIDENCE_TABLE@": "\n".join(table_lines[:4]),
+            "@PATCH_TABLE@": "\n".join(table_lines[4:17]),
+            "@GENERATED_TABLE@": "\n".join(table_lines[17:]),
+            "@VERIFICATION_COMMANDS@": "\n".join(cls.PROVENANCE_COMMANDS),
         }
-        if issue_counts != {"MW-ASSET-002": 2, "MW-ASSET-003": 2, "MW-ARCH-001": 1}:
-            raise ValueError("patch provenance issue ownership is contradictory")
-        for statement in (
-            "`MW-ASSET-002` owns this evidence result.",
-            "`MW-ASSET-003` remains open",
-            "`MW-ARCH-001` remains open",
-        ):
-            if text.count(statement) != 1:
-                raise ValueError("patch provenance open ownership is contradictory")
+        template = """# Mac-Win patch provenance review
+
+This document is the committed evidence result for `MW-ASSET-002`. It is linked
+from the repository [README](../../README.md) and the [testing entry point](../testing.md).
+It records an offline review result; it does not make a runtime or
+application-compatibility claim. No patch was applied or executed.
+
+## Frozen evidence identities
+
+The review is bound to repository `a1112/Mac-Win`, source tag
+`mw-migration-baseline-db12d5e`, annotated tag object
+`9f10d003382ce7ffbb269376c03477e17516302f`, source commit
+`db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`, and inventory commit
+`97f8423094d25325d8f864eb6f49a9e8628dbb93`.
+
+The upstream comparison is frozen to these exact identities:
+
+- JASP tag `v0.97.1` resolves to commit `28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2`.
+- Wine annotated tag `wine-11.11` has tag object `b08651f36865a3e1d9300d792df322d2ee8a807e`
+  and resolves to commit `f6c044e1890e84a4aa5e77e76ba7276a615630e1`.
+
+All sizes and SHA-256 values below are computed from the committed bytes.
+
+@EVIDENCE_TABLE@
+
+The source index authenticates the frozen source pack. The review ledger is a
+separate closed, canonical evidence file cross-bound to the exact 11 patch
+source identities; it neither replaces source objects nor grants permission to
+use their patch contents.
+
+## Reviewed patch result
+
+The exact result is: 11 patches -> 0 retained / 11 quarantined. Each patch has
+an unresolved patch license and therefore stops at the first policy rule,
+`missing-license`, even where its upstream base is completely matched.
+
+Project license context is not patch-specific license evidence. JASP's
+AGPL-3.0-or-later and Wine's LGPL-2.1-or-later project notices are recorded only
+as context; neither establishes a redistribution license for a Mac-Win-local
+patch, its author contribution, or its added hunks.
+
+@PATCH_TABLE@
+
+The stable decision priority is: missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained. Evaluation stops at the first unmet
+condition. The release condition for every current patch is: Record patch-specific license evidence and repeat review.
+
+A future retained patch must additionally bind an SPDX expression and official
+patch-license evidence, match every preimage against the exact upstream commit,
+close external and development dependencies, remain local-only and needed, and
+name at least one registered focused regression probe. Retained still means
+`deferred`; it never authorizes automatic application or execution.
+
+## Generated result
+
+The complete 90-record graph now reports 2 converted + 4 deferred + 84 quarantined.
+The four deferred records are Bottle schema mappings owned by
+`MW-ASSET-003`. The five-file graph remains exact; no Recipe, patch payload,
+probe, fixture, or sixth generated leaf is emitted.
+
+@GENERATED_TABLE@
+
+## Verification and side-effect boundary
+
+Run these commands serially from the repository root:
+
+```text
+@VERIFICATION_COMMANDS@
+```
+
+Default, `--check`, every `--explain`, and repository validation are offline
+and read-only. The two writes may replace only the authenticated five generated
+leaves and the second is a byte-for-byte no-op. These modes do not resolve
+evidence URLs, invoke Git to inspect upstream state, open evidence locators,
+read ambient environment or home paths, access a Bottle, or import, compile,
+apply, execute, or reflect patch contents.
+
+`MW-ASSET-002` owns this evidence result. `MW-ASSET-003` remains open for Bottle
+schema work, and `MW-ARCH-001` remains open for repository archival. Neither is
+closed or advanced by this review.
+"""
+        for marker, replacement in replacements.items():
+            if template.count(marker) != 1:
+                raise AssertionError("closed provenance template marker changed")
+            template = template.replace(marker, replacement)
+        return template
 
     @staticmethod
-    def _english_number_words() -> dict[str, int]:
-        units = {
-            "zero": 0,
-            "one": 1,
-            "two": 2,
-            "three": 3,
-            "four": 4,
-            "five": 5,
-            "six": 6,
-            "seven": 7,
-            "eight": 8,
-            "nine": 9,
-            "ten": 10,
-            "eleven": 11,
-            "twelve": 12,
-            "thirteen": 13,
-            "fourteen": 14,
-            "fifteen": 15,
-            "sixteen": 16,
-            "seventeen": 17,
-            "eighteen": 18,
-            "nineteen": 19,
-        }
-        tens = {
-            "twenty": 20,
-            "thirty": 30,
-            "forty": 40,
-            "fifty": 50,
-            "sixty": 60,
-            "seventy": 70,
-            "eighty": 80,
-            "ninety": 90,
-        }
-        words = {**units, **tens}
-        words.update(
-            {
-                f"{prefix}-{suffix}": base + value
-                for prefix, base in tens.items()
-                for suffix, value in units.items()
-                if 0 < value < 10
-            }
+    def _parse_fenced_blocks(
+        text: str,
+    ) -> tuple[tuple[str, tuple[str, ...], str], ...]:
+        lines = text.splitlines()
+        blocks = []
+        index = 0
+        opening_pattern = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+        while index < len(lines):
+            opening = opening_pattern.fullmatch(lines[index])
+            if opening is None:
+                index += 1
+                continue
+            fence = opening.group("fence")
+            closing_pattern = re.compile(
+                rf"^ {{0,3}}{re.escape(fence[0])}{{{len(fence)},}} *$"
+            )
+            body = []
+            opening_line = lines[index]
+            index += 1
+            while index < len(lines) and closing_pattern.fullmatch(lines[index]) is None:
+                body.append(lines[index])
+                index += 1
+            if index == len(lines):
+                raise ValueError("patch provenance fence is unclosed")
+            blocks.append((opening_line, tuple(body), lines[index]))
+            index += 1
+        return tuple(blocks)
+
+    @staticmethod
+    def _parse_commonmark_tables(text: str) -> tuple[tuple[str, ...], ...]:
+        lines = text.splitlines()
+        row_pattern = re.compile(r"^ {0,3}\|?.*\|.*\|? *$")
+        separator_pattern = re.compile(
+            r"^ {0,3}\|? *:?-{3,}:? *(?:\| *:?-{3,}:? *)+\|? *$"
         )
-        return words
+        tables = []
+        used = set()
+        for index, line in enumerate(lines):
+            if separator_pattern.fullmatch(line) is None:
+                continue
+            if index == 0 or row_pattern.fullmatch(lines[index - 1]) is None:
+                raise ValueError("patch provenance table header is invalid")
+            start = index - 1
+            if start in used:
+                raise ValueError("patch provenance tables overlap")
+            end = index + 1
+            while end < len(lines) and row_pattern.fullmatch(lines[end]) is not None:
+                end += 1
+            used.update(range(start, end))
+            tables.append(tuple(lines[start:end]))
+        return tuple(tables)
 
     @classmethod
     def _expected_provenance_table_lines(
