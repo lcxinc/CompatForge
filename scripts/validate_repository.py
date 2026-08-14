@@ -124,6 +124,11 @@ PATCH_UPSTREAM_WINE = {
 PATCH_MISSING_LICENSE_RELEASE = (
     "Record patch-specific license evidence and repeat review."
 )
+PATCH_PREIMAGE_EVIDENCE_SHA256 = (
+    "5d9cc21f82fe883acfa5174d4e06dfdf1cf48ca7ff2e822d8d54fd81bf9d974d"
+)
+PATCH_PREIMAGE_RECORD_COUNT = 11
+PATCH_PREIMAGE_COUNT = 88
 PATCH_APPLICATIONS = {
     "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch": (
         "jasp-desktop",
@@ -167,6 +172,9 @@ PATCH_MAIL_AUTHOR = re.compile(r"^([^<>\r\n]{1,256}) <([^<>\s]{3,254})>$")
 PATCH_RESERVED_SEGMENT = re.compile(
     r"^(?:conin\$|conout\$|con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
     re.IGNORECASE,
+)
+PATCH_INDEX_LINE = re.compile(
+    rb"^index ([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})(?: ([0-7]{6}))?$"
 )
 TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
 TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
@@ -1038,9 +1046,51 @@ def _independent_patch_relative_path(value: object) -> bool:
     return True
 
 
+def _independent_patch_diff_metadata(
+    raw: bytes,
+) -> tuple[tuple[str, str | None], ...]:
+    if type(raw) is not bytes or not 1 <= len(raw) <= 1024 * 1024 or b"\r" in raw:
+        raise ValueError("patch source diff evidence is invalid")
+    entries: list[tuple[str, str | None]] = []
+    current_path: str | None = None
+    current_old_blob: str | None = None
+    current_has_index = False
+    for line in raw.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            if current_path is not None:
+                entries.append((current_path, current_old_blob))
+            if not line.startswith(b"diff --git a/"):
+                raise ValueError("patch source diff evidence is invalid")
+            left, separator, right = line[len(b"diff --git a/") :].partition(b" b/")
+            if not separator or b" b/" in right or left != right:
+                raise ValueError("patch source diff evidence is invalid")
+            try:
+                current_path = left.decode("ascii", errors="strict")
+            except UnicodeDecodeError:
+                raise ValueError("patch source diff evidence is invalid") from None
+            if not _independent_patch_relative_path(current_path):
+                raise ValueError("patch source diff evidence is invalid")
+            current_old_blob = None
+            current_has_index = False
+        elif line.startswith(b"index "):
+            match = PATCH_INDEX_LINE.fullmatch(line)
+            if current_path is None or current_has_index or match is None:
+                raise ValueError("patch source diff evidence is invalid")
+            current_old_blob = match.group(1).decode("ascii")
+            current_has_index = True
+    if current_path is not None:
+        entries.append((current_path, current_old_blob))
+    if not 1 <= len(entries) <= 128:
+        raise ValueError("patch source diff evidence is invalid")
+    entries.sort(key=lambda item: item[0].encode("ascii"))
+    if len({path.casefold() for path, _old_blob in entries}) != len(entries):
+        raise ValueError("patch source diff evidence is invalid")
+    return tuple(entries)
+
+
 def _independent_patch_mail_identity(
     source_binding: object, asset: dict[str, object]
-) -> tuple[str | None, dict[str, object]]:
+) -> tuple[str | None, dict[str, object], bytes]:
     object_path = asset.get("objectPath")
     if type(object_path) is not str:
         raise ValueError("patch source object identity is invalid")
@@ -1050,7 +1100,7 @@ def _independent_patch_mail_identity(
     if type(raw) is not bytes or len(raw) != asset.get("byteSize"):
         raise ValueError("patch source object identity is invalid")
     if not raw.startswith(b"From "):
-        return None, {"status": "unresolved"}
+        return None, {"status": "unresolved"}, raw
     header_end = raw.find(b"\n\n")
     if not 0 < header_end <= 16 * 1024 or b"\r" in raw[:header_end]:
         raise ValueError("patch source mail identity is invalid")
@@ -1080,12 +1130,16 @@ def _independent_patch_mail_identity(
         or author_match is None
     ):
         raise ValueError("patch source mail identity is invalid")
-    return subject, {
-        "displayName": author_match.group(1),
-        "email": author_match.group(2),
-        "evidence": "frozen-patch-mail-header",
-        "status": "reviewed",
-    }
+    return (
+        subject,
+        {
+            "displayName": author_match.group(1),
+            "email": author_match.group(2),
+            "evidence": "frozen-patch-mail-header",
+            "status": "reviewed",
+        },
+        raw,
+    )
 
 
 def _independent_patch_author(author: object) -> bool:
@@ -1155,10 +1209,14 @@ def _independent_patch_dependencies(
     return expected
 
 
-def _independent_patch_preimages(preimages: object) -> dict[str, int]:
+def _independent_patch_preimages(
+    preimages: object,
+    source_metadata: tuple[tuple[str, str | None], ...],
+) -> dict[str, int]:
     if type(preimages) is not list or not 1 <= len(preimages) <= 128:
         raise ValueError("patch review base evidence is invalid")
     paths: list[str] = []
+    old_blobs: list[tuple[str, str | None]] = []
     counts = {"matched": 0, "mismatched": 0, "added": 0, "unproven": 0}
     for preimage in preimages:
         if (
@@ -1204,10 +1262,12 @@ def _independent_patch_preimages(preimages: object) -> dict[str, int]:
         ):
             raise ValueError("patch review base evidence is invalid")
         paths.append(path)
+        old_blobs.append((path, patch_old))
         counts[result] += 1
     if (
         paths != sorted(paths, key=lambda value: value.encode("ascii"))
         or len({path.casefold() for path in paths}) != len(paths)
+        or tuple(old_blobs) != source_metadata
     ):
         raise ValueError("patch review base evidence is invalid")
     return counts
@@ -1268,6 +1328,8 @@ def _independent_patch_review_oracle(
 
     expected_mapping: list[dict[str, object]] = []
     expected_quarantine: list[dict[str, object]] = []
+    preimage_evidence: list[dict[str, object]] = []
+    preimage_count = 0
     record_fields = {
         "sourcePath",
         "sourceSha256",
@@ -1318,7 +1380,7 @@ def _independent_patch_review_oracle(
         )
         if expected_upstream is None or record.get("upstream") != expected_upstream:
             raise ValueError("patch review upstream evidence is invalid")
-        expected_subject, expected_author = _independent_patch_mail_identity(
+        expected_subject, expected_author, patch_raw = _independent_patch_mail_identity(
             source_binding, asset
         )
         subject = record.get("subject")
@@ -1347,7 +1409,23 @@ def _independent_patch_review_oracle(
             or tuple(applications) != expected_applications
         ):
             raise ValueError("patch review application evidence is invalid")
-        base_counts = _independent_patch_preimages(record.get("preimages"))
+        preimages = record.get("preimages")
+        source_metadata = _independent_patch_diff_metadata(patch_raw)
+        base_counts = _independent_patch_preimages(preimages, source_metadata)
+        preimage_evidence.append(
+            {
+                "sourcePath": path,
+                "preimages": [
+                    {
+                        "path": preimage["path"],
+                        "result": preimage["result"],
+                        "upstreamBlobOid": preimage["upstreamBlobOid"],
+                    }
+                    for preimage in preimages
+                ],
+            }
+        )
+        preimage_count += len(preimages)
         project_license = record.get("projectLicense")
         expected_project_license = (
             {
@@ -1416,6 +1494,20 @@ def _independent_patch_review_oracle(
                 "releaseCondition": PATCH_MISSING_LICENSE_RELEASE,
             }
         )
+
+    preimage_evidence_raw = json.dumps(
+        preimage_evidence,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    if (
+        len(preimage_evidence) != PATCH_PREIMAGE_RECORD_COUNT
+        or preimage_count != PATCH_PREIMAGE_COUNT
+        or hashlib.sha256(preimage_evidence_raw).hexdigest()
+        != PATCH_PREIMAGE_EVIDENCE_SHA256
+    ):
+        raise ValueError("patch review canonical preimage evidence is invalid")
 
     mapping_raw = documents.get(
         "migration/macwin/generated/mappings/patches.json"

@@ -2942,6 +2942,219 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                         source_binding, review_raw, documents
                     )
 
+    def test_independent_patch_oracle_binds_exact_preimage_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-preimage-evidence-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+
+            def safe_wrong_path(review):
+                review["records"][2]["preimages"][0]["path"] = "forged/safe.c"
+
+            def self_consistent_wrong_matched_objects(review):
+                record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"]
+                    == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+                )
+                preimage = record["preimages"][0]
+                preimage["patchOldBlob"] = "f" * 7
+                preimage["upstreamBlobOid"] = "f" * 40
+
+            def swap_dcomp_results_with_consistent_objects(review):
+                record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"]
+                    == "patches/wine-dcomp-winui-host-composition.patch"
+                )
+                matched = next(
+                    item for item in record["preimages"] if item["result"] == "matched"
+                )
+                mismatched = next(
+                    item
+                    for item in record["preimages"]
+                    if item["result"] == "mismatched"
+                )
+                matched.update(
+                    {
+                        "patchOldBlob": "a" * 7,
+                        "result": "mismatched",
+                        "upstreamBlobOid": "b" * 40,
+                    }
+                )
+                mismatched.update(
+                    {
+                        "patchOldBlob": "c" * 7,
+                        "result": "matched",
+                        "upstreamBlobOid": "c" * 40,
+                    }
+                )
+
+            def evidence_digest(review):
+                projection = [
+                    {
+                        "sourcePath": record["sourcePath"],
+                        "preimages": [
+                            {
+                                "path": preimage["path"],
+                                "result": preimage["result"],
+                                "upstreamBlobOid": preimage["upstreamBlobOid"],
+                            }
+                            for preimage in record["preimages"]
+                        ],
+                    }
+                    for record in review["records"]
+                ]
+                raw = json.dumps(
+                    projection,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("ascii")
+                return hashlib.sha256(raw).hexdigest()
+
+            for name, mutate, bypass_evidence_seal in (
+                ("safe-wrong-path", safe_wrong_path, True),
+                (
+                    "self-consistent-wrong-matched-objects",
+                    self_consistent_wrong_matched_objects,
+                    True,
+                ),
+                (
+                    "self-consistent-result-swap",
+                    swap_dcomp_results_with_consistent_objects,
+                    False,
+                ),
+            ):
+                review = copy.deepcopy(original)
+                mutate(review)
+                review_raw = common.canonical_json_bytes(review)
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(self.subTest(case=name))
+                    stack.enter_context(
+                        mock.patch.object(
+                            validator,
+                            "PATCH_REVIEW_DOCUMENT_SHA256",
+                            hashlib.sha256(review_raw).hexdigest(),
+                        )
+                    )
+                    if bypass_evidence_seal:
+                        stack.enter_context(
+                            mock.patch.object(
+                                validator,
+                                "PATCH_PREIMAGE_EVIDENCE_SHA256",
+                                evidence_digest(review),
+                                create=True,
+                            )
+                        )
+                    stack.enter_context(self.assertRaises(ValueError))
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, documents
+                    )
+
+    def test_independent_patch_oracle_rejects_preimage_evidence_table_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-preimage-table-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original_review = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            original_mapping = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+            source_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+
+            def matching_records(review, mapping):
+                review_record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"] == source_path
+                )
+                mapping_record = next(
+                    item
+                    for item in mapping["records"]
+                    if item["sourcePath"] == source_path
+                )
+                return review_record, mapping_record
+
+            def missing(review, mapping):
+                review_record, mapping_record = matching_records(review, mapping)
+                review_record["preimages"].pop()
+                mapping_record["baseEvidence"]["matched"] -= 1
+
+            def extra(review, mapping):
+                review_record, mapping_record = matching_records(review, mapping)
+                review_record["preimages"].append(
+                    {
+                        "patchOldBlob": "e" * 7,
+                        "path": "forged/extra.c",
+                        "result": "matched",
+                        "upstreamBlobOid": "e" * 40,
+                    }
+                )
+                mapping_record["baseEvidence"]["matched"] += 1
+
+            def legal_upstream_replacement(review, _mapping):
+                review["records"][0]["preimages"][0][
+                    "upstreamBlobOid"
+                ] = "a" * 40
+
+            for name, mutate in (
+                ("missing", missing),
+                ("extra", extra),
+                ("legal-value-replacement", legal_upstream_replacement),
+            ):
+                review = copy.deepcopy(original_review)
+                mapping = copy.deepcopy(original_mapping)
+                mutate(review, mapping)
+                review_raw = common.canonical_json_bytes(review)
+                mapping_raw = common.canonical_json_bytes(mapping)
+                forged_documents = {**documents, mapping_path: mapping_raw}
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), mock.patch.dict(
+                    validator.TASK6_DOCUMENT_SHA256,
+                    {mapping_path: hashlib.sha256(mapping_raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
     def test_independent_patch_oracle_rejects_self_consistent_ledger_mutants(
         self,
     ) -> None:
