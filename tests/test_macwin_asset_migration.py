@@ -7888,6 +7888,61 @@ class MacWinMigrationCliTests(unittest.TestCase):
         self.assertEqual(explanation["reason"], "missing-license")
         self.assertEqual(by_source, self.converter.explain_conversion(self.result, source))
 
+    def test_every_reviewed_patch_has_a_canonical_bounded_quarantine_explanation(self) -> None:
+        common = _load_macwin_asset_common()
+        expected_fields = {
+            "action",
+            "category",
+            "evidenceLocators",
+            "intendedOwner",
+            "outputKind",
+            "reason",
+            "releaseCondition",
+            "schemaVersion",
+            "sourceCommit",
+            "sourceKind",
+            "sourcePath",
+            "sourceRepository",
+            "sourceSha256",
+            "status",
+            "targetIssue",
+        }
+        paths = tuple(record.source_path for record in self.result.patch_review.records)
+        assets = {
+            asset.source_path: asset
+            for asset in self.result.source_pack.assets
+            if asset.category == "patches"
+        }
+        self.assertEqual(len(paths), 11)
+        for source_path in paths:
+            with self.subTest(source_path=source_path):
+                first = self._run_cli("--explain", source_path)
+                second = self._run_cli("--explain", source_path)
+                self.assertEqual((first.returncode, first.stderr), (0, b""))
+                self.assertEqual(second.stdout, first.stdout)
+                self.assertLessEqual(len(first.stdout), 1024 * 1024)
+                explanation = common.parse_json_bytes(
+                    first.stdout, label="patch explanation"
+                )
+                self.assertEqual(first.stdout, common.canonical_json_bytes(explanation))
+                self.assertEqual(set(explanation), expected_fields)
+                self.assertEqual(explanation["sourcePath"], source_path)
+                self.assertEqual(explanation["status"], "quarantined")
+                self.assertEqual(explanation["action"], "quarantine")
+                self.assertEqual(explanation["reason"], "missing-license")
+                self.assertNotIn("content", explanation)
+                self.assertNotIn("patchBytes", explanation)
+                content_lines = tuple(
+                    line
+                    for line in assets[source_path].raw.splitlines()
+                    if len(line) >= 32
+                    and line[:1] in {b"+", b"-"}
+                    and not line.startswith((b"+++", b"---"))
+                )
+                self.assertTrue(content_lines)
+                for line in content_lines:
+                    self.assertNotIn(line, first.stdout)
+
     def test_explain_accepts_an_exact_unique_output_path_alias(self) -> None:
         helper = MacWinRecipeConversionTests(methodName="runTest")
         helper.converter = self.converter
@@ -11445,14 +11500,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"must remain unchanged\n")
-            commands = (
-                self._converter_command(),
-                self._converter_command("--check"),
-                self._converter_command("--explain", "7zip"),
-                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
-                self._converter_command("--write"),
-                self._converter_command("--write"),
-            )
+            commands = self._normal_mode_commands(include_writes=True)
             for command in commands:
                 before = self._snapshot_boundary(sentinel)
                 completed = self._run_audited(command)
@@ -11466,17 +11514,37 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 self.converter.read_generated_documents(ROOT), self.documents
             )
 
+    def test_normal_mode_matrix_covers_all_patch_explanations_and_two_writes(self) -> None:
+        commands = self._normal_mode_commands(include_writes=True)
+        expected_explanations = {
+            self._converter_command("--explain", record.source_path)
+            for record in self.result.patch_review.records
+        }
+        self.assertEqual(
+            {command for command in commands if "--explain" in command},
+            expected_explanations,
+        )
+        self.assertEqual(
+            sum(command[-1] == "--write" for command in commands),
+            2,
+        )
+
+    def test_boundary_snapshot_includes_reviewed_patch_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "external-sentinel"
+            sentinel.write_bytes(b"guarded\n")
+            snapshot = self._snapshot_boundary(sentinel)
+        self.assertEqual(
+            snapshot["reviewed"],
+            self._snapshot_tree(ROOT / "migration/macwin/reviewed"),
+        )
+
     def test_normal_modes_run_in_independent_isolated_processes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"guarded\n")
             before = self._snapshot_boundary(sentinel)
-            commands = (
-                self._converter_command(),
-                self._converter_command("--check"),
-                self._converter_command("--explain", "7zip"),
-                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
-            )
+            commands = self._normal_mode_commands(include_writes=True)
             process_ids = []
             for command in commands:
                 with self.subTest(command=command):
@@ -11772,8 +11840,11 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             bottle = ROOT / "examples/bottles/7zip-default.json"
             forbidden_locator = self._forbidden_locators()[0]
             second_locator = self._forbidden_locators()[1]
+            official_locator = self.result.patch_review.records[0].project_license.evidence_locator
+            upstream_repository = self.result.patch_review.records[0].upstream.repository
             mutants = {
                 "dns": lambda: socket.getaddrinfo("example.invalid", 443),
+                "dns-evidence-url": lambda: socket.getaddrinfo("github.com", 443),
                 "dns-name": lambda: socket.gethostbyname("example.invalid"),
                 "dns-name-ex": lambda: socket.gethostbyname_ex("example.invalid"),
                 "dns-reverse": lambda: socket.gethostbyaddr("192.0.2.1"),
@@ -11781,7 +11852,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "socket": lambda: socket.socket(),
                 "urlopen": lambda: urllib.request.urlopen("https://example.invalid"),
                 "urlretrieve": lambda: urllib.request.urlretrieve("https://example.invalid"),
+                "network-evidence-url": lambda: urllib.request.urlopen(official_locator),
                 "subprocess": lambda: subprocess.run(["asset"], check=False),
+                "git-upstream-lookup": lambda: subprocess.run(
+                    ["git", "ls-remote", upstream_repository], check=False
+                ),
+                "subprocess-upstream-lookup": lambda: subprocess.check_output(
+                    ["git", "show", "wine-11.11"]
+                ),
                 "environment": lambda: os.getenv("HOME"),
                 "environment-mapping": lambda: self.converter.os.environ["HOME"],
                 "environment-global": lambda: os.environ.get("PATH"),
@@ -11790,6 +11868,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "locator-probe": lambda: Path(forbidden_locator).exists(),
                 "locator-stat": lambda: Path(forbidden_locator).stat(),
                 "locator-open": lambda: Path(forbidden_locator).open("rb"),
+                "evidence-locator-path-open": lambda: Path(official_locator).open("rb"),
+                "evidence-locator-builtin-open": lambda: builtins.open(official_locator, "rb"),
+                "evidence-locator-os-open": lambda: os.open(official_locator, os.O_RDONLY),
                 "locator-os-path-exists": lambda: os.path.exists(forbidden_locator),
                 "locator-os-stat": lambda: os.stat(forbidden_locator),
                 "locator-os-lstat": lambda: os.lstat(forbidden_locator),
@@ -11813,6 +11894,13 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "asset-eval": lambda: builtins.eval("1 + 1"),
                 "asset-builtin-exec": lambda: builtins.exec("x = 1"),
                 "asset-import": lambda: builtins.__import__("migrated_asset"),
+                "patch-apply": lambda: subprocess.run(
+                    ["patch", "-p1", "-i", "reviewed.patch"], check=False
+                ),
+                "patch-import": lambda: importlib.util.spec_from_file_location(
+                    "reviewed_patch", "reviewed.patch"
+                ),
+                "patch-exec": lambda: builtins.exec("PATCH_CONTENT = True"),
                 "bottle-access": lambda: bottle.read_bytes(),
                 "external-write": lambda: sentinel.write_bytes(b"mutated\n"),
             }
@@ -12350,7 +12438,17 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             (ROOT / "tests/fixtures/runtime-packs").absolute(),
         )
         locator_values = self._forbidden_evidence_values()
-        forbidden_values = frozenset({str(sentinel.absolute()), *locator_values})
+        path_locator_values = {
+            spelling
+            for locator in locator_values
+            for spelling in (
+                str(Path(locator)),
+                str(Path(locator)).replace("\\", "/"),
+            )
+        }
+        forbidden_values = frozenset(
+            {str(sentinel.absolute()), *locator_values, *path_locator_values}
+        )
         allowed_environment = tuple(
             (key, value)
             for key, value in os.environ.items()
@@ -12852,6 +12950,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
     def _snapshot_boundary(self, sentinel: Path) -> dict[str, object]:
         return {
             "source": self._snapshot_tree(ROOT / "migration/macwin/source"),
+            "reviewed": self._snapshot_tree(ROOT / "migration/macwin/reviewed"),
             "generated": self._snapshot_tree(ROOT / "migration/macwin/generated"),
             "runtime": self._snapshot_tree(ROOT / "examples/runtime-packs"),
             "runtime-fixtures": self._snapshot_tree(ROOT / "tests/fixtures/runtime-packs"),
@@ -13243,10 +13342,44 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
     def _forbidden_evidence_values(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(
-            locator
-            for record in self.result.records
-            for locator in record.evidence_locators
+            [
+                locator
+                for record in self.result.records
+                for locator in record.evidence_locators
+            ]
+            + [
+                record.project_license.evidence_locator
+                for record in self.result.patch_review.records
+            ]
+            + [
+                record.upstream.repository
+                for record in self.result.patch_review.records
+            ]
+            + [
+                item.value
+                for record in self.result.patch_review.records
+                for item in record.evidence_and_dependencies
+            ]
         ))
+
+    def _normal_mode_commands(self, *, include_writes: bool) -> tuple[tuple[str, ...], ...]:
+        commands = [
+            self._converter_command(),
+            self._converter_command("--check"),
+            *(
+                self._converter_command("--explain", record.source_path)
+                for record in self.result.patch_review.records
+            ),
+            (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
+        ]
+        if include_writes:
+            commands.extend(
+                (
+                    self._converter_command("--write"),
+                    self._converter_command("--write"),
+                )
+            )
+        return tuple(commands)
 
     def _run_main(self, arguments: tuple[str, ...]) -> tuple[int, bytes, bytes]:
         stdout = mock.Mock()
@@ -13638,7 +13771,9 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
 
 class MacWinMigrationDocumentationTests(unittest.TestCase):
     DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
-    DOCUMENT_SHA256 = "a89a2cbd56d2a27284dc2ac6d991ef3456d0e2b343cf6695ad59409813dec56f"
+    PROVENANCE_DOCUMENT = ROOT / "docs/migration/macwin-patch-provenance.md"
+    DOCUMENT_SHA256 = "e2bc9fc159e67e6e5a00d7a1b7a49bf24989d798fa541623f89952e49f049f3b"
+    PROVENANCE_DOCUMENT_SHA256 = "7c223ab23d98e1008b8fa13e9a9bc47caabe22aca54c6af8186761edf801ea71"
     MAX_DOCUMENT_BYTES = 1024 * 1024
     REQUIRED_FACTS = (
         "repository: `a1112/Mac-Win`",
@@ -13646,7 +13781,7 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         "source commit: `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`",
         "inventory commit: `97f8423094d25325d8f864eb6f49a9e8628dbb93`",
         "90 = 19 catalog + 11 patches + 26 probes + 30 fixtures + 4 bottle-schema",
-        "2 converted + 15 deferred + 73 quarantined",
+        "2 converted + 4 deferred + 84 quarantined",
         "0 Recipes, 0 portable probes, and 0 portable fixtures",
         "`MW-ASSET-002`",
         "`MW-ASSET-003`",
@@ -13669,6 +13804,45 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         self.assertIn("# Mac-Win portable asset migration boundary", text)
         self.assertEqual(self._parse_output_rows(text), self._generated_rows())
 
+    def test_patch_provenance_document_binds_exact_committed_evidence(self) -> None:
+        raw = self.PROVENANCE_DOCUMENT.read_bytes()
+        text = self._validate_provenance_document(raw)
+        source_path = "migration/macwin/source/index.json"
+        review_path = "migration/macwin/reviewed/patches.json"
+        source_raw = (ROOT / source_path).read_bytes()
+        review_raw = (ROOT / review_path).read_bytes()
+        self.assertIn(
+            f"| `{source_path}` | {len(source_raw):,} | "
+            f"`{hashlib.sha256(source_raw).hexdigest()}` |",
+            text,
+        )
+        self.assertIn(
+            f"| `{review_path}` | {len(review_raw):,} | "
+            f"`{hashlib.sha256(review_raw).hexdigest()}` |",
+            text,
+        )
+        self.assertEqual(self._parse_output_rows(text), self._generated_rows())
+        self.assertEqual(self._parse_patch_review_rows(text), self._review_rows())
+
+    def test_current_documents_have_one_status_and_visible_entry_points(self) -> None:
+        paths = (
+            self.DOCUMENT,
+            self.PROVENANCE_DOCUMENT,
+            ROOT / "README.md",
+            ROOT / "docs/testing.md",
+        )
+        texts = {
+            path: path.read_text(encoding="utf-8")
+            for path in paths
+        }
+        for path, text in texts.items():
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertNotIn("2 converted + 15 deferred + 73 quarantined", text)
+        for path in (ROOT / "README.md", ROOT / "docs/testing.md"):
+            text = texts[path]
+            self.assertIn("macwin-portable-assets.md", text)
+            self.assertIn("macwin-patch-provenance.md", text)
+
     def test_readme_and_testing_docs_link_the_visible_boundary(self) -> None:
         readme = (ROOT / "README.md").read_bytes()
         testing = (ROOT / "docs/testing.md").read_bytes()
@@ -13686,8 +13860,92 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             b"/README.md text eol=lf\n",
             b"/docs/testing.md text eol=lf\n",
             b"/docs/migration/macwin-portable-assets.md text eol=lf\n",
+            b"/docs/migration/macwin-patch-provenance.md text eol=lf\n",
+            b"/migration/macwin/reviewed/*.json text eol=lf\n",
         ):
             self.assertIn(line, attributes)
+
+    def _validate_provenance_document(self, raw: bytes) -> str:
+        if len(raw) > self.MAX_DOCUMENT_BYTES or b"\r" in raw:
+            raise ValueError("patch provenance document transport is invalid")
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError as error:
+            raise ValueError("patch provenance document is not UTF-8") from error
+        if not text.endswith("\n") or text.startswith("\ufeff"):
+            raise ValueError("patch provenance document framing is invalid")
+        if hashlib.sha256(raw).hexdigest() != self.PROVENANCE_DOCUMENT_SHA256:
+            raise ValueError("patch provenance document whole-file seal changed")
+        required = (
+            "11 patches -> 0 retained / 11 quarantined",
+            "2 converted + 4 deferred + 84 quarantined",
+            "JASP tag `v0.97.1`",
+            "commit `28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2`",
+            "Wine annotated tag `wine-11.11`",
+            "tag object `b08651f36865a3e1d9300d792df322d2ee8a807e`",
+            "commit `f6c044e1890e84a4aa5e77e76ba7276a615630e1`",
+            "Project license context is not patch-specific license evidence.",
+            "No patch was applied or executed.",
+            "`MW-ASSET-002`",
+            "[README](../../README.md)",
+            "[testing entry point](../testing.md)",
+            "`MW-ASSET-003` remains open",
+            "`MW-ARCH-001` remains open",
+            "Record patch-specific license evidence and repeat review.",
+            "missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained",
+            "python -S -B -m unittest tests.test_macwin_asset_migration",
+            "cargo fmt --all -- --check",
+            "cargo check --workspace --all-targets --locked",
+            "cargo test --workspace --all-targets --locked",
+            "cargo clippy --workspace --all-targets --locked -- -D warnings",
+        )
+        if any(fact not in text for fact in required):
+            raise ValueError("patch provenance facts are incomplete")
+        if self._parse_output_rows(text) != self._generated_rows():
+            raise ValueError("patch provenance generated seals are incomplete")
+        if self._parse_patch_review_rows(text) != self._review_rows():
+            raise ValueError("patch provenance review rows are incomplete")
+        return text
+
+    @staticmethod
+    def _parse_patch_review_rows(text: str) -> dict[str, tuple[str, int, int, int, int, str, str]]:
+        matches = re.findall(
+            r"^\| `(?P<path>patches/[^`]+\.patch)` \| (?P<purpose>[^|]+?) \| "
+            r"matched=(?P<matched>\d+), mismatched=(?P<mismatched>\d+), "
+            r"added=(?P<added>\d+), unproven=(?P<unproven>\d+) \| "
+            r"`(?P<license>[^`]+)` \| `(?P<decision>[^`]+)` \|$",
+            text,
+            flags=re.MULTILINE,
+        )
+        return {
+            path: (
+                purpose,
+                int(matched),
+                int(mismatched),
+                int(added),
+                int(unproven),
+                license_status,
+                decision,
+            )
+            for path, purpose, matched, mismatched, added, unproven, license_status, decision in matches
+        }
+
+    @staticmethod
+    def _review_rows() -> dict[str, tuple[str, int, int, int, int, str, str]]:
+        review = json.loads((ROOT / "migration/macwin/reviewed/patches.json").read_bytes())
+        rows = {}
+        for record in review["records"]:
+            counts = collections.Counter(item["result"] for item in record["preimages"])
+            rows[record["sourcePath"]] = (
+                record["purpose"],
+                counts["matched"],
+                counts["mismatched"],
+                counts["added"],
+                counts["unproven"],
+                record["patchLicense"]["status"],
+                f'{record["reviewDisposition"]} / {record["reason"]}',
+            )
+        return rows
 
     def test_raw_document_seal_rejects_transport_and_semantic_decoys(self) -> None:
         raw = self.DOCUMENT.read_bytes()
@@ -13752,7 +14010,7 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         if any(
             values - {expected}
             for status, values in numeric_statuses.items()
-            for expected in ({"converted": 2, "deferred": 15, "quarantined": 73}[status],)
+            for expected in ({"converted": 2, "deferred": 4, "quarantined": 84}[status],)
         ):
             raise ValueError("migration document status claims are contradictory")
         root = json.loads((ROOT / "migration/macwin/generated/index.json").read_bytes())

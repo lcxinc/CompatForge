@@ -73,7 +73,7 @@ recipe digest
 
 ## Mac-Win portable asset 离线门禁
 
-[Mac-Win portable asset 迁移边界](migration/macwin-portable-assets.md)记录冻结源身份、90 条输入的真实状态、隔离/延期条件和精确输出摘要。该门禁只验证离线表示与副作用边界，不执行迁移资产，也不产生应用兼容结论。
+[Mac-Win portable asset 迁移边界](migration/macwin-portable-assets.md)记录冻结源身份、90 条输入的真实状态、隔离/延期条件和精确输出摘要；[Mac-Win patch 来源证据](migration/macwin-patch-provenance.md)进一步绑定 11 个 patch 的上游基线、许可证判定、逐项隔离原因和 committed bytes。当前 patch 结果为 0 retained / 11 quarantined，全局结果为 2 converted + 4 deferred + 84 quarantined。该门禁只验证离线表示与副作用边界，不执行或应用迁移资产，也不产生应用兼容结论。
 
 ```text
 python -B tools/convert_macwin_assets.py --check
