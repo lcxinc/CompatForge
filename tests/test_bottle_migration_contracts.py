@@ -370,6 +370,42 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         actual = "".join(self._canonical_json_chunks(value)).encode("utf-8") + b"\n"
         self.assertEqual(actual, expected)
 
+    def test_snapshot_document_surrogates_use_fixed_non_reflecting_error(self) -> None:
+        name = "bottle-snapshot.schema.json"
+        schema = self._schema(name)
+        string_fields = (
+            ("schema-version", ("schemaVersion",)),
+            ("legacy-format", ("legacyFormat",)),
+            ("bottle-id", ("bottleId",)),
+            ("entry-path", ("entries", 0, "path")),
+            ("entry-kind", ("entries", 0, "kind")),
+            ("file-digest", ("entries", 1, "digest")),
+            ("link-target", ("entries", 2, "target")),
+        )
+        for surrogate_kind, surrogate in (
+            ("high", "\ud800"),
+            ("low", "\udfff"),
+        ):
+            for field, pointer in string_fields:
+                value = copy.deepcopy(self._instances()[name])
+                target = value
+                for component in pointer[:-1]:
+                    target = target[component]
+                target[pointer[-1]] = f"secret-{surrogate}"
+
+                with self.subTest(surrogate=surrogate_kind, field=field):
+                    with self.assertRaises(AssertionError) as caught:
+                        self._assert_document_valid(name, value, schema)
+                    error = caught.exception
+                    self.assertIs(type(error), AssertionError)
+                    self.assertEqual(
+                        str(error),
+                        "snapshot manifest contains invalid Unicode",
+                    )
+                    self.assertNotIn("secret", str(error))
+                    self.assertIsNone(error.__cause__)
+                    self.assertTrue(error.__suppress_context__)
+
     def test_records_are_sorted_and_unique(self) -> None:
         instances = self._instances()
         cases = []
@@ -523,13 +559,18 @@ class BottleMigrationSchemaTests(unittest.TestCase):
     @classmethod
     def _assert_snapshot_manifest_size(cls, value: object) -> None:
         canonical_size = 1  # The canonical trailing LF.
-        for chunk in cls._canonical_json_chunks(value):
-            canonical_size += len(chunk.encode("utf-8"))
-            if canonical_size > MAX_SNAPSHOT_MANIFEST_BYTES:
-                raise AssertionError(
-                    "snapshot manifest exceeds "
-                    f"{MAX_SNAPSHOT_MANIFEST_BYTES} UTF-8 bytes"
-                )
+        try:
+            for chunk in cls._canonical_json_chunks(value):
+                canonical_size += len(chunk.encode("utf-8"))
+                if canonical_size > MAX_SNAPSHOT_MANIFEST_BYTES:
+                    raise AssertionError(
+                        "snapshot manifest exceeds "
+                        f"{MAX_SNAPSHOT_MANIFEST_BYTES} UTF-8 bytes"
+                    )
+        except UnicodeEncodeError:
+            raise AssertionError(
+                "snapshot manifest contains invalid Unicode"
+            ) from None
 
     @classmethod
     def _walk(cls, value: object, location: str = "$"):
