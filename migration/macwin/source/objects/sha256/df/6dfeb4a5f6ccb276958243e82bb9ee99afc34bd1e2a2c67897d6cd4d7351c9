@@ -1,0 +1,2045 @@
+diff --git a/dlls/windows.graphics/Makefile.in b/dlls/windows.graphics/Makefile.in
+index ce91ff8f53e..71b3c1e852d 100644
+--- a/dlls/windows.graphics/Makefile.in
++++ b/dlls/windows.graphics/Makefile.in
+@@ -1,6 +1,7 @@
+ MODULE  = windows.graphics.dll
+-IMPORTS = combase
++IMPORTS = combase ole32 windowscodecs
+ 
+ SOURCES = \
+ 	classes.idl \
++	imaging.c \
+ 	main.c
+diff --git a/dlls/windows.graphics/classes.idl b/dlls/windows.graphics/classes.idl
+index 82ab26f70c5..9bbb9b164c4 100644
+--- a/dlls/windows.graphics/classes.idl
++++ b/dlls/windows.graphics/classes.idl
+@@ -22,8 +22,15 @@
+ #pragma winrt ns_prefix
+ 
+ import "windows.graphics.display.idl";
++import "windows.graphics.imaging.idl";
+ 
+ namespace Windows.Graphics.Display {
+     runtimeclass AdvancedColorInfo;
+     runtimeclass DisplayInformation;
+ }
++
++namespace Windows.Graphics.Imaging {
++    runtimeclass BitmapDecoder;
++    runtimeclass BitmapEncoder;
++    runtimeclass BitmapTransform;
++}
+diff --git a/dlls/windows.graphics/main.c b/dlls/windows.graphics/main.c
+index 25a571975e5..7f427474caa 100644
+--- a/dlls/windows.graphics/main.c
++++ b/dlls/windows.graphics/main.c
+@@ -194,5 +194,7 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
+     if (!wcscmp( name, RuntimeClass_Windows_Graphics_Display_DisplayInformation ))
+         IActivationFactory_QueryInterface( display_info_factory, &IID_IActivationFactory, (void **)factory );
+ 
++    if (!*factory) imaging_get_activation_factory( classid, factory );
++
+     return *factory ? S_OK : CLASS_E_CLASSNOTAVAILABLE;
+ }
+diff --git a/dlls/windows.graphics/private.h b/dlls/windows.graphics/private.h
+index 64e2920bb40..370eb901746 100644
+--- a/dlls/windows.graphics/private.h
++++ b/dlls/windows.graphics/private.h
+@@ -25,11 +25,21 @@
+ #include "winbase.h"
+ #include "winstring.h"
+ #include "activation.h"
++#include "objidl.h"
++#include "roapi.h"
++#include "wincodec.h"
+ #include "wine/debug.h"
+ 
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Graphics_Display
++#define WIDL_using_Windows_Graphics_Imaging
++#define WIDL_using_Windows_Storage_Streams
++#include "robuffer.h"
+ #include "windows.graphics.display.h"
++#include "windows.graphics.imaging.h"
++#include "windows.storage.streams.h"
++
++HRESULT imaging_get_activation_factory(HSTRING classid, IActivationFactory **factory);
+ 
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+     static inline impl_type *impl_from( iface_type *iface )                                        \
+diff --git a/include/windows.graphics.imaging.idl b/include/windows.graphics.imaging.idl
+index 5409481f043..e59bb6691f7 100644
+--- a/include/windows.graphics.imaging.idl
++++ b/include/windows.graphics.imaging.idl
+@@ -31,17 +31,36 @@ import "windows.storage.streams.idl";
+ namespace Windows.Graphics.Imaging {
+     typedef enum BitmapAlphaMode BitmapAlphaMode;
+     typedef enum BitmapBufferAccessMode BitmapBufferAccessMode;
++    typedef enum BitmapFlip BitmapFlip;
++    typedef enum BitmapInterpolationMode BitmapInterpolationMode;
+     typedef enum BitmapPixelFormat BitmapPixelFormat;
++    typedef enum BitmapRotation BitmapRotation;
++    typedef enum ColorManagementMode ColorManagementMode;
++    typedef enum ExifOrientationMode ExifOrientationMode;
+     typedef struct BitmapBounds BitmapBounds;
+     typedef struct BitmapPlaneDescription BitmapPlaneDescription;
+     typedef struct BitmapSize BitmapSize;
+ 
+     interface IBitmapBuffer;
++    interface IBitmapCodecInformation;
++    interface IBitmapDecoder;
++    interface IBitmapDecoderStatics;
++    interface IBitmapEncoder;
++    interface IBitmapEncoderStatics;
++    interface IBitmapFrame;
++    interface IBitmapTransform;
++    interface IPixelDataProvider;
+     interface ISoftwareBitmap;
+     interface ISoftwareBitmapFactory;
+     interface ISoftwareBitmapStatics;
+ 
+     runtimeclass BitmapBuffer;
++    runtimeclass BitmapCodecInformation;
++    runtimeclass BitmapDecoder;
++    runtimeclass BitmapEncoder;
++    runtimeclass BitmapFrame;
++    runtimeclass BitmapTransform;
++    runtimeclass PixelDataProvider;
+     runtimeclass SoftwareBitmap;
+ 
+     declare {
+@@ -52,6 +71,14 @@ namespace Windows.Graphics.Imaging {
+         interface Windows.Foundation.Collections.IVectorView<Windows.Graphics.Imaging.BitmapPixelFormat>;
+         interface Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.SoftwareBitmap *>;
+         interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.Graphics.Imaging.SoftwareBitmap *>;
++        interface Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapDecoder *>;
++        interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.Graphics.Imaging.BitmapDecoder *>;
++        interface Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapEncoder *>;
++        interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.Graphics.Imaging.BitmapEncoder *>;
++        interface Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapFrame *>;
++        interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.Graphics.Imaging.BitmapFrame *>;
++        interface Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.PixelDataProvider *>;
++        interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.Graphics.Imaging.PixelDataProvider *>;
+         interface Windows.Foundation.IReference<Windows.Graphics.Imaging.BitmapBounds>;
+     }
+ 
+@@ -71,6 +98,23 @@ namespace Windows.Graphics.Imaging {
+         Write     = 2,
+     };
+ 
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum BitmapFlip
++    {
++        None       = 0,
++        Horizontal = 1,
++        Vertical   = 2,
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum BitmapInterpolationMode
++    {
++        NearestNeighbor = 0,
++        Linear          = 1,
++        Cubic           = 2,
++        Fant            = 3,
++    };
++
+     [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+     enum BitmapPixelFormat
+     {
+@@ -90,6 +134,29 @@ namespace Windows.Graphics.Imaging {
+         Yuy2    = 107,
+     };
+ 
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum BitmapRotation
++    {
++        None                = 0,
++        Clockwise90Degrees  = 1,
++        Clockwise180Degrees = 2,
++        Clockwise270Degrees = 3,
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum ColorManagementMode
++    {
++        DoNotColorManage  = 0,
++        ColorManageToSRgb = 1,
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum ExifOrientationMode
++    {
++        IgnoreExifOrientation  = 0,
++        RespectExifOrientation = 1,
++    };
++
+     [contract(Windows.Foundation.UniversalApiContract, 1.0)]
+     struct BitmapBounds
+     {
+@@ -127,6 +194,170 @@ namespace Windows.Graphics.Imaging {
+         HRESULT GetPlaneDescription([in] INT32 index, [out, retval] Windows.Graphics.Imaging.BitmapPlaneDescription *value);
+     }
+ 
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapCodecInformation),
++        uuid(400caaf2-c4b0-4392-a3b0-6f6f9ba95cb4)
++    ]
++    interface IBitmapCodecInformation : IInspectable
++    {
++        [propget] HRESULT CodecId([out, retval] GUID *value);
++        [propget] HRESULT FileExtensions([out, retval] IInspectable **value);
++        [propget] HRESULT FriendlyName([out, retval] HSTRING *value);
++        [propget] HRESULT MimeTypes([out, retval] IInspectable **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapDecoder),
++        uuid(acef22ba-1d74-4c91-9dfc-9620745233e6)
++    ]
++    interface IBitmapDecoder : IInspectable
++    {
++        [propget] HRESULT BitmapContainerProperties([out, retval] IInspectable **value);
++        [propget] HRESULT DecoderInformation([out, retval] Windows.Graphics.Imaging.BitmapCodecInformation **value);
++        [propget] HRESULT FrameCount([out, retval] UINT32 *value);
++        HRESULT GetPreviewAsync([out, retval] IInspectable **value);
++        HRESULT GetFrameAsync([in] UINT32 index,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapFrame *> **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapDecoder),
++        uuid(438ccb26-bcef-4e95-bad6-23a822e58d01)
++    ]
++    interface IBitmapDecoderStatics : IInspectable
++    {
++        [propget] HRESULT BmpDecoderId([out, retval] GUID *value);
++        [propget] HRESULT JpegDecoderId([out, retval] GUID *value);
++        [propget] HRESULT PngDecoderId([out, retval] GUID *value);
++        [propget] HRESULT TiffDecoderId([out, retval] GUID *value);
++        [propget] HRESULT GifDecoderId([out, retval] GUID *value);
++        [propget] HRESULT JpegXRDecoderId([out, retval] GUID *value);
++        [propget] HRESULT IcoDecoderId([out, retval] GUID *value);
++        HRESULT GetDecoderInformationEnumerator([out, retval] IInspectable **value);
++        [overload("CreateAsync")] HRESULT CreateAsync(
++            [in] Windows.Storage.Streams.IRandomAccessStream *stream,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapDecoder *> **value);
++        [overload("CreateAsync")] HRESULT CreateWithIdAsync(
++            [in] GUID decoder_id,
++            [in] Windows.Storage.Streams.IRandomAccessStream *stream,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapDecoder *> **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapEncoder),
++        uuid(2bc468e3-e1f8-4b54-95e8-32919551ce62)
++    ]
++    interface IBitmapEncoder : IInspectable
++    {
++        [propget] HRESULT EncoderInformation([out, retval] Windows.Graphics.Imaging.BitmapCodecInformation **value);
++        [propget] HRESULT BitmapProperties([out, retval] IInspectable **value);
++        [propget] HRESULT BitmapContainerProperties([out, retval] IInspectable **value);
++        [propget] HRESULT IsThumbnailGenerated([out, retval] boolean *value);
++        [propput] HRESULT IsThumbnailGenerated([in] boolean value);
++        [propget] HRESULT GeneratedThumbnailWidth([out, retval] UINT32 *value);
++        [propput] HRESULT GeneratedThumbnailWidth([in] UINT32 value);
++        [propget] HRESULT GeneratedThumbnailHeight([out, retval] UINT32 *value);
++        [propput] HRESULT GeneratedThumbnailHeight([in] UINT32 value);
++        [propget] HRESULT BitmapTransform([out, retval] Windows.Graphics.Imaging.BitmapTransform **value);
++        HRESULT SetPixelData([in] Windows.Graphics.Imaging.BitmapPixelFormat format,
++            [in] Windows.Graphics.Imaging.BitmapAlphaMode alpha, [in] UINT32 width, [in] UINT32 height,
++            [in] DOUBLE dpi_x, [in] DOUBLE dpi_y, [in] UINT32 size, [in, size_is(size)] BYTE *pixels);
++        [overload("GoToNextFrameAsync")] HRESULT GoToNextFrameAsync(
++            [out, retval] Windows.Foundation.IAsyncAction **value);
++        [overload("GoToNextFrameAsync")] HRESULT GoToNextFrameWithEncodingOptionsAsync(
++            [in] IInspectable *options, [out, retval] Windows.Foundation.IAsyncAction **value);
++        HRESULT FlushAsync([out, retval] Windows.Foundation.IAsyncAction **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapEncoder),
++        uuid(a74356a7-a4e4-4eb9-8e40-564de7e1ccb2)
++    ]
++    interface IBitmapEncoderStatics : IInspectable
++    {
++        [propget] HRESULT BmpEncoderId([out, retval] GUID *value);
++        [propget] HRESULT JpegEncoderId([out, retval] GUID *value);
++        [propget] HRESULT PngEncoderId([out, retval] GUID *value);
++        [propget] HRESULT TiffEncoderId([out, retval] GUID *value);
++        [propget] HRESULT GifEncoderId([out, retval] GUID *value);
++        [propget] HRESULT JpegXREncoderId([out, retval] GUID *value);
++        HRESULT GetEncoderInformationEnumerator([out, retval] IInspectable **value);
++        [overload("CreateAsync")] HRESULT CreateAsync([in] GUID encoder_id,
++            [in] Windows.Storage.Streams.IRandomAccessStream *stream,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapEncoder *> **value);
++        [overload("CreateAsync")] HRESULT CreateWithEncodingOptionsAsync([in] GUID encoder_id,
++            [in] Windows.Storage.Streams.IRandomAccessStream *stream, [in] IInspectable *options,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapEncoder *> **value);
++        HRESULT CreateForTranscodingAsync([in] Windows.Storage.Streams.IRandomAccessStream *stream,
++            [in] Windows.Graphics.Imaging.BitmapDecoder *decoder,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapEncoder *> **value);
++        HRESULT CreateForInPlacePropertyEncodingAsync([in] Windows.Graphics.Imaging.BitmapDecoder *decoder,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.BitmapEncoder *> **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        uuid(72a49a1c-8081-438d-91bc-94ecfc8185c6)
++    ]
++    interface IBitmapFrame : IInspectable
++    {
++        HRESULT GetThumbnailAsync([out, retval] IInspectable **value);
++        [propget] HRESULT BitmapProperties([out, retval] IInspectable **value);
++        [propget] HRESULT BitmapPixelFormat([out, retval] Windows.Graphics.Imaging.BitmapPixelFormat *value);
++        [propget] HRESULT BitmapAlphaMode([out, retval] Windows.Graphics.Imaging.BitmapAlphaMode *value);
++        [propget] HRESULT DpiX([out, retval] DOUBLE *value);
++        [propget] HRESULT DpiY([out, retval] DOUBLE *value);
++        [propget] HRESULT PixelWidth([out, retval] UINT32 *value);
++        [propget] HRESULT PixelHeight([out, retval] UINT32 *value);
++        [propget] HRESULT OrientedPixelWidth([out, retval] UINT32 *value);
++        [propget] HRESULT OrientedPixelHeight([out, retval] UINT32 *value);
++        [overload("GetPixelDataAsync")] HRESULT GetPixelDataAsync(
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.PixelDataProvider *> **value);
++        [overload("GetPixelDataAsync")] HRESULT GetPixelDataTransformedAsync(
++            [in] Windows.Graphics.Imaging.BitmapPixelFormat format,
++            [in] Windows.Graphics.Imaging.BitmapAlphaMode alpha,
++            [in] Windows.Graphics.Imaging.BitmapTransform *transform,
++            [in] Windows.Graphics.Imaging.ExifOrientationMode orientation,
++            [in] Windows.Graphics.Imaging.ColorManagementMode color_management,
++            [out, retval] Windows.Foundation.IAsyncOperation<Windows.Graphics.Imaging.PixelDataProvider *> **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.BitmapTransform),
++        uuid(ae755344-e268-4d35-adcf-e995d31a8d34)
++    ]
++    interface IBitmapTransform : IInspectable
++    {
++        [propget] HRESULT ScaledWidth([out, retval] UINT32 *value);
++        [propput] HRESULT ScaledWidth([in] UINT32 value);
++        [propget] HRESULT ScaledHeight([out, retval] UINT32 *value);
++        [propput] HRESULT ScaledHeight([in] UINT32 value);
++        [propget] HRESULT InterpolationMode([out, retval] Windows.Graphics.Imaging.BitmapInterpolationMode *value);
++        [propput] HRESULT InterpolationMode([in] Windows.Graphics.Imaging.BitmapInterpolationMode value);
++        [propget] HRESULT Flip([out, retval] Windows.Graphics.Imaging.BitmapFlip *value);
++        [propput] HRESULT Flip([in] Windows.Graphics.Imaging.BitmapFlip value);
++        [propget] HRESULT Rotation([out, retval] Windows.Graphics.Imaging.BitmapRotation *value);
++        [propput] HRESULT Rotation([in] Windows.Graphics.Imaging.BitmapRotation value);
++        [propget] HRESULT Bounds([out, retval] Windows.Graphics.Imaging.BitmapBounds *value);
++        [propput] HRESULT Bounds([in] Windows.Graphics.Imaging.BitmapBounds value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Graphics.Imaging.PixelDataProvider),
++        uuid(dd831f25-185c-4595-9fb9-ccbe6ec18a6f)
++    ]
++    interface IPixelDataProvider : IInspectable
++    {
++        HRESULT DetachPixelData([out] UINT32 *size, [out, retval, size_is(,*size)] BYTE **pixels);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+         exclusiveto(Windows.Graphics.Imaging.SoftwareBitmap),
+@@ -231,6 +462,58 @@ namespace Windows.Graphics.Imaging {
+         interface Windows.Foundation.IClosable;
+     }
+ 
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile)
++    ]
++    runtimeclass BitmapCodecInformation
++    {
++        [default] interface Windows.Graphics.Imaging.IBitmapCodecInformation;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.Graphics.Imaging.IBitmapDecoderStatics, Windows.Foundation.UniversalApiContract, 1.0)
++    ]
++    runtimeclass BitmapDecoder
++    {
++        [default] interface Windows.Graphics.Imaging.IBitmapDecoder;
++        interface Windows.Graphics.Imaging.IBitmapFrame;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.Graphics.Imaging.IBitmapEncoderStatics, Windows.Foundation.UniversalApiContract, 1.0)
++    ]
++    runtimeclass BitmapEncoder
++    {
++        [default] interface Windows.Graphics.Imaging.IBitmapEncoder;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass BitmapFrame
++    {
++        [default] interface Windows.Graphics.Imaging.IBitmapFrame;
++    }
++
++    [
++        activatable(Windows.Foundation.UniversalApiContract, 1.0),
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile)
++    ]
++    runtimeclass BitmapTransform
++    {
++        [default] interface Windows.Graphics.Imaging.IBitmapTransform;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass PixelDataProvider
++    {
++        [default] interface Windows.Graphics.Imaging.IPixelDataProvider;
++    }
++
+     [
+         activatable(Windows.Graphics.Imaging.ISoftwareBitmapFactory, Windows.Foundation.UniversalApiContract, 1.0),
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+diff --git a/dlls/windows.graphics/imaging.c b/dlls/windows.graphics/imaging.c
+new file mode 100644
+index 00000000000..d640a860590
+--- /dev/null
++++ b/dlls/windows.graphics/imaging.c
+@@ -0,0 +1,1628 @@
++/* WinRT Windows.Graphics.Imaging implementation.
++ *
++ * Copyright 2026
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "private.h"
++#include <stdint.h>
++
++WINE_DEFAULT_DEBUG_CHANNEL(imaging);
++
++#define DEFINE_INSPECTABLE_STUBS(prefix, type) \
++    static HRESULT WINAPI prefix##_GetIids(type *iface, ULONG *count, IID **iids) \
++    { \
++        if (!count || !iids) return E_POINTER; \
++        *count = 0; \
++        *iids = NULL; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI prefix##_GetRuntimeClassName(type *iface, HSTRING *name) \
++    { \
++        if (!name) return E_POINTER; \
++        *name = NULL; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI prefix##_GetTrustLevel(type *iface, TrustLevel *level) \
++    { \
++        if (!level) return E_POINTER; \
++        *level = BaseTrust; \
++        return S_OK; \
++    }
++
++#define DEFINE_COMPLETED_ASYNC(name, op_type, op_vtbl_type, handler_type, result_type, op_iid, handler_invoke, result_addref, result_release) \
++    struct async_##name \
++    { \
++        op_type op_iface; \
++        IAsyncInfo info_iface; \
++        LONG ref; \
++        HRESULT hr; \
++        result_type *result; \
++        handler_type *handler; \
++    }; \
++    static inline struct async_##name *async_##name##_from_op(op_type *iface) \
++    { \
++        return CONTAINING_RECORD(iface, struct async_##name, op_iface); \
++    } \
++    static inline struct async_##name *async_##name##_from_info(IAsyncInfo *iface) \
++    { \
++        return CONTAINING_RECORD(iface, struct async_##name, info_iface); \
++    } \
++    static HRESULT WINAPI async_##name##_QueryInterface(op_type *iface, REFIID iid, void **out) \
++    { \
++        struct async_##name *impl = async_##name##_from_op(iface); \
++        if (!out) return E_POINTER; \
++        *out = NULL; \
++        if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) || IsEqualGUID(iid, &(op_iid))) \
++            *out = &impl->op_iface; \
++        else if (IsEqualGUID(iid, &IID_IAsyncInfo)) \
++            *out = &impl->info_iface; \
++        if (!*out) return E_NOINTERFACE; \
++        InterlockedIncrement(&impl->ref); \
++        return S_OK; \
++    } \
++    static ULONG WINAPI async_##name##_AddRef(op_type *iface) \
++    { \
++        return InterlockedIncrement(&async_##name##_from_op(iface)->ref); \
++    } \
++    static ULONG WINAPI async_##name##_Release(op_type *iface) \
++    { \
++        struct async_##name *impl = async_##name##_from_op(iface); \
++        ULONG ref = InterlockedDecrement(&impl->ref); \
++        if (!ref) \
++        { \
++            if (impl->handler) IUnknown_Release((IUnknown *)impl->handler); \
++            if (impl->result) result_release(impl->result); \
++            free(impl); \
++        } \
++        return ref; \
++    } \
++    DEFINE_INSPECTABLE_STUBS(async_##name, op_type) \
++    static HRESULT WINAPI async_##name##_put_Completed(op_type *iface, handler_type *handler) \
++    { \
++        struct async_##name *impl = async_##name##_from_op(iface); \
++        AsyncStatus status = SUCCEEDED(impl->hr) ? Completed : Error; \
++        if (!handler) return E_POINTER; \
++        if (impl->handler) return E_ILLEGAL_METHOD_CALL; \
++        IUnknown_AddRef((IUnknown *)handler); \
++        impl->handler = handler; \
++        async_##name##_AddRef(iface); \
++        handler_invoke(handler, iface, status); \
++        async_##name##_Release(iface); \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI async_##name##_get_Completed(op_type *iface, handler_type **handler) \
++    { \
++        struct async_##name *impl = async_##name##_from_op(iface); \
++        if (!handler) return E_POINTER; \
++        *handler = impl->handler; \
++        if (*handler) IUnknown_AddRef((IUnknown *)*handler); \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI async_##name##_GetResults(op_type *iface, result_type **result) \
++    { \
++        struct async_##name *impl = async_##name##_from_op(iface); \
++        if (!result) return E_POINTER; \
++        *result = NULL; \
++        if (FAILED(impl->hr)) return impl->hr; \
++        *result = impl->result; \
++        if (*result) result_addref(*result); \
++        return S_OK; \
++    } \
++    static const op_vtbl_type async_##name##_vtbl = \
++    { \
++        async_##name##_QueryInterface, async_##name##_AddRef, async_##name##_Release, \
++        async_##name##_GetIids, async_##name##_GetRuntimeClassName, async_##name##_GetTrustLevel, \
++        async_##name##_put_Completed, async_##name##_get_Completed, async_##name##_GetResults \
++    }; \
++    static HRESULT WINAPI async_##name##_info_QueryInterface(IAsyncInfo *iface, REFIID iid, void **out) \
++    { \
++        return async_##name##_QueryInterface(&async_##name##_from_info(iface)->op_iface, iid, out); \
++    } \
++    static ULONG WINAPI async_##name##_info_AddRef(IAsyncInfo *iface) \
++    { \
++        return async_##name##_AddRef(&async_##name##_from_info(iface)->op_iface); \
++    } \
++    static ULONG WINAPI async_##name##_info_Release(IAsyncInfo *iface) \
++    { \
++        return async_##name##_Release(&async_##name##_from_info(iface)->op_iface); \
++    } \
++    DEFINE_INSPECTABLE_STUBS(async_##name##_info, IAsyncInfo) \
++    static HRESULT WINAPI async_##name##_info_get_Id(IAsyncInfo *iface, UINT32 *id) \
++    { \
++        if (!id) return E_POINTER; \
++        *id = 1; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI async_##name##_info_get_Status(IAsyncInfo *iface, AsyncStatus *status) \
++    { \
++        struct async_##name *impl = async_##name##_from_info(iface); \
++        if (!status) return E_POINTER; \
++        *status = SUCCEEDED(impl->hr) ? Completed : Error; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI async_##name##_info_get_ErrorCode(IAsyncInfo *iface, HRESULT *hr) \
++    { \
++        if (!hr) return E_POINTER; \
++        *hr = async_##name##_from_info(iface)->hr; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI async_##name##_info_Cancel(IAsyncInfo *iface) { return S_OK; } \
++    static HRESULT WINAPI async_##name##_info_Close(IAsyncInfo *iface) { return S_OK; } \
++    static const IAsyncInfoVtbl async_##name##_info_vtbl = \
++    { \
++        async_##name##_info_QueryInterface, async_##name##_info_AddRef, async_##name##_info_Release, \
++        async_##name##_info_GetIids, async_##name##_info_GetRuntimeClassName, async_##name##_info_GetTrustLevel, \
++        async_##name##_info_get_Id, async_##name##_info_get_Status, async_##name##_info_get_ErrorCode, \
++        async_##name##_info_Cancel, async_##name##_info_Close \
++    }; \
++    static HRESULT async_##name##_create(result_type *result, HRESULT hr, op_type **out) \
++    { \
++        struct async_##name *impl; \
++        if (!out) return E_POINTER; \
++        *out = NULL; \
++        if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY; \
++        impl->op_iface.lpVtbl = &async_##name##_vtbl; \
++        impl->info_iface.lpVtbl = &async_##name##_info_vtbl; \
++        impl->ref = 1; \
++        impl->hr = hr; \
++        impl->result = result; \
++        if (result) result_addref(result); \
++        *out = &impl->op_iface; \
++        return S_OK; \
++    }
++
++DEFINE_COMPLETED_ASYNC(decoder, IAsyncOperation_BitmapDecoder, IAsyncOperation_BitmapDecoderVtbl,
++        IAsyncOperationCompletedHandler_BitmapDecoder, IBitmapDecoder, IID_IAsyncOperation_BitmapDecoder,
++        IAsyncOperationCompletedHandler_BitmapDecoder_Invoke, IBitmapDecoder_AddRef, IBitmapDecoder_Release)
++DEFINE_COMPLETED_ASYNC(encoder, IAsyncOperation_BitmapEncoder, IAsyncOperation_BitmapEncoderVtbl,
++        IAsyncOperationCompletedHandler_BitmapEncoder, IBitmapEncoder, IID_IAsyncOperation_BitmapEncoder,
++        IAsyncOperationCompletedHandler_BitmapEncoder_Invoke, IBitmapEncoder_AddRef, IBitmapEncoder_Release)
++DEFINE_COMPLETED_ASYNC(frame, IAsyncOperation_BitmapFrame, IAsyncOperation_BitmapFrameVtbl,
++        IAsyncOperationCompletedHandler_BitmapFrame, IBitmapFrame, IID_IAsyncOperation_BitmapFrame,
++        IAsyncOperationCompletedHandler_BitmapFrame_Invoke, IBitmapFrame_AddRef, IBitmapFrame_Release)
++DEFINE_COMPLETED_ASYNC(pixel, IAsyncOperation_PixelDataProvider, IAsyncOperation_PixelDataProviderVtbl,
++        IAsyncOperationCompletedHandler_PixelDataProvider, IPixelDataProvider,
++        IID_IAsyncOperation_PixelDataProvider, IAsyncOperationCompletedHandler_PixelDataProvider_Invoke,
++        IPixelDataProvider_AddRef, IPixelDataProvider_Release)
++
++struct async_action
++{
++    IAsyncAction IAsyncAction_iface;
++    IAsyncInfo IAsyncInfo_iface;
++    LONG ref;
++    HRESULT hr;
++    IAsyncActionCompletedHandler *handler;
++};
++
++static inline struct async_action *impl_from_IAsyncAction(IAsyncAction *iface)
++{
++    return CONTAINING_RECORD(iface, struct async_action, IAsyncAction_iface);
++}
++
++static inline struct async_action *impl_from_action_IAsyncInfo(IAsyncInfo *iface)
++{
++    return CONTAINING_RECORD(iface, struct async_action, IAsyncInfo_iface);
++}
++
++static HRESULT WINAPI async_action_QueryInterface(IAsyncAction *iface, REFIID iid, void **out)
++{
++    struct async_action *impl = impl_from_IAsyncAction(iface);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) || IsEqualGUID(iid, &IID_IAsyncAction))
++        *out = &impl->IAsyncAction_iface;
++    else if (IsEqualGUID(iid, &IID_IAsyncInfo))
++        *out = &impl->IAsyncInfo_iface;
++    if (!*out) return E_NOINTERFACE;
++    InterlockedIncrement(&impl->ref);
++    return S_OK;
++}
++
++static ULONG WINAPI async_action_AddRef(IAsyncAction *iface)
++{
++    return InterlockedIncrement(&impl_from_IAsyncAction(iface)->ref);
++}
++
++static ULONG WINAPI async_action_Release(IAsyncAction *iface)
++{
++    struct async_action *impl = impl_from_IAsyncAction(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref)
++    {
++        if (impl->handler) IAsyncActionCompletedHandler_Release(impl->handler);
++        free(impl);
++    }
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(async_action, IAsyncAction)
++
++static HRESULT WINAPI async_action_put_Completed(IAsyncAction *iface, IAsyncActionCompletedHandler *handler)
++{
++    struct async_action *impl = impl_from_IAsyncAction(iface);
++    AsyncStatus status = SUCCEEDED(impl->hr) ? Completed : Error;
++    if (!handler) return E_POINTER;
++    if (impl->handler) return E_ILLEGAL_METHOD_CALL;
++    IAsyncActionCompletedHandler_AddRef(handler);
++    impl->handler = handler;
++    IAsyncAction_AddRef(iface);
++    IAsyncActionCompletedHandler_Invoke(handler, iface, status);
++    IAsyncAction_Release(iface);
++    return S_OK;
++}
++
++static HRESULT WINAPI async_action_get_Completed(IAsyncAction *iface, IAsyncActionCompletedHandler **handler)
++{
++    struct async_action *impl = impl_from_IAsyncAction(iface);
++    if (!handler) return E_POINTER;
++    *handler = impl->handler;
++    if (*handler) IAsyncActionCompletedHandler_AddRef(*handler);
++    return S_OK;
++}
++
++static HRESULT WINAPI async_action_GetResults(IAsyncAction *iface)
++{
++    return impl_from_IAsyncAction(iface)->hr;
++}
++
++static const IAsyncActionVtbl async_action_vtbl =
++{
++    async_action_QueryInterface, async_action_AddRef, async_action_Release,
++    async_action_GetIids, async_action_GetRuntimeClassName, async_action_GetTrustLevel,
++    async_action_put_Completed, async_action_get_Completed, async_action_GetResults,
++};
++
++static HRESULT WINAPI action_info_QueryInterface(IAsyncInfo *iface, REFIID iid, void **out)
++{
++    return IAsyncAction_QueryInterface(&impl_from_action_IAsyncInfo(iface)->IAsyncAction_iface, iid, out);
++}
++
++static ULONG WINAPI action_info_AddRef(IAsyncInfo *iface)
++{
++    return IAsyncAction_AddRef(&impl_from_action_IAsyncInfo(iface)->IAsyncAction_iface);
++}
++
++static ULONG WINAPI action_info_Release(IAsyncInfo *iface)
++{
++    return IAsyncAction_Release(&impl_from_action_IAsyncInfo(iface)->IAsyncAction_iface);
++}
++
++DEFINE_INSPECTABLE_STUBS(action_info, IAsyncInfo)
++
++static HRESULT WINAPI action_info_get_Id(IAsyncInfo *iface, UINT32 *id)
++{
++    if (!id) return E_POINTER;
++    *id = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI action_info_get_Status(IAsyncInfo *iface, AsyncStatus *status)
++{
++    struct async_action *impl = impl_from_action_IAsyncInfo(iface);
++    if (!status) return E_POINTER;
++    *status = SUCCEEDED(impl->hr) ? Completed : Error;
++    return S_OK;
++}
++
++static HRESULT WINAPI action_info_get_ErrorCode(IAsyncInfo *iface, HRESULT *hr)
++{
++    if (!hr) return E_POINTER;
++    *hr = impl_from_action_IAsyncInfo(iface)->hr;
++    return S_OK;
++}
++
++static HRESULT WINAPI action_info_Cancel(IAsyncInfo *iface) { return S_OK; }
++static HRESULT WINAPI action_info_Close(IAsyncInfo *iface) { return S_OK; }
++
++static const IAsyncInfoVtbl action_info_vtbl =
++{
++    action_info_QueryInterface, action_info_AddRef, action_info_Release,
++    action_info_GetIids, action_info_GetRuntimeClassName, action_info_GetTrustLevel,
++    action_info_get_Id, action_info_get_Status, action_info_get_ErrorCode,
++    action_info_Cancel, action_info_Close,
++};
++
++static HRESULT async_action_create(HRESULT hr, IAsyncAction **out)
++{
++    struct async_action *impl;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IAsyncAction_iface.lpVtbl = &async_action_vtbl;
++    impl->IAsyncInfo_iface.lpVtbl = &action_info_vtbl;
++    impl->ref = 1;
++    impl->hr = hr;
++    *out = &impl->IAsyncAction_iface;
++    return S_OK;
++}
++
++static HRESULT wait_for_async(IInspectable *operation)
++{
++    IAsyncInfo *info;
++    AsyncStatus status;
++    HRESULT hr, error;
++    unsigned int elapsed = 0;
++
++    if (FAILED(hr = IInspectable_QueryInterface(operation, &IID_IAsyncInfo, (void **)&info))) return hr;
++    do
++    {
++        if (FAILED(hr = IAsyncInfo_get_Status(info, &status))) break;
++        if (status != Started) break;
++        Sleep(1);
++    } while (++elapsed < 30000);
++
++    if (SUCCEEDED(hr) && status == Error)
++    {
++        if (SUCCEEDED(IAsyncInfo_get_ErrorCode(info, &error))) hr = error;
++        else hr = E_FAIL;
++    }
++    else if (SUCCEEDED(hr) && status == Canceled) hr = E_ABORT;
++    else if (SUCCEEDED(hr) && status == Started) hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
++    IAsyncInfo_Release(info);
++    return hr;
++}
++
++static HRESULT create_buffer(UINT32 capacity, IBuffer **buffer)
++{
++    IActivationFactory *factory = NULL;
++    IBufferFactory *buffer_factory = NULL;
++    HSTRING class_name = NULL;
++    HRESULT hr;
++
++    if (!buffer) return E_POINTER;
++    *buffer = NULL;
++    if (FAILED(hr = WindowsCreateString(RuntimeClass_Windows_Storage_Streams_Buffer,
++            wcslen(RuntimeClass_Windows_Storage_Streams_Buffer), &class_name))) return hr;
++    hr = RoGetActivationFactory(class_name, &IID_IActivationFactory, (void **)&factory);
++    WindowsDeleteString(class_name);
++    if (SUCCEEDED(hr)) hr = IActivationFactory_QueryInterface(factory, &IID_IBufferFactory,
++            (void **)&buffer_factory);
++    if (SUCCEEDED(hr)) hr = IBufferFactory_Create(buffer_factory, capacity, buffer);
++    if (buffer_factory) IBufferFactory_Release(buffer_factory);
++    if (factory) IActivationFactory_Release(factory);
++    return hr;
++}
++
++static HRESULT random_access_stream_to_istream(IRandomAccessStream *stream, IStream **out)
++{
++    IAsyncOperationWithProgress_IBuffer_UINT32 *operation = NULL;
++    IBufferByteAccess *byte_access = NULL;
++    IInputStream *input = NULL;
++    IBuffer *buffer = NULL, *result = NULL;
++    HGLOBAL global = NULL;
++    UINT64 size64;
++    UINT32 size, length;
++    BYTE *source;
++    void *destination;
++    HRESULT hr;
++
++    if (!stream || !out) return E_POINTER;
++    *out = NULL;
++    if (SUCCEEDED(IRandomAccessStream_QueryInterface(stream, &IID_IStream, (void **)out))) return S_OK;
++    if (FAILED(hr = IRandomAccessStream_get_Size(stream, &size64))) return hr;
++    if (size64 > UINT32_MAX) return HRESULT_FROM_WIN32(ERROR_FILE_TOO_LARGE);
++    size = size64;
++    if (FAILED(hr = create_buffer(size, &buffer))) goto done;
++    if (FAILED(hr = IRandomAccessStream_Seek(stream, 0))) goto done;
++    hr = IRandomAccessStream_QueryInterface(stream, &IID_IInputStream, (void **)&input);
++    if (FAILED(hr) && FAILED(hr = IRandomAccessStream_GetInputStreamAt(stream, 0, &input))) goto done;
++    if (FAILED(hr = IInputStream_ReadAsync(input, buffer, size, InputStreamOptions_None, &operation))) goto done;
++    if (FAILED(hr = wait_for_async((IInspectable *)operation))) goto done;
++    if (FAILED(hr = IAsyncOperationWithProgress_IBuffer_UINT32_GetResults(operation, &result))) goto done;
++    if (FAILED(hr = IBuffer_get_Length(result, &length))) goto done;
++    if (FAILED(hr = IBuffer_QueryInterface(result, &IID_IBufferByteAccess, (void **)&byte_access))) goto done;
++    if (FAILED(hr = IBufferByteAccess_Buffer(byte_access, &source))) goto done;
++    if (!(global = GlobalAlloc(GMEM_MOVEABLE, length ? length : 1)))
++    {
++        hr = E_OUTOFMEMORY;
++        goto done;
++    }
++    if (!(destination = GlobalLock(global)))
++    {
++        hr = HRESULT_FROM_WIN32(GetLastError());
++        goto done;
++    }
++    if (length) memcpy(destination, source, length);
++    GlobalUnlock(global);
++    if (FAILED(hr = CreateStreamOnHGlobal(global, TRUE, out))) goto done;
++    global = NULL;
++
++done:
++    if (global) GlobalFree(global);
++    if (byte_access) IBufferByteAccess_Release(byte_access);
++    if (result) IBuffer_Release(result);
++    if (operation) IAsyncOperationWithProgress_IBuffer_UINT32_Release(operation);
++    if (input) IInputStream_Release(input);
++    if (buffer) IBuffer_Release(buffer);
++    return hr;
++}
++
++static HRESULT istream_to_random_access_stream(IStream *source, IRandomAccessStream *stream)
++{
++    IAsyncOperationWithProgress_UINT32_UINT32 *write_operation = NULL;
++    IAsyncOperation_boolean *flush_operation = NULL;
++    IBufferByteAccess *byte_access = NULL;
++    IOutputStream *output = NULL;
++    IBuffer *buffer = NULL;
++    HGLOBAL global;
++    UINT32 written, size;
++    boolean flushed;
++    BYTE *destination;
++    void *data = NULL;
++    HRESULT hr;
++
++    if (FAILED(hr = GetHGlobalFromStream(source, &global))) return hr;
++    if (GlobalSize(global) > UINT32_MAX) return HRESULT_FROM_WIN32(ERROR_FILE_TOO_LARGE);
++    size = GlobalSize(global);
++    if (!(data = GlobalLock(global))) return HRESULT_FROM_WIN32(GetLastError());
++    if (FAILED(hr = create_buffer(size, &buffer))) goto done;
++    if (FAILED(hr = IBuffer_QueryInterface(buffer, &IID_IBufferByteAccess, (void **)&byte_access))) goto done;
++    if (FAILED(hr = IBufferByteAccess_Buffer(byte_access, &destination))) goto done;
++    if (size) memcpy(destination, data, size);
++    if (FAILED(hr = IBuffer_put_Length(buffer, size))) goto done;
++    if (FAILED(hr = IRandomAccessStream_put_Size(stream, 0))) goto done;
++    if (FAILED(hr = IRandomAccessStream_Seek(stream, 0))) goto done;
++    hr = IRandomAccessStream_QueryInterface(stream, &IID_IOutputStream, (void **)&output);
++    if (FAILED(hr) && FAILED(hr = IRandomAccessStream_GetOutputStreamAt(stream, 0, &output))) goto done;
++    if (FAILED(hr = IOutputStream_WriteAsync(output, buffer, &write_operation))) goto done;
++    if (FAILED(hr = wait_for_async((IInspectable *)write_operation))) goto done;
++    if (FAILED(hr = IAsyncOperationWithProgress_UINT32_UINT32_GetResults(write_operation, &written))) goto done;
++    if (written != size)
++    {
++        hr = STG_E_MEDIUMFULL;
++        goto done;
++    }
++    if (FAILED(hr = IOutputStream_FlushAsync(output, &flush_operation))) goto done;
++    if (FAILED(hr = wait_for_async((IInspectable *)flush_operation))) goto done;
++    if (FAILED(hr = IAsyncOperation_boolean_GetResults(flush_operation, &flushed))) goto done;
++    if (!flushed) hr = STG_E_WRITEFAULT;
++
++done:
++    if (data) GlobalUnlock(global);
++    if (flush_operation) IAsyncOperation_boolean_Release(flush_operation);
++    if (write_operation) IAsyncOperationWithProgress_UINT32_UINT32_Release(write_operation);
++    if (output) IOutputStream_Release(output);
++    if (byte_access) IBufferByteAccess_Release(byte_access);
++    if (buffer) IBuffer_Release(buffer);
++    return hr;
++}
++
++struct bitmap_transform
++{
++    IBitmapTransform IBitmapTransform_iface;
++    LONG ref;
++    UINT32 scaled_width, scaled_height;
++    BitmapInterpolationMode interpolation;
++    BitmapFlip flip;
++    BitmapRotation rotation;
++    BitmapBounds bounds;
++};
++
++static inline struct bitmap_transform *impl_from_IBitmapTransform(IBitmapTransform *iface)
++{
++    return CONTAINING_RECORD(iface, struct bitmap_transform, IBitmapTransform_iface);
++}
++
++static HRESULT WINAPI transform_QueryInterface(IBitmapTransform *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IBitmapTransform)) *out = iface;
++    if (!*out) return E_NOINTERFACE;
++    IBitmapTransform_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI transform_AddRef(IBitmapTransform *iface)
++{
++    return InterlockedIncrement(&impl_from_IBitmapTransform(iface)->ref);
++}
++
++static ULONG WINAPI transform_Release(IBitmapTransform *iface)
++{
++    struct bitmap_transform *impl = impl_from_IBitmapTransform(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref) free(impl);
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(transform, IBitmapTransform)
++
++#define TRANSFORM_UINT_PROPERTY(name, member) \
++    static HRESULT WINAPI transform_get_##name(IBitmapTransform *iface, UINT32 *value) \
++    { \
++        if (!value) return E_POINTER; \
++        *value = impl_from_IBitmapTransform(iface)->member; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI transform_put_##name(IBitmapTransform *iface, UINT32 value) \
++    { \
++        impl_from_IBitmapTransform(iface)->member = value; \
++        return S_OK; \
++    }
++
++TRANSFORM_UINT_PROPERTY(ScaledWidth, scaled_width)
++TRANSFORM_UINT_PROPERTY(ScaledHeight, scaled_height)
++
++static HRESULT WINAPI transform_get_InterpolationMode(IBitmapTransform *iface, BitmapInterpolationMode *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IBitmapTransform(iface)->interpolation;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_put_InterpolationMode(IBitmapTransform *iface, BitmapInterpolationMode value)
++{
++    impl_from_IBitmapTransform(iface)->interpolation = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_get_Flip(IBitmapTransform *iface, BitmapFlip *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IBitmapTransform(iface)->flip;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_put_Flip(IBitmapTransform *iface, BitmapFlip value)
++{
++    impl_from_IBitmapTransform(iface)->flip = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_get_Rotation(IBitmapTransform *iface, BitmapRotation *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IBitmapTransform(iface)->rotation;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_put_Rotation(IBitmapTransform *iface, BitmapRotation value)
++{
++    impl_from_IBitmapTransform(iface)->rotation = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_get_Bounds(IBitmapTransform *iface, BitmapBounds *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IBitmapTransform(iface)->bounds;
++    return S_OK;
++}
++
++static HRESULT WINAPI transform_put_Bounds(IBitmapTransform *iface, BitmapBounds value)
++{
++    impl_from_IBitmapTransform(iface)->bounds = value;
++    return S_OK;
++}
++
++static const IBitmapTransformVtbl transform_vtbl =
++{
++    transform_QueryInterface, transform_AddRef, transform_Release,
++    transform_GetIids, transform_GetRuntimeClassName, transform_GetTrustLevel,
++    transform_get_ScaledWidth, transform_put_ScaledWidth,
++    transform_get_ScaledHeight, transform_put_ScaledHeight,
++    transform_get_InterpolationMode, transform_put_InterpolationMode,
++    transform_get_Flip, transform_put_Flip,
++    transform_get_Rotation, transform_put_Rotation,
++    transform_get_Bounds, transform_put_Bounds,
++};
++
++static HRESULT bitmap_transform_create(IBitmapTransform **out)
++{
++    struct bitmap_transform *impl;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IBitmapTransform_iface.lpVtbl = &transform_vtbl;
++    impl->ref = 1;
++    impl->interpolation = BitmapInterpolationMode_Fant;
++    *out = &impl->IBitmapTransform_iface;
++    return S_OK;
++}
++
++struct codec_information
++{
++    IBitmapCodecInformation IBitmapCodecInformation_iface;
++    LONG ref;
++    GUID codec_id;
++};
++
++static inline struct codec_information *impl_from_IBitmapCodecInformation(IBitmapCodecInformation *iface)
++{
++    return CONTAINING_RECORD(iface, struct codec_information, IBitmapCodecInformation_iface);
++}
++
++static HRESULT WINAPI codec_QueryInterface(IBitmapCodecInformation *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IBitmapCodecInformation)) *out = iface;
++    if (!*out) return E_NOINTERFACE;
++    IBitmapCodecInformation_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI codec_AddRef(IBitmapCodecInformation *iface)
++{
++    return InterlockedIncrement(&impl_from_IBitmapCodecInformation(iface)->ref);
++}
++
++static ULONG WINAPI codec_Release(IBitmapCodecInformation *iface)
++{
++    struct codec_information *impl = impl_from_IBitmapCodecInformation(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref) free(impl);
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(codec, IBitmapCodecInformation)
++
++static HRESULT WINAPI codec_get_CodecId(IBitmapCodecInformation *iface, GUID *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IBitmapCodecInformation(iface)->codec_id;
++    return S_OK;
++}
++
++static HRESULT WINAPI codec_get_FileExtensions(IBitmapCodecInformation *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI codec_get_FriendlyName(IBitmapCodecInformation *iface, HSTRING *value)
++{
++    static const WCHAR name[] = L"Wine WIC image codec";
++    if (!value) return E_POINTER;
++    return WindowsCreateString(name, ARRAY_SIZE(name) - 1, value);
++}
++
++static HRESULT WINAPI codec_get_MimeTypes(IBitmapCodecInformation *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static const IBitmapCodecInformationVtbl codec_vtbl =
++{
++    codec_QueryInterface, codec_AddRef, codec_Release,
++    codec_GetIids, codec_GetRuntimeClassName, codec_GetTrustLevel,
++    codec_get_CodecId, codec_get_FileExtensions, codec_get_FriendlyName, codec_get_MimeTypes,
++};
++
++static HRESULT codec_information_create(REFGUID codec_id, IBitmapCodecInformation **out)
++{
++    struct codec_information *impl;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IBitmapCodecInformation_iface.lpVtbl = &codec_vtbl;
++    impl->ref = 1;
++    impl->codec_id = *codec_id;
++    *out = &impl->IBitmapCodecInformation_iface;
++    return S_OK;
++}
++
++struct pixel_data_provider
++{
++    IPixelDataProvider IPixelDataProvider_iface;
++    LONG ref;
++    BYTE *pixels;
++    UINT32 size;
++};
++
++static inline struct pixel_data_provider *impl_from_IPixelDataProvider(IPixelDataProvider *iface)
++{
++    return CONTAINING_RECORD(iface, struct pixel_data_provider, IPixelDataProvider_iface);
++}
++
++static HRESULT WINAPI pixel_provider_QueryInterface(IPixelDataProvider *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IPixelDataProvider)) *out = iface;
++    if (!*out) return E_NOINTERFACE;
++    IPixelDataProvider_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI pixel_provider_AddRef(IPixelDataProvider *iface)
++{
++    return InterlockedIncrement(&impl_from_IPixelDataProvider(iface)->ref);
++}
++
++static ULONG WINAPI pixel_provider_Release(IPixelDataProvider *iface)
++{
++    struct pixel_data_provider *impl = impl_from_IPixelDataProvider(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref)
++    {
++        CoTaskMemFree(impl->pixels);
++        free(impl);
++    }
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(pixel_provider, IPixelDataProvider)
++
++static HRESULT WINAPI pixel_provider_DetachPixelData(IPixelDataProvider *iface, UINT32 *size, BYTE **pixels)
++{
++    struct pixel_data_provider *impl = impl_from_IPixelDataProvider(iface);
++    if (!size || !pixels) return E_POINTER;
++    *size = impl->size;
++    *pixels = impl->pixels;
++    impl->size = 0;
++    impl->pixels = NULL;
++    return S_OK;
++}
++
++static const IPixelDataProviderVtbl pixel_provider_vtbl =
++{
++    pixel_provider_QueryInterface, pixel_provider_AddRef, pixel_provider_Release,
++    pixel_provider_GetIids, pixel_provider_GetRuntimeClassName, pixel_provider_GetTrustLevel,
++    pixel_provider_DetachPixelData,
++};
++
++static HRESULT pixel_data_provider_create(BYTE *pixels, UINT32 size, IPixelDataProvider **out)
++{
++    struct pixel_data_provider *impl;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IPixelDataProvider_iface.lpVtbl = &pixel_provider_vtbl;
++    impl->ref = 1;
++    impl->pixels = pixels;
++    impl->size = size;
++    *out = &impl->IPixelDataProvider_iface;
++    return S_OK;
++}
++
++struct bitmap_decoder
++{
++    IBitmapDecoder IBitmapDecoder_iface;
++    IBitmapFrame IBitmapFrame_iface;
++    LONG ref;
++    IWICBitmapDecoder *wic_decoder;
++    IWICBitmapFrameDecode *wic_frame;
++    GUID container;
++    GUID codec_id;
++    UINT32 width, height;
++    DOUBLE dpi_x, dpi_y;
++};
++
++static inline struct bitmap_decoder *impl_from_IBitmapDecoder(IBitmapDecoder *iface)
++{
++    return CONTAINING_RECORD(iface, struct bitmap_decoder, IBitmapDecoder_iface);
++}
++
++static inline struct bitmap_decoder *impl_from_IBitmapFrame(IBitmapFrame *iface)
++{
++    return CONTAINING_RECORD(iface, struct bitmap_decoder, IBitmapFrame_iface);
++}
++
++static HRESULT decoder_query(struct bitmap_decoder *impl, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IBitmapDecoder)) *out = &impl->IBitmapDecoder_iface;
++    else if (IsEqualGUID(iid, &IID_IBitmapFrame)) *out = &impl->IBitmapFrame_iface;
++    if (!*out) return E_NOINTERFACE;
++    InterlockedIncrement(&impl->ref);
++    return S_OK;
++}
++
++static HRESULT WINAPI decoder_QueryInterface(IBitmapDecoder *iface, REFIID iid, void **out)
++{
++    return decoder_query(impl_from_IBitmapDecoder(iface), iid, out);
++}
++
++static ULONG WINAPI decoder_AddRef(IBitmapDecoder *iface)
++{
++    return InterlockedIncrement(&impl_from_IBitmapDecoder(iface)->ref);
++}
++
++static ULONG WINAPI decoder_Release(IBitmapDecoder *iface)
++{
++    struct bitmap_decoder *impl = impl_from_IBitmapDecoder(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref)
++    {
++        if (impl->wic_frame) IWICBitmapFrameDecode_Release(impl->wic_frame);
++        if (impl->wic_decoder) IWICBitmapDecoder_Release(impl->wic_decoder);
++        free(impl);
++    }
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(decoder_object, IBitmapDecoder)
++
++static HRESULT WINAPI decoder_get_BitmapContainerProperties(IBitmapDecoder *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI decoder_get_DecoderInformation(IBitmapDecoder *iface, IBitmapCodecInformation **value)
++{
++    return codec_information_create(&impl_from_IBitmapDecoder(iface)->codec_id, value);
++}
++
++static HRESULT WINAPI decoder_get_FrameCount(IBitmapDecoder *iface, UINT32 *value)
++{
++    if (!value) return E_POINTER;
++    return IWICBitmapDecoder_GetFrameCount(impl_from_IBitmapDecoder(iface)->wic_decoder, value);
++}
++
++static HRESULT WINAPI decoder_GetPreviewAsync(IBitmapDecoder *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI decoder_GetFrameAsync(IBitmapDecoder *iface, UINT32 index,
++        IAsyncOperation_BitmapFrame **value)
++{
++    struct bitmap_decoder *impl = impl_from_IBitmapDecoder(iface);
++    if (index) return E_BOUNDS;
++    return async_frame_create(&impl->IBitmapFrame_iface, S_OK, value);
++}
++
++static const IBitmapDecoderVtbl decoder_vtbl =
++{
++    decoder_QueryInterface, decoder_AddRef, decoder_Release,
++    decoder_object_GetIids, decoder_object_GetRuntimeClassName, decoder_object_GetTrustLevel,
++    decoder_get_BitmapContainerProperties, decoder_get_DecoderInformation,
++    decoder_get_FrameCount, decoder_GetPreviewAsync, decoder_GetFrameAsync,
++};
++
++static HRESULT WINAPI frame_QueryInterface(IBitmapFrame *iface, REFIID iid, void **out)
++{
++    return decoder_query(impl_from_IBitmapFrame(iface), iid, out);
++}
++
++static ULONG WINAPI frame_AddRef(IBitmapFrame *iface)
++{
++    return InterlockedIncrement(&impl_from_IBitmapFrame(iface)->ref);
++}
++
++static ULONG WINAPI frame_Release(IBitmapFrame *iface)
++{
++    struct bitmap_decoder *impl = impl_from_IBitmapFrame(iface);
++    return decoder_Release(&impl->IBitmapDecoder_iface);
++}
++
++DEFINE_INSPECTABLE_STUBS(frame_object, IBitmapFrame)
++
++static HRESULT WINAPI frame_GetThumbnailAsync(IBitmapFrame *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI frame_get_BitmapProperties(IBitmapFrame *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI frame_get_BitmapPixelFormat(IBitmapFrame *iface, BitmapPixelFormat *value)
++{
++    if (!value) return E_POINTER;
++    *value = BitmapPixelFormat_Bgra8;
++    return S_OK;
++}
++
++static HRESULT WINAPI frame_get_BitmapAlphaMode(IBitmapFrame *iface, BitmapAlphaMode *value)
++{
++    if (!value) return E_POINTER;
++    *value = BitmapAlphaMode_Premultiplied;
++    return S_OK;
++}
++
++#define FRAME_SCALAR_PROPERTY(name, type, member) \
++    static HRESULT WINAPI frame_get_##name(IBitmapFrame *iface, type *value) \
++    { \
++        if (!value) return E_POINTER; \
++        *value = impl_from_IBitmapFrame(iface)->member; \
++        return S_OK; \
++    }
++
++FRAME_SCALAR_PROPERTY(DpiX, DOUBLE, dpi_x)
++FRAME_SCALAR_PROPERTY(DpiY, DOUBLE, dpi_y)
++FRAME_SCALAR_PROPERTY(PixelWidth, UINT32, width)
++FRAME_SCALAR_PROPERTY(PixelHeight, UINT32, height)
++FRAME_SCALAR_PROPERTY(OrientedPixelWidth, UINT32, width)
++FRAME_SCALAR_PROPERTY(OrientedPixelHeight, UINT32, height)
++
++static WICBitmapInterpolationMode map_interpolation(BitmapInterpolationMode mode);
++static HRESULT WINAPI frame_GetPixelDataTransformedAsync(IBitmapFrame *iface, BitmapPixelFormat format,
++        BitmapAlphaMode alpha, IBitmapTransform *transform, ExifOrientationMode orientation,
++        ColorManagementMode color_management, IAsyncOperation_PixelDataProvider **value);
++
++static HRESULT WINAPI frame_GetPixelDataAsync(IBitmapFrame *iface, IAsyncOperation_PixelDataProvider **value)
++{
++    IBitmapTransform *transform = NULL;
++    HRESULT hr;
++
++    if (FAILED(hr = bitmap_transform_create(&transform))) return hr;
++    hr = frame_GetPixelDataTransformedAsync(iface, BitmapPixelFormat_Bgra8,
++            BitmapAlphaMode_Premultiplied, transform, ExifOrientationMode_IgnoreExifOrientation,
++            ColorManagementMode_DoNotColorManage, value);
++    IBitmapTransform_Release(transform);
++    return hr;
++}
++
++static HRESULT WINAPI frame_GetPixelDataTransformedAsync(IBitmapFrame *iface, BitmapPixelFormat format,
++        BitmapAlphaMode alpha, IBitmapTransform *transform, ExifOrientationMode orientation,
++        ColorManagementMode color_management, IAsyncOperation_PixelDataProvider **value)
++{
++    struct bitmap_decoder *impl = impl_from_IBitmapFrame(iface);
++    struct bitmap_transform *transform_impl;
++    IWICImagingFactory *factory = NULL;
++    IWICBitmapScaler *scaler = NULL;
++    IWICBitmapClipper *clipper = NULL;
++    IWICFormatConverter *converter = NULL;
++    IWICBitmapSource *source;
++    IPixelDataProvider *provider = NULL;
++    WICRect rect;
++    UINT32 width, height, stride, size;
++    BYTE *pixels = NULL;
++    HRESULT hr, create_hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!transform || format != BitmapPixelFormat_Bgra8 || alpha != BitmapAlphaMode_Premultiplied)
++        return async_pixel_create(NULL, E_NOTIMPL, value);
++    transform_impl = impl_from_IBitmapTransform(transform);
++    width = transform_impl->scaled_width ? transform_impl->scaled_width : impl->width;
++    height = transform_impl->scaled_height ? transform_impl->scaled_height : impl->height;
++    source = (IWICBitmapSource *)impl->wic_frame;
++    if (FAILED(hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
++            &IID_IWICImagingFactory, (void **)&factory))) goto done;
++    if (width != impl->width || height != impl->height)
++    {
++        if (FAILED(hr = IWICImagingFactory_CreateBitmapScaler(factory, &scaler))) goto done;
++        if (FAILED(hr = IWICBitmapScaler_Initialize(scaler, source, width, height,
++                map_interpolation(transform_impl->interpolation)))) goto done;
++        source = (IWICBitmapSource *)scaler;
++    }
++    if (transform_impl->bounds.Width && transform_impl->bounds.Height)
++    {
++        rect.X = transform_impl->bounds.X;
++        rect.Y = transform_impl->bounds.Y;
++        rect.Width = transform_impl->bounds.Width;
++        rect.Height = transform_impl->bounds.Height;
++        if (FAILED(hr = IWICImagingFactory_CreateBitmapClipper(factory, &clipper))) goto done;
++        if (FAILED(hr = IWICBitmapClipper_Initialize(clipper, source, &rect))) goto done;
++        source = (IWICBitmapSource *)clipper;
++        width = rect.Width;
++        height = rect.Height;
++    }
++    if (width > UINT32_MAX / 4 || !width || !height || height > UINT32_MAX / (width * 4))
++    {
++        hr = E_INVALIDARG;
++        goto done;
++    }
++    stride = width * 4;
++    size = stride * height;
++    if (FAILED(hr = IWICImagingFactory_CreateFormatConverter(factory, &converter))) goto done;
++    if (FAILED(hr = IWICFormatConverter_Initialize(converter, source, &GUID_WICPixelFormat32bppPBGRA,
++            WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom))) goto done;
++    if (!(pixels = CoTaskMemAlloc(size)))
++    {
++        hr = E_OUTOFMEMORY;
++        goto done;
++    }
++    if (FAILED(hr = IWICFormatConverter_CopyPixels(converter, NULL, stride, size, pixels))) goto done;
++    if (FAILED(hr = pixel_data_provider_create(pixels, size, &provider))) goto done;
++    pixels = NULL;
++
++done:
++    create_hr = async_pixel_create(provider, hr, value);
++    if (provider) IPixelDataProvider_Release(provider);
++    CoTaskMemFree(pixels);
++    if (converter) IWICFormatConverter_Release(converter);
++    if (clipper) IWICBitmapClipper_Release(clipper);
++    if (scaler) IWICBitmapScaler_Release(scaler);
++    if (factory) IWICImagingFactory_Release(factory);
++    return create_hr;
++}
++
++static const IBitmapFrameVtbl frame_vtbl =
++{
++    frame_QueryInterface, frame_AddRef, frame_Release,
++    frame_object_GetIids, frame_object_GetRuntimeClassName, frame_object_GetTrustLevel,
++    frame_GetThumbnailAsync, frame_get_BitmapProperties, frame_get_BitmapPixelFormat,
++    frame_get_BitmapAlphaMode, frame_get_DpiX, frame_get_DpiY, frame_get_PixelWidth,
++    frame_get_PixelHeight, frame_get_OrientedPixelWidth, frame_get_OrientedPixelHeight,
++    frame_GetPixelDataAsync, frame_GetPixelDataTransformedAsync,
++};
++
++static const GUID *decoder_id_from_container(REFGUID container)
++{
++    static const GUID unknown_codec;
++    if (IsEqualGUID(container, &GUID_ContainerFormatBmp)) return &CLSID_WICBmpDecoder;
++    if (IsEqualGUID(container, &GUID_ContainerFormatJpeg)) return &CLSID_WICJpegDecoder;
++    if (IsEqualGUID(container, &GUID_ContainerFormatPng)) return &CLSID_WICPngDecoder2;
++    if (IsEqualGUID(container, &GUID_ContainerFormatTiff)) return &CLSID_WICTiffDecoder;
++    if (IsEqualGUID(container, &GUID_ContainerFormatGif)) return &CLSID_WICGifDecoder;
++    if (IsEqualGUID(container, &GUID_ContainerFormatWmp)) return &CLSID_WICWmpDecoder;
++    if (IsEqualGUID(container, &GUID_ContainerFormatIco)) return &CLSID_WICIcoDecoder;
++    return &unknown_codec;
++}
++
++static HRESULT bitmap_decoder_create(IRandomAccessStream *stream, IBitmapDecoder **out)
++{
++    struct bitmap_decoder *impl = NULL;
++    IWICImagingFactory *factory = NULL;
++    IStream *input = NULL;
++    const GUID *codec_id;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!stream) return E_INVALIDARG;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IBitmapDecoder_iface.lpVtbl = &decoder_vtbl;
++    impl->IBitmapFrame_iface.lpVtbl = &frame_vtbl;
++    impl->ref = 1;
++    if (FAILED(hr = random_access_stream_to_istream(stream, &input))) goto failed;
++    if (FAILED(hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
++            &IID_IWICImagingFactory, (void **)&factory))) goto failed;
++    if (FAILED(hr = IWICImagingFactory_CreateDecoderFromStream(factory, input, NULL,
++            WICDecodeMetadataCacheOnDemand, &impl->wic_decoder))) goto failed;
++    if (FAILED(hr = IWICBitmapDecoder_GetContainerFormat(impl->wic_decoder, &impl->container))) goto failed;
++    if (FAILED(hr = IWICBitmapDecoder_GetFrame(impl->wic_decoder, 0, &impl->wic_frame))) goto failed;
++    if (FAILED(hr = IWICBitmapFrameDecode_GetSize(impl->wic_frame, &impl->width, &impl->height))) goto failed;
++    if (FAILED(IWICBitmapFrameDecode_GetResolution(impl->wic_frame, &impl->dpi_x, &impl->dpi_y)) ||
++            impl->dpi_x <= 0.0 || impl->dpi_y <= 0.0) impl->dpi_x = impl->dpi_y = 96.0;
++    codec_id = decoder_id_from_container(&impl->container);
++    impl->codec_id = *codec_id;
++    *out = &impl->IBitmapDecoder_iface;
++    hr = S_OK;
++
++failed:
++    if (factory) IWICImagingFactory_Release(factory);
++    if (input) IStream_Release(input);
++    if (FAILED(hr) && impl) decoder_Release(&impl->IBitmapDecoder_iface);
++    return hr;
++}
++
++struct bitmap_encoder
++{
++    IBitmapEncoder IBitmapEncoder_iface;
++    LONG ref;
++    IRandomAccessStream *output;
++    struct bitmap_decoder *decoder;
++    IBitmapTransform *transform;
++    GUID container;
++    GUID codec_id;
++    boolean thumbnail;
++    UINT32 thumbnail_width, thumbnail_height;
++    BYTE *pixels;
++    UINT32 pixel_size, pixel_width, pixel_height;
++    DOUBLE pixel_dpi_x, pixel_dpi_y;
++};
++
++static inline struct bitmap_encoder *impl_from_IBitmapEncoder(IBitmapEncoder *iface)
++{
++    return CONTAINING_RECORD(iface, struct bitmap_encoder, IBitmapEncoder_iface);
++}
++
++static HRESULT WINAPI encoder_QueryInterface(IBitmapEncoder *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IBitmapEncoder)) *out = iface;
++    if (!*out) return E_NOINTERFACE;
++    IBitmapEncoder_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI encoder_AddRef(IBitmapEncoder *iface)
++{
++    return InterlockedIncrement(&impl_from_IBitmapEncoder(iface)->ref);
++}
++
++static ULONG WINAPI encoder_Release(IBitmapEncoder *iface)
++{
++    struct bitmap_encoder *impl = impl_from_IBitmapEncoder(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref)
++    {
++        if (impl->transform) IBitmapTransform_Release(impl->transform);
++        if (impl->decoder) decoder_Release(&impl->decoder->IBitmapDecoder_iface);
++        if (impl->output) IRandomAccessStream_Release(impl->output);
++        free(impl->pixels);
++        free(impl);
++    }
++    return ref;
++}
++
++DEFINE_INSPECTABLE_STUBS(encoder_object, IBitmapEncoder)
++
++static HRESULT WINAPI encoder_get_EncoderInformation(IBitmapEncoder *iface, IBitmapCodecInformation **value)
++{
++    return codec_information_create(&impl_from_IBitmapEncoder(iface)->codec_id, value);
++}
++
++static HRESULT WINAPI encoder_get_BitmapProperties(IBitmapEncoder *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI encoder_get_BitmapContainerProperties(IBitmapEncoder *iface, IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++#define ENCODER_PROPERTY(name, type, member) \
++    static HRESULT WINAPI encoder_get_##name(IBitmapEncoder *iface, type *value) \
++    { \
++        if (!value) return E_POINTER; \
++        *value = impl_from_IBitmapEncoder(iface)->member; \
++        return S_OK; \
++    } \
++    static HRESULT WINAPI encoder_put_##name(IBitmapEncoder *iface, type value) \
++    { \
++        impl_from_IBitmapEncoder(iface)->member = value; \
++        return S_OK; \
++    }
++
++ENCODER_PROPERTY(IsThumbnailGenerated, boolean, thumbnail)
++ENCODER_PROPERTY(GeneratedThumbnailWidth, UINT32, thumbnail_width)
++ENCODER_PROPERTY(GeneratedThumbnailHeight, UINT32, thumbnail_height)
++
++static HRESULT WINAPI encoder_get_BitmapTransform(IBitmapEncoder *iface, IBitmapTransform **value)
++{
++    struct bitmap_encoder *impl = impl_from_IBitmapEncoder(iface);
++    if (!value) return E_POINTER;
++    *value = impl->transform;
++    IBitmapTransform_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI encoder_SetPixelData(IBitmapEncoder *iface, BitmapPixelFormat format,
++        BitmapAlphaMode alpha, UINT32 width, UINT32 height, DOUBLE dpi_x, DOUBLE dpi_y,
++        UINT32 size, BYTE *pixels)
++{
++    struct bitmap_encoder *impl = impl_from_IBitmapEncoder(iface);
++    BYTE *copy;
++    if (format != BitmapPixelFormat_Bgra8 || alpha != BitmapAlphaMode_Premultiplied ||
++            !width || !height || !pixels || width > UINT32_MAX / 4 ||
++            height > UINT32_MAX / (width * 4) || size < width * 4 * height) return E_INVALIDARG;
++    if (!(copy = malloc(width * 4 * height))) return E_OUTOFMEMORY;
++    memcpy(copy, pixels, width * 4 * height);
++    free(impl->pixels);
++    impl->pixels = copy;
++    impl->pixel_size = width * 4 * height;
++    impl->pixel_width = width;
++    impl->pixel_height = height;
++    impl->pixel_dpi_x = dpi_x > 0.0 ? dpi_x : 96.0;
++    impl->pixel_dpi_y = dpi_y > 0.0 ? dpi_y : 96.0;
++    return S_OK;
++}
++
++static HRESULT WINAPI encoder_GoToNextFrameAsync(IBitmapEncoder *iface, IAsyncAction **value)
++{
++    return async_action_create(E_NOTIMPL, value);
++}
++
++static HRESULT WINAPI encoder_GoToNextFrameWithEncodingOptionsAsync(IBitmapEncoder *iface,
++        IInspectable *options, IAsyncAction **value)
++{
++    return async_action_create(E_NOTIMPL, value);
++}
++
++static WICBitmapInterpolationMode map_interpolation(BitmapInterpolationMode mode)
++{
++    switch (mode)
++    {
++    case BitmapInterpolationMode_NearestNeighbor: return WICBitmapInterpolationModeNearestNeighbor;
++    case BitmapInterpolationMode_Linear: return WICBitmapInterpolationModeLinear;
++    case BitmapInterpolationMode_Cubic: return WICBitmapInterpolationModeCubic;
++    default: return WICBitmapInterpolationModeFant;
++    }
++}
++
++static HRESULT bitmap_encoder_flush(struct bitmap_encoder *impl)
++{
++    struct bitmap_transform *transform = impl_from_IBitmapTransform(impl->transform);
++    IWICImagingFactory *factory = NULL;
++    IWICBitmapEncoder *encoder = NULL;
++    IWICBitmapFrameEncode *frame = NULL;
++    IWICBitmapScaler *scaler = NULL;
++    IWICBitmap *bitmap = NULL;
++    IWICBitmapSource *source;
++    IPropertyBag2 *options = NULL;
++    IStream *output = NULL;
++    WICPixelFormatGUID pixel_format = GUID_WICPixelFormat32bppBGRA;
++    UINT32 width, height;
++    HRESULT hr;
++
++    if (impl->decoder)
++    {
++        width = transform->scaled_width ? transform->scaled_width : impl->decoder->width;
++        height = transform->scaled_height ? transform->scaled_height : impl->decoder->height;
++    }
++    else
++    {
++        width = impl->pixel_width;
++        height = impl->pixel_height;
++    }
++    if (!width || !height) return E_INVALIDARG;
++    if (FAILED(hr = CreateStreamOnHGlobal(NULL, TRUE, &output))) goto done;
++    if (FAILED(hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
++            &IID_IWICImagingFactory, (void **)&factory))) goto done;
++    if (FAILED(hr = IWICImagingFactory_CreateEncoder(factory, &impl->container, NULL, &encoder))) goto done;
++    if (FAILED(hr = IWICBitmapEncoder_Initialize(encoder, output, WICBitmapEncoderNoCache))) goto done;
++    if (FAILED(hr = IWICBitmapEncoder_CreateNewFrame(encoder, &frame, &options))) goto done;
++    if (FAILED(hr = IWICBitmapFrameEncode_Initialize(frame, options))) goto done;
++    if (FAILED(hr = IWICBitmapFrameEncode_SetSize(frame, width, height))) goto done;
++    if (FAILED(hr = IWICBitmapFrameEncode_SetResolution(frame,
++            impl->decoder ? impl->decoder->dpi_x : impl->pixel_dpi_x,
++            impl->decoder ? impl->decoder->dpi_y : impl->pixel_dpi_y))) goto done;
++    if (FAILED(hr = IWICBitmapFrameEncode_SetPixelFormat(frame, &pixel_format))) goto done;
++    if (impl->decoder)
++    {
++        source = (IWICBitmapSource *)impl->decoder->wic_frame;
++        if (width != impl->decoder->width || height != impl->decoder->height)
++        {
++            if (FAILED(hr = IWICImagingFactory_CreateBitmapScaler(factory, &scaler))) goto done;
++            if (FAILED(hr = IWICBitmapScaler_Initialize(scaler, source, width, height,
++                    map_interpolation(transform->interpolation)))) goto done;
++            source = (IWICBitmapSource *)scaler;
++        }
++    }
++    else
++    {
++        if (!impl->pixels)
++        {
++            hr = WINCODEC_ERR_WRONGSTATE;
++            goto done;
++        }
++        if (FAILED(hr = IWICImagingFactory_CreateBitmapFromMemory(factory, width, height,
++                &GUID_WICPixelFormat32bppPBGRA, width * 4, impl->pixel_size, impl->pixels,
++                &bitmap))) goto done;
++        source = (IWICBitmapSource *)bitmap;
++    }
++    if (FAILED(hr = IWICBitmapFrameEncode_WriteSource(frame, source, NULL))) goto done;
++    if (FAILED(hr = IWICBitmapFrameEncode_Commit(frame))) goto done;
++    if (FAILED(hr = IWICBitmapEncoder_Commit(encoder))) goto done;
++    hr = istream_to_random_access_stream(output, impl->output);
++
++done:
++    if (options) IPropertyBag2_Release(options);
++    if (bitmap) IWICBitmap_Release(bitmap);
++    if (scaler) IWICBitmapScaler_Release(scaler);
++    if (frame) IWICBitmapFrameEncode_Release(frame);
++    if (encoder) IWICBitmapEncoder_Release(encoder);
++    if (factory) IWICImagingFactory_Release(factory);
++    if (output) IStream_Release(output);
++    return hr;
++}
++
++static HRESULT WINAPI encoder_FlushAsync(IBitmapEncoder *iface, IAsyncAction **value)
++{
++    HRESULT hr = bitmap_encoder_flush(impl_from_IBitmapEncoder(iface));
++    TRACE("WIC image transcode completed with hr %#lx.\n", hr);
++    return async_action_create(hr, value);
++}
++
++static const IBitmapEncoderVtbl encoder_vtbl =
++{
++    encoder_QueryInterface, encoder_AddRef, encoder_Release,
++    encoder_object_GetIids, encoder_object_GetRuntimeClassName, encoder_object_GetTrustLevel,
++    encoder_get_EncoderInformation, encoder_get_BitmapProperties, encoder_get_BitmapContainerProperties,
++    encoder_get_IsThumbnailGenerated, encoder_put_IsThumbnailGenerated,
++    encoder_get_GeneratedThumbnailWidth, encoder_put_GeneratedThumbnailWidth,
++    encoder_get_GeneratedThumbnailHeight, encoder_put_GeneratedThumbnailHeight,
++    encoder_get_BitmapTransform, encoder_SetPixelData, encoder_GoToNextFrameAsync,
++    encoder_GoToNextFrameWithEncodingOptionsAsync, encoder_FlushAsync,
++};
++
++static const GUID *encoder_container_from_id(REFGUID id)
++{
++    if (IsEqualGUID(id, &CLSID_WICBmpEncoder)) return &GUID_ContainerFormatBmp;
++    if (IsEqualGUID(id, &CLSID_WICJpegEncoder)) return &GUID_ContainerFormatJpeg;
++    if (IsEqualGUID(id, &CLSID_WICPngEncoder)) return &GUID_ContainerFormatPng;
++    if (IsEqualGUID(id, &CLSID_WICTiffEncoder)) return &GUID_ContainerFormatTiff;
++    if (IsEqualGUID(id, &CLSID_WICGifEncoder)) return &GUID_ContainerFormatGif;
++    if (IsEqualGUID(id, &CLSID_WICWmpEncoder)) return &GUID_ContainerFormatWmp;
++    return NULL;
++}
++
++static HRESULT bitmap_encoder_create(REFGUID codec_id, REFGUID container, IRandomAccessStream *output,
++        struct bitmap_decoder *decoder, IBitmapEncoder **out)
++{
++    struct bitmap_encoder *impl;
++    HRESULT hr;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!output) return E_INVALIDARG;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IBitmapEncoder_iface.lpVtbl = &encoder_vtbl;
++    impl->ref = 1;
++    impl->codec_id = *codec_id;
++    impl->container = *container;
++    impl->output = output;
++    IRandomAccessStream_AddRef(output);
++    impl->decoder = decoder;
++    if (decoder) decoder_AddRef(&decoder->IBitmapDecoder_iface);
++    if (FAILED(hr = bitmap_transform_create(&impl->transform)))
++    {
++        encoder_Release(&impl->IBitmapEncoder_iface);
++        return hr;
++    }
++    *out = &impl->IBitmapEncoder_iface;
++    return S_OK;
++}
++
++enum imaging_factory_kind { FACTORY_DECODER, FACTORY_ENCODER, FACTORY_TRANSFORM };
++
++struct imaging_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    IBitmapDecoderStatics IBitmapDecoderStatics_iface;
++    IBitmapEncoderStatics IBitmapEncoderStatics_iface;
++    enum imaging_factory_kind kind;
++};
++
++static inline struct imaging_factory *factory_from_activation(IActivationFactory *iface)
++{
++    return CONTAINING_RECORD(iface, struct imaging_factory, IActivationFactory_iface);
++}
++
++static HRESULT factory_query(struct imaging_factory *impl, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IActivationFactory)) *out = &impl->IActivationFactory_iface;
++    else if (impl->kind == FACTORY_DECODER && IsEqualGUID(iid, &IID_IBitmapDecoderStatics))
++        *out = &impl->IBitmapDecoderStatics_iface;
++    else if (impl->kind == FACTORY_ENCODER && IsEqualGUID(iid, &IID_IBitmapEncoderStatics))
++        *out = &impl->IBitmapEncoderStatics_iface;
++    if (!*out) return E_NOINTERFACE;
++    return S_OK;
++}
++
++static HRESULT WINAPI imaging_factory_QueryInterface(IActivationFactory *iface, REFIID iid, void **out)
++{
++    return factory_query(factory_from_activation(iface), iid, out);
++}
++
++static ULONG WINAPI imaging_factory_AddRef(IActivationFactory *iface) { return 2; }
++static ULONG WINAPI imaging_factory_Release(IActivationFactory *iface) { return 1; }
++DEFINE_INSPECTABLE_STUBS(imaging_factory, IActivationFactory)
++
++static HRESULT WINAPI imaging_factory_ActivateInstance(IActivationFactory *iface, IInspectable **instance)
++{
++    struct imaging_factory *impl = factory_from_activation(iface);
++    IBitmapTransform *transform;
++    HRESULT hr;
++    if (!instance) return E_POINTER;
++    *instance = NULL;
++    if (impl->kind != FACTORY_TRANSFORM) return E_NOTIMPL;
++    if (FAILED(hr = bitmap_transform_create(&transform))) return hr;
++    *instance = (IInspectable *)transform;
++    return S_OK;
++}
++
++static const IActivationFactoryVtbl imaging_factory_vtbl =
++{
++    imaging_factory_QueryInterface, imaging_factory_AddRef, imaging_factory_Release,
++    imaging_factory_GetIids, imaging_factory_GetRuntimeClassName, imaging_factory_GetTrustLevel,
++    imaging_factory_ActivateInstance,
++};
++
++static inline struct imaging_factory *factory_from_decoder_statics(IBitmapDecoderStatics *iface)
++{
++    return CONTAINING_RECORD(iface, struct imaging_factory, IBitmapDecoderStatics_iface);
++}
++
++static HRESULT WINAPI decoder_statics_QueryInterface(IBitmapDecoderStatics *iface, REFIID iid, void **out)
++{
++    return factory_query(factory_from_decoder_statics(iface), iid, out);
++}
++static ULONG WINAPI decoder_statics_AddRef(IBitmapDecoderStatics *iface) { return 2; }
++static ULONG WINAPI decoder_statics_Release(IBitmapDecoderStatics *iface) { return 1; }
++DEFINE_INSPECTABLE_STUBS(decoder_statics, IBitmapDecoderStatics)
++
++#define DECODER_ID_GETTER(name, guid) \
++    static HRESULT WINAPI decoder_statics_get_##name(IBitmapDecoderStatics *iface, GUID *value) \
++    { \
++        if (!value) return E_POINTER; \
++        *value = guid; \
++        return S_OK; \
++    }
++
++DECODER_ID_GETTER(BmpDecoderId, CLSID_WICBmpDecoder)
++DECODER_ID_GETTER(JpegDecoderId, CLSID_WICJpegDecoder)
++DECODER_ID_GETTER(PngDecoderId, CLSID_WICPngDecoder2)
++DECODER_ID_GETTER(TiffDecoderId, CLSID_WICTiffDecoder)
++DECODER_ID_GETTER(GifDecoderId, CLSID_WICGifDecoder)
++DECODER_ID_GETTER(JpegXRDecoderId, CLSID_WICWmpDecoder)
++DECODER_ID_GETTER(IcoDecoderId, CLSID_WICIcoDecoder)
++
++static HRESULT WINAPI decoder_statics_GetDecoderInformationEnumerator(IBitmapDecoderStatics *iface,
++        IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI decoder_statics_CreateAsync(IBitmapDecoderStatics *iface,
++        IRandomAccessStream *stream, IAsyncOperation_BitmapDecoder **value)
++{
++    IBitmapDecoder *decoder = NULL;
++    HRESULT hr = bitmap_decoder_create(stream, &decoder);
++    HRESULT create_hr = async_decoder_create(decoder, hr, value);
++    if (decoder) IBitmapDecoder_Release(decoder);
++    return create_hr;
++}
++
++static HRESULT WINAPI decoder_statics_CreateWithIdAsync(IBitmapDecoderStatics *iface, GUID decoder_id,
++        IRandomAccessStream *stream, IAsyncOperation_BitmapDecoder **value)
++{
++    return decoder_statics_CreateAsync(iface, stream, value);
++}
++
++static const IBitmapDecoderStaticsVtbl decoder_statics_vtbl =
++{
++    decoder_statics_QueryInterface, decoder_statics_AddRef, decoder_statics_Release,
++    decoder_statics_GetIids, decoder_statics_GetRuntimeClassName, decoder_statics_GetTrustLevel,
++    decoder_statics_get_BmpDecoderId, decoder_statics_get_JpegDecoderId,
++    decoder_statics_get_PngDecoderId, decoder_statics_get_TiffDecoderId,
++    decoder_statics_get_GifDecoderId, decoder_statics_get_JpegXRDecoderId,
++    decoder_statics_get_IcoDecoderId, decoder_statics_GetDecoderInformationEnumerator,
++    decoder_statics_CreateAsync, decoder_statics_CreateWithIdAsync,
++};
++
++static inline struct imaging_factory *factory_from_encoder_statics(IBitmapEncoderStatics *iface)
++{
++    return CONTAINING_RECORD(iface, struct imaging_factory, IBitmapEncoderStatics_iface);
++}
++
++static HRESULT WINAPI encoder_statics_QueryInterface(IBitmapEncoderStatics *iface, REFIID iid, void **out)
++{
++    return factory_query(factory_from_encoder_statics(iface), iid, out);
++}
++static ULONG WINAPI encoder_statics_AddRef(IBitmapEncoderStatics *iface) { return 2; }
++static ULONG WINAPI encoder_statics_Release(IBitmapEncoderStatics *iface) { return 1; }
++DEFINE_INSPECTABLE_STUBS(encoder_statics, IBitmapEncoderStatics)
++
++#define ENCODER_ID_GETTER(name, guid) \
++    static HRESULT WINAPI encoder_statics_get_##name(IBitmapEncoderStatics *iface, GUID *value) \
++    { \
++        if (!value) return E_POINTER; \
++        *value = guid; \
++        return S_OK; \
++    }
++
++ENCODER_ID_GETTER(BmpEncoderId, CLSID_WICBmpEncoder)
++ENCODER_ID_GETTER(JpegEncoderId, CLSID_WICJpegEncoder)
++ENCODER_ID_GETTER(PngEncoderId, CLSID_WICPngEncoder)
++ENCODER_ID_GETTER(TiffEncoderId, CLSID_WICTiffEncoder)
++ENCODER_ID_GETTER(GifEncoderId, CLSID_WICGifEncoder)
++ENCODER_ID_GETTER(JpegXREncoderId, CLSID_WICWmpEncoder)
++
++static HRESULT WINAPI encoder_statics_GetEncoderInformationEnumerator(IBitmapEncoderStatics *iface,
++        IInspectable **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI encoder_statics_CreateAsync(IBitmapEncoderStatics *iface, GUID encoder_id,
++        IRandomAccessStream *stream, IAsyncOperation_BitmapEncoder **value)
++{
++    const GUID *container = encoder_container_from_id(&encoder_id);
++    IBitmapEncoder *encoder = NULL;
++    HRESULT hr, create_hr;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!container) return E_INVALIDARG;
++    hr = bitmap_encoder_create(&encoder_id, container, stream, NULL, &encoder);
++    create_hr = async_encoder_create(encoder, hr, value);
++    if (encoder) IBitmapEncoder_Release(encoder);
++    return create_hr;
++}
++
++static HRESULT WINAPI encoder_statics_CreateWithEncodingOptionsAsync(IBitmapEncoderStatics *iface,
++        GUID encoder_id, IRandomAccessStream *stream, IInspectable *options,
++        IAsyncOperation_BitmapEncoder **value)
++{
++    return encoder_statics_CreateAsync(iface, encoder_id, stream, value);
++}
++
++static HRESULT WINAPI encoder_statics_CreateForTranscodingAsync(IBitmapEncoderStatics *iface,
++        IRandomAccessStream *stream, IBitmapDecoder *decoder, IAsyncOperation_BitmapEncoder **value)
++{
++    struct bitmap_decoder *decoder_impl;
++    IBitmapEncoder *encoder = NULL;
++    const GUID *codec_id;
++    HRESULT hr, create_hr;
++    if (!decoder || !stream) return E_INVALIDARG;
++    if (decoder->lpVtbl != &decoder_vtbl) return E_NOINTERFACE;
++    decoder_impl = impl_from_IBitmapDecoder(decoder);
++    codec_id = IsEqualGUID(&decoder_impl->container, &GUID_ContainerFormatPng) ?
++            &CLSID_WICPngEncoder : IsEqualGUID(&decoder_impl->container, &GUID_ContainerFormatJpeg) ?
++            &CLSID_WICJpegEncoder : IsEqualGUID(&decoder_impl->container, &GUID_ContainerFormatBmp) ?
++            &CLSID_WICBmpEncoder : IsEqualGUID(&decoder_impl->container, &GUID_ContainerFormatTiff) ?
++            &CLSID_WICTiffEncoder : IsEqualGUID(&decoder_impl->container, &GUID_ContainerFormatGif) ?
++            &CLSID_WICGifEncoder : &CLSID_WICWmpEncoder;
++    hr = bitmap_encoder_create(codec_id, &decoder_impl->container, stream, decoder_impl, &encoder);
++    create_hr = async_encoder_create(encoder, hr, value);
++    if (encoder) IBitmapEncoder_Release(encoder);
++    return create_hr;
++}
++
++static HRESULT WINAPI encoder_statics_CreateForInPlacePropertyEncodingAsync(IBitmapEncoderStatics *iface,
++        IBitmapDecoder *decoder, IAsyncOperation_BitmapEncoder **value)
++{
++    return async_encoder_create(NULL, E_NOTIMPL, value);
++}
++
++static const IBitmapEncoderStaticsVtbl encoder_statics_vtbl =
++{
++    encoder_statics_QueryInterface, encoder_statics_AddRef, encoder_statics_Release,
++    encoder_statics_GetIids, encoder_statics_GetRuntimeClassName, encoder_statics_GetTrustLevel,
++    encoder_statics_get_BmpEncoderId, encoder_statics_get_JpegEncoderId,
++    encoder_statics_get_PngEncoderId, encoder_statics_get_TiffEncoderId,
++    encoder_statics_get_GifEncoderId, encoder_statics_get_JpegXREncoderId,
++    encoder_statics_GetEncoderInformationEnumerator, encoder_statics_CreateAsync,
++    encoder_statics_CreateWithEncodingOptionsAsync, encoder_statics_CreateForTranscodingAsync,
++    encoder_statics_CreateForInPlacePropertyEncodingAsync,
++};
++
++static struct imaging_factory decoder_factory =
++{
++    {&imaging_factory_vtbl}, {&decoder_statics_vtbl}, {NULL}, FACTORY_DECODER,
++};
++static struct imaging_factory encoder_factory =
++{
++    {&imaging_factory_vtbl}, {NULL}, {&encoder_statics_vtbl}, FACTORY_ENCODER,
++};
++static struct imaging_factory transform_factory =
++{
++    {&imaging_factory_vtbl}, {NULL}, {NULL}, FACTORY_TRANSFORM,
++};
++
++HRESULT imaging_get_activation_factory(HSTRING classid, IActivationFactory **factory)
++{
++    const WCHAR *name;
++    if (!factory) return E_POINTER;
++    *factory = NULL;
++    name = WindowsGetStringRawBuffer(classid, NULL);
++    if (!wcscmp(name, RuntimeClass_Windows_Graphics_Imaging_BitmapDecoder))
++        *factory = &decoder_factory.IActivationFactory_iface;
++    else if (!wcscmp(name, RuntimeClass_Windows_Graphics_Imaging_BitmapEncoder))
++        *factory = &encoder_factory.IActivationFactory_iface;
++    else if (!wcscmp(name, RuntimeClass_Windows_Graphics_Imaging_BitmapTransform))
++        *factory = &transform_factory.IActivationFactory_iface;
++    return *factory ? S_OK : CLASS_E_CLASSNOTAVAILABLE;
++}

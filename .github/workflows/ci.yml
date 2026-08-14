@@ -12,12 +12,14 @@ jobs:
   contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
       - name: Validate repository contracts
-        run: python scripts/validate_repository.py
+        run: python -B scripts/validate_repository.py
+      - name: Check portable Mac-Win assets
+        run: python -B tools/convert_macwin_assets.py --check
       - name: Compile public C header
         run: cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only -include crates/compatforge-ffi/include/compatforge.h /dev/null
       - name: Compile public C++ header
@@ -30,7 +32,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check portable Mac-Win assets
+        run: python -B tools/convert_macwin_assets.py --check
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt

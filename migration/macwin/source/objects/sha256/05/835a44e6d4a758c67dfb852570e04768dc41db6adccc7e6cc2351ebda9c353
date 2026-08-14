@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f4f7fb"/>
+      <stop offset="1" stop-color="#dce8f5"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" fill="url(#background)"/>
+  <rect x="18" y="18" width="284" height="144" rx="12" fill="#ffffff" stroke="#2d5f8b" stroke-width="2"/>
+  <circle cx="62" cy="67" r="24" fill="#2d7d65"/>
+  <path d="M50 67l8 8 17-19" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="100" y="62" font-family="Microsoft YaHei, SimSun, sans-serif" font-size="22" font-weight="700" fill="#172b3a">矢量渲染测试</text>
+  <text x="100" y="89" font-family="Arial, sans-serif" font-size="15" fill="#425866">MacWin Inkscape export</text>
+  <line x1="38" y1="114" x2="282" y2="114" stroke="#c7d4df"/>
+  <text x="38" y="140" font-family="Microsoft YaHei, SimSun, sans-serif" font-size="15" fill="#2d5f8b">中文字体、渐变、路径与 PNG 输出正常</text>
+</svg>

@@ -1,0 +1,777 @@
+{
+  "categoryCounts": {
+    "bottleSchema": 4,
+    "catalog": 19,
+    "fixtures": 30,
+    "patches": 11,
+    "probes": 26
+  },
+  "documentCount": 4,
+  "documents": [
+    {
+      "byteSize": 7603,
+      "kind": "catalog",
+      "path": "migration/macwin/generated/catalog.json",
+      "references": [],
+      "sha256": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a"
+    },
+    {
+      "byteSize": 2637,
+      "kind": "deferred-mapping",
+      "path": "migration/macwin/generated/mappings/bottle-schemas.json",
+      "references": [],
+      "sha256": "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb"
+    },
+    {
+      "byteSize": 7037,
+      "kind": "deferred-mapping",
+      "path": "migration/macwin/generated/mappings/patches.json",
+      "references": [],
+      "sha256": "c4505c787005d962af5fae3f715f2e7856bbbe790283a21bde75cf214f8a61e2"
+    },
+    {
+      "byteSize": 83297,
+      "kind": "quarantine",
+      "path": "migration/macwin/generated/quarantine.json",
+      "references": [],
+      "sha256": "cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b"
+    }
+  ],
+  "recordCount": 90,
+  "records": [
+    {
+      "category": "bottle-schema",
+      "documentPath": "migration/macwin/generated/mappings/bottle-schemas.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/BottleService.swift",
+      "sourceSha256": "5f79745e5262c57b8482b5a35b8a65985a87bb357d35e679a93ee0a6924aad56",
+      "status": "deferred"
+    },
+    {
+      "category": "bottle-schema",
+      "documentPath": "migration/macwin/generated/mappings/bottle-schemas.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/JSONStore.swift",
+      "sourceSha256": "af72b14b83029129e85a94d4686fd04efab04575cedc6ae281a5877275b585a2",
+      "status": "deferred"
+    },
+    {
+      "category": "bottle-schema",
+      "documentPath": "migration/macwin/generated/mappings/bottle-schemas.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/MacWinPaths.swift",
+      "sourceSha256": "2f87cd2508537b4f8d128ea118b0fdbaf880613832645713e89756c8003b9615",
+      "status": "deferred"
+    },
+    {
+      "category": "bottle-schema",
+      "documentPath": "migration/macwin/generated/mappings/bottle-schemas.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/Models.swift",
+      "sourceSha256": "8c0cb0cdacaa83f99e6c5f41af3da3596f7a578edfcec052c2976ba75e9f4b6e",
+      "status": "deferred"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/catalog.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.index.json",
+      "sourceSha256": "2c8bb75c7b294f6e75f45e08fb4b1e2050df0aa6260d96ccca50790e7229aa5c",
+      "status": "converted"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/catalog.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/catalog.signature.json",
+      "sourceSha256": "8e34669b99d0c09b610ad79f0ed763699115fa57769f691e641ef6812c46e966",
+      "status": "converted"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/7zip.json",
+      "sourceSha256": "fb320ed41e101182af879de445fca01f035a5aebea910683fe27a5b56805d55e",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/firefox.json",
+      "sourceSha256": "5017cecb5c77738b1866016659a0357e2fa2e8efa093f6aeeae62a63c6e2c119",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/hoyoplay-cn.json",
+      "sourceSha256": "2c66c2001d3ad679a8df292172bc950db7f259a723dfce23ee7ed3035ccfd6f7",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/jasp-stats.json",
+      "sourceSha256": "ebaf01b7de53da849c9aa45e3c87f24e6c8e69ef3f742ca5eaedd6a0f8c79dd4",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/lenovo-app-store.json",
+      "sourceSha256": "37c2abfd4fe1fd1d6e0ee85a79592112c0f85a7d1eb452375617b8bee874b10e",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/libreoffice.json",
+      "sourceSha256": "60b8de3c52df0380b039ae07e608c494a63f69d0483195bc4471afcb5384ff12",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/ltspice.json",
+      "sourceSha256": "03157bcc29c24fbd555c485bd14fab9f1a102a57b880086ee0aa25181eeacf0b",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-core-capability-tests.json",
+      "sourceSha256": "cb571265bfc4d8bfa98d7cbd83e375b0a70a3ca3cb1a087b44341003fd365788",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-game-tests.json",
+      "sourceSha256": "4222d93460b38f09bcf956f63ef32d886e5a1a76aee0b9af02c8443a237b0027",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/macwin-probes.json",
+      "sourceSha256": "ca882ab37ceea4276f460ac8af76870b747b390de4c8b5abb1e3d6f85bda1d5a",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/notepad-plus-plus.json",
+      "sourceSha256": "112981ee22936ab78d6511ff7672cf75c1b2a4bd179a4b7b0e0659f8c05ab1ce",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/portableapps-platform.json",
+      "sourceSha256": "f81ea7243ecd916d20e48e08d259cd24a152a444704b7f7c9332e96c0f62661a",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sqlitestudio.json",
+      "sourceSha256": "a201c20e5ea4a92831d76a57ee49ae138ebef719f61812ee6a7190800e161ba6",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/steam.json",
+      "sourceSha256": "5b405e719271aed976042c46763ec494405fd580215ad65e2da6efba32488565",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/sumatrapdf.json",
+      "sourceSha256": "44705ba78b94ce1bee8709c45f4d385c9141f87e40a89ad133e969ec0894c0c3",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/texstudio.json",
+      "sourceSha256": "95ffa27ad03cadd6cd38f90883fa7fedbd2e77f0f874ec5d2eaac24017f9383d",
+      "status": "quarantined"
+    },
+    {
+      "category": "catalog",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog/recipes/vlc.json",
+      "sourceSha256": "35eed21393942c8632250defc1d9eef60f0ad1cc1ad073bd53126b599a4d908c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/build-native-ui-probe.sh",
+      "sourceSha256": "56eff0a25defb887f16c017d96cb0a70a67c1ebfacd7da31bd4835c764977acc",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.c",
+      "sourceSha256": "1a772a44e1d35808e972d8a091bd8f7447c2957d691967423b34c76e8f6b7987",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.manifest",
+      "sourceSha256": "1d9924dbd257c74ba1505e089afe79215f80372dbd3fac4c856b69ebfd71c85f",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Tools/native-ui-probe.rc",
+      "sourceSha256": "328256afd5718d643d8f00a5d36b6241b301d0183bc4f2ba7a5dffb547bd6058",
+      "status": "quarantined"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+      "sourceSha256": "c401642d2c4ba3a5a9994b596351f02ab077544c784c6fc33080b5caba66ccd3",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-fix-proxy-model-reset.patch",
+      "sourceSha256": "d749fe893a8c43a933f1376d8aa988c80c4898e76c776fa61ad63323e1755bc9",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch",
+      "sourceSha256": "be720e3e37b63e996c8971fc86d9eff407dbedf56ee569292f055fa167d3e5cd",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/jasp-0.97.1-local-macos-build-configure.patch",
+      "sourceSha256": "bd2f4f8a2376775ba8274027b1c3ee0563bef94cbd726faff486a49ef56266e1",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-dcomp-winui-host-composition.patch",
+      "sourceSha256": "16ee92f121822f065fc04dc5fff5bde0ba5db6011be8d1ad14651274a7c48155",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-macos-native-ui-integration.patch",
+      "sourceSha256": "6f637c94de14fccce36d0ef2c0a5d8f9c199b86b4fc96b6267a5e5508c285193",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-shell32-virtual-desktop-manager.patch",
+      "sourceSha256": "aa5c8821a49fe0ef5d9c5bf29ee4061049f8c0457c466f75b134eed287f415fc",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windows-data-json-modern-apps.patch",
+      "sourceSha256": "4e92cacc906195d0d36b769cce6f0c14297ee6e745151d26fdc1803cc307349f",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windows-graphics-imaging.patch",
+      "sourceSha256": "df6dfeb4a5f6ccb276958243e82bb9ee99afc34bd1e2a2c67897d6cd4d7351c9",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-windowscodecs-bilinear-scaler.patch",
+      "sourceSha256": "eb33346fd5eb20efceb15385d7156e8b3bfb3181760bcf4e73eb324e871734f8",
+      "status": "deferred"
+    },
+    {
+      "category": "patches",
+      "documentPath": "migration/macwin/generated/mappings/patches.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "patches/wine-winui-pointer-input.patch",
+      "sourceSha256": "cd9cb5da0fddace39c52e5d2d365e4d1366364284b334e58f11067e80e396b70",
+      "status": "deferred"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/analyze-window-image.py",
+      "sourceSha256": "cf1625202400f71a87e84b8bd5dceeb4735b7f29b8c913ce0908d840e765786d",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/bootstrap-jasp-conan.sh",
+      "sourceSha256": "b7d47d891e4f1d8805f104c620e753409d2aafcfc27402952b293976cfe16ee9",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-game-dll-coverage.sh",
+      "sourceSha256": "37d9e078efc8fcdf0b21910d76ca488b74bf62d21dcf709a0137031029979816",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/build-rosettax87.sh",
+      "sourceSha256": "467b86085224fd0334872e118c2942e878a595919d066ecdc0b4873e4372c34c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-region.swift",
+      "sourceSha256": "4384c5d92f65833533e18c244790651e3079058e7ca29d9309619314de59d26f",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/capture-macos-window.swift",
+      "sourceSha256": "2d10afa6b54b95f78ca1f8d6f1a40c1ab8b146af26dac771f1976fe414674096",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/configure-jasp-compat-build.sh",
+      "sourceSha256": "c0bb1d776e4e484c3f2d4f6f10cb3555a53d47a1a565e5570f394a2d0baa821a",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/download-software-samples.sh",
+      "sourceSha256": "d95f4ae744145cb3ebc4478e5b3f3c493e06f2f891ee90b85c73e916f45dd58c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/drag-pointer.swift",
+      "sourceSha256": "2580e090ad1ab9b797e2aaf4724853348e7d6c41f73c35448c3d5bd6319a2974",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/dwsim-gdiplus-image-probe.cs",
+      "sourceSha256": "db443f3cbfd379d02777595bac62092a757777baaffc5b361a4a07e1927dc01e",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/find-macos-window.swift",
+      "sourceSha256": "a59ffd5ac37cd4209485941c0a7f3dc54565b2191e17a18e6a456c1fd0e101e3",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/SwingFontProbe.java",
+      "sourceSha256": "f7fbf8f875bf27bd8ca708e754e171d02f73a8a9820a61c89c21bf7fd69ea933",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/beekeeper-sqlite-smoke.js",
+      "sourceSha256": "a988d68ed33be49550375af51644f883b6d3a40935402c14a71ac2aa89fc3b86",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/brave-browser-smoke.html",
+      "sourceSha256": "1581709a916b579b36280a1ea77351a5bcf388319369fe3b9010b6b8727bfe55",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/dbeaver-jdbc-smoke.java",
+      "sourceSha256": "3664b5f7183ba7896208b8a173398d3fb68f91722a4453b6f8f74168a8839f0d",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/firefox-browser-smoke.py",
+      "sourceSha256": "818f9aeba35071a88302f15c20389e80486bc0aeef57e0aeb8da40df265aa0d8",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-automation-probe.c",
+      "sourceSha256": "e22d1399fc0d48597e443c015b4120a68ff399e1c4798400c6e867679b446d0b",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-bootstrap.c",
+      "sourceSha256": "2e6795bf4a47c51a9191f6d4ecbfcf23407381f2c458d2f4d36fcd3a3f477d78",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-typeinfo-probe.c",
+      "sourceSha256": "ece4259bce39b26dd0216d130ef1e14575173f9d6532bf59729ec32a12d6735b",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/freeoffice-ui-probe.c",
+      "sourceSha256": "662ae50e5e88783712e0008b37d3a12214520fe7a5870987bd9fd1c64a21df36",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.gd",
+      "sourceSha256": "7358542c9358d7e3a8cb88c12f91619c06c414569faa3d6b8fc4241ad8ca85e0",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/main.tscn",
+      "sourceSha256": "fc63a5292fe558d8827916e59226387e1afc40c7e4d5f1286fca2b0e102b1dbb",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/godot-vulkan-smoke/project.godot",
+      "sourceSha256": "2596de6cf2968cc32d489e95de21dea1a44083a21f12fc468184dfe2fed9367f",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/inkscape-smoke.svg",
+      "sourceSha256": "05835a44e6d4a758c67dfb852570e04768dc41db6adccc7e6cc2351ebda9c353",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/jabref-smoke.bib",
+      "sourceSha256": "a6078de66c705a3bba94bc59871ec16de0d82f1c41a4fb2a2f3d28b8fabb8797",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/libreoffice-smoke.html",
+      "sourceSha256": "b01a9b4aa59d79aa20a5f7487e2fb6313b88c6563005af25bb4f209886095e7c",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/meshlab-cube.obj",
+      "sourceSha256": "3d2130de327358b8089671b0f16f51c0013ae2ddf8c04c2be6d29f27e8165aaf",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke-main.cpp",
+      "sourceSha256": "d9ed2a6fd6c139bc3033674fb158d1b6f15fb0a9ad90aaa98a1652e62fe7aab4",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/openplc-smoke.xml",
+      "sourceSha256": "08c936c8d0b54fdea9b9a45c823185183f00594b69655f4a572fe09cf2b1db47",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-one.txt",
+      "sourceSha256": "08f044fb5cb6767db2d3a4184a33a14a4a21174d1d2c84d82973d1cbec5ab523",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-page-two.txt",
+      "sourceSha256": "ab402e8be5f8ed8756e1f3106d64c1d2a2000f51cd2a49fdb5b82ef31906154d",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pdfarranger-qpdf-probe.c",
+      "sourceSha256": "bc9ef0ce2c14361453edd863913757cf53d9ccb8c1e8b634267d5ef214996cf5",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/pgadmin-backend-smoke.py",
+      "sourceSha256": "0b1506acda7edffc073b2c09e78ffdae02c168522e5f230706f834767454971e",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/projectlibre-mpxj-smoke.java",
+      "sourceSha256": "4f5bd5a85ddc3fcd91c20792134378ea0ccea1e50cdff4f200f14cc8517339a5",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/qelectrotech-smoke.qet",
+      "sourceSha256": "857201f1ebd305febb075688c2f4d2d9848a0acf05961303400eff39d590a35c",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/r-statistics-smoke.R",
+      "sourceSha256": "38a8961d578f5530cca8d25a6d628eeab008ffd258fe20b4d444924accdeea6e",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/special-folder-probe.c",
+      "sourceSha256": "da8d6f6ff447e5c3a3231079177ed4d4d59e2c4be3ee15f8ebcdca01def2e389",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/sqlitebrowser-probe.c",
+      "sourceSha256": "1d3914f98ea2876b427630c829d703782d022905b219262f27d5020ac48de554",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-debug-exception.c",
+      "sourceSha256": "27e761c2e1ff71f0ec9f63d5f0ef0246428ed587a971384c0a470f4b0556cc4f",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wow64-read-memory.c",
+      "sourceSha256": "2283a901b0a719cce30c40ad22cee1f143dbdd974946d925ae5b8bfbca19ee20",
+      "status": "quarantined"
+    },
+    {
+      "category": "fixtures",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/fixtures/wps-smoke.rtf",
+      "sourceSha256": "4dd86eb7c10a2fde695edb0c420a51a9aae1d0ac07bc3ff919bbd1ac734140f3",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/inspect-chromium-page.swift",
+      "sourceSha256": "2b06065d1cdec8316f4b7b1576aa53862c8a43301d9a41f4bdd6b4b69878af6b",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/macos-session-state.swift",
+      "sourceSha256": "a95f6ab519edb51fede9740917e5135e8cccbbcc8c18635f72278a14afaa66c6",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/prepare-jasp-compat-source.sh",
+      "sourceSha256": "60184629596f9ab50bb4285d61da9eb0e5f5f9bba6d98de460fd8d7aa30d86d9",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-jasp-conan-cache.sh",
+      "sourceSha256": "d7c41c2963c75cf366984bf3ed2e9e8fb45395f602788ddf5d610c7e1a0cdc06",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/repair-lenovo-app-store-page.swift",
+      "sourceSha256": "7de42c42c85e1d5ed91311e88e5b7ef4dcbf6e93720e808c801258df7400e0da",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-powertoys-quick-access-probe.sh",
+      "sourceSha256": "b80390dc217c5a5641d56f46c0a011719d73ddfbb72ec23b66ee3d74a7b84d4c",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/run-software-smoke.sh",
+      "sourceSha256": "5d0f2ba9eeef78acd447bcbc1ea886eb1ca6cd970aeb2b12ed53ca76a05fc340",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-chromium-page-report.py",
+      "sourceSha256": "0e483aede37c39f02f8ad489984ac88f56a207a4e2ca2b525ca9a6c85bfff19d",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/validate-pgadmin-page-report.py",
+      "sourceSha256": "6fc2e1b7dbe5b936bcaf20d55b0b581986c60c8b41316cd566163dd130b321f4",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/visual-acceptance-macwin.sh",
+      "sourceSha256": "e561ec745a5739769b02e3b3ceef759b68417f1914f99069b0bc297dfd17efd7",
+      "status": "quarantined"
+    },
+    {
+      "category": "probes",
+      "documentPath": "migration/macwin/generated/quarantine.json",
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "scripts/wic-codecs-minimal.reg",
+      "sourceSha256": "995611128bc4a3833e273590f678cfa32e3fbb06fec8d2eff7b54e05aee42381",
+      "status": "quarantined"
+    }
+  ],
+  "schemaVersion": "1",
+  "source": {
+    "digestAlgorithm": "sha256",
+    "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+    "repository": "a1112/Mac-Win",
+    "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+    "sourceTag": "mw-migration-baseline-db12d5e",
+    "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f"
+  },
+  "statusCounts": {
+    "converted": 2,
+    "deferred": 15,
+    "quarantined": 73
+  }
+}

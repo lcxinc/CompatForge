@@ -1,0 +1,65 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "App Store",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "requiresWin32" : true,
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8",
+    "MACWIN_DISABLE_WINE_D3D_CONFIG" : "1",
+    "MACWIN_LAUNCH_CWD" : "executable-dir",
+    "MACWIN_TEXT_RENDERING_REPAIR" : "1",
+    "WINEDEBUG" : "-all"
+  },
+  "id" : "portableapps-platform",
+  "installer" : {
+    "arguments" : [
+      "$drive_c"
+    ],
+    "command" : "macwin-extract-archive",
+    "fileName" : "PortableApps.com_Platform_Setup_30.4.1.paf.exe",
+    "hints" : [
+
+    ],
+    "mode" : "localFile",
+    "sha256" : "f7ad3bb79472222a807b054cb7092c1cefcd3bdcd86d35a51244723c8df54562"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "PortableApps.com Platform",
+      "envOverrides" : {
+        "LANG" : "zh_CN.UTF-8",
+        "LC_ALL" : "zh_CN.UTF-8",
+        "LC_CTYPE" : "zh_CN.UTF-8",
+        "MACWIN_TEXT_RENDERING_REPAIR" : "1",
+        "WINEDEBUG" : "-all"
+      },
+      "exePath" : "C:\\PortableApps\\PortableApps.com\\PortableAppsPlatform.exe",
+      "id" : "portableapps-platform",
+      "showInHome" : true
+    }
+  ],
+  "name" : "PortableApps.com Platform",
+  "postInstall" : [
+
+  ],
+  "publisher" : "PortableApps.com",
+  "warnings" : [
+    "Uses a user-provided local PortableApps.com Platform installer with SHA-256 validation; MacWin does not redistribute this installer.",
+    "This recipe exercises a lightweight app-store catalog, updater, download manager, file dialogs, TLS, and ordinary Win32 UI behavior.",
+    "The NSIS package is extracted into the bottle drive instead of running the interactive installer, giving MacWin a deterministic launcher target."
+  ]
+}

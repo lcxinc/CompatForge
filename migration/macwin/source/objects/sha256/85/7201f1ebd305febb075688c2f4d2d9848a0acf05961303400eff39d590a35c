@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project title="MacWin 工业电气兼容性测试" version="0.80">
+  <properties>
+    <property show="1" name="savedfilename">macwin-qelectrotech-smoke.qet</property>
+    <property show="1" name="savedfilepath">C:/macwin-tests/qelectrotech-smoke.qet</property>
+  </properties>
+  <newdiagrams>
+    <border rowsize="80" rows="6" displaycols="true" cols="15" colsize="50" displayrows="true"/>
+    <inset displayAt="bottom" folio="%id/%total" indexrev="" plant="MacWin" date="2026-07-14" filename="macwin-qelectrotech-smoke.qet" author="MacWin" locmach="兼容性测试" title="工业控制回路" version="1.0" auto_page_num=""/>
+    <conductors condsize="1" cable="" onetextperfolio="0" vertical-alignment="AlignRight" horizrotatetext="0" bicolor="false" bus="" dash-size="1" numsize="9" horizontal-alignment="AlignBottom" function="" conductor_color="" conductor_section="" text_color="#000000" color2="#000000" tension_protocol="" displaytext="1" formula="" vertirotatetext="0" num="_" type="multi"/>
+    <report label="/%f.%l%c"/>
+    <xrefs/>
+    <conductors_autonums freeze_new_conductors="false" current_autonum=""/>
+    <folio_autonums/>
+    <element_autonums freeze_new_elements="false" current_autonum=""/>
+  </newdiagrams>
+  <diagram freezeNewElement="false" cols="15" folio="%id/%total" version="0.80" indexrev="" date="2026-07-14" author="MacWin" height="500" freezeNewConductor="false" title="工业控制回路" auto_page_num="" displaycols="true" filename="macwin-qelectrotech-smoke.qet" colsize="50" order="1" displayrows="true" locmach="兼容性测试" rows="6" plant="MacWin" rowsize="80" displayAt="bottom">
+    <defaultconductor condsize="1" cable="" onetextperfolio="0" vertical-alignment="AlignRight" horizrotatetext="0" bicolor="false" bus="" dash-size="1" numsize="9" horizontal-alignment="AlignBottom" function="" conductor_color="" conductor_section="" text_color="#000000" color2="#000000" tension_protocol="" displaytext="1" formula="" vertirotatetext="0" num="_" type="multi"/>
+    <elements/>
+    <conductors/>
+  </diagram>
+  <collection/>
+</project>

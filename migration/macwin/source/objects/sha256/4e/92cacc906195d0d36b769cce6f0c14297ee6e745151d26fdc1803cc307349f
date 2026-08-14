@@ -1,0 +1,990 @@
+diff --git a/dlls/windows.web/json_array.c b/dlls/windows.web/json_array.c
+index 1e3890de86d..7899c4a4757 100644
+--- a/dlls/windows.web/json_array.c
++++ b/dlls/windows.web/json_array.c
+@@ -25,6 +25,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(web);
+ struct json_array
+ {
+     IJsonArray IJsonArray_iface;
++    IVector_IJsonValue IVector_IJsonValue_iface;
++    IJsonValue IJsonValue_iface;
+     LONG ref;
+     IJsonValue **elements;
+     ULONG capacity;
+@@ -36,6 +38,16 @@ static inline struct json_array *impl_from_IJsonArray( IJsonArray *iface )
+     return CONTAINING_RECORD( iface, struct json_array, IJsonArray_iface );
+ }
+ 
++static inline struct json_array *impl_from_IVector_IJsonValue( IVector_IJsonValue *iface )
++{
++    return CONTAINING_RECORD( iface, struct json_array, IVector_IJsonValue_iface );
++}
++
++static inline struct json_array *impl_from_IJsonValue( IJsonValue *iface )
++{
++    return CONTAINING_RECORD( iface, struct json_array, IJsonValue_iface );
++}
++
+ HRESULT json_array_push( IJsonArray *iface, IJsonValue *value )
+ {
+     struct json_array *impl = impl_from_IJsonArray( iface );
+@@ -72,6 +84,20 @@ static HRESULT WINAPI json_array_QueryInterface( IJsonArray *iface, REFIID iid,
+         return S_OK;
+     }
+ 
++    if (IsEqualGUID( iid, &IID_IVector_IJsonValue ))
++    {
++        *out = &impl->IVector_IJsonValue_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, &IID_IJsonValue ))
++    {
++        *out = &impl->IJsonValue_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -198,6 +224,272 @@ static const struct IJsonArrayVtbl json_array_vtbl =
+     json_array_GetBooleanAt,
+ };
+ 
++static HRESULT WINAPI vector_QueryInterface( IVector_IJsonValue *iface, REFIID iid, void **out )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_QueryInterface( &impl->IJsonArray_iface, iid, out );
++}
++
++static ULONG WINAPI vector_AddRef( IVector_IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_AddRef( &impl->IJsonArray_iface );
++}
++
++static ULONG WINAPI vector_Release( IVector_IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_Release( &impl->IJsonArray_iface );
++}
++
++static HRESULT WINAPI vector_GetIids( IVector_IJsonValue *iface, ULONG *count, IID **iids )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_GetIids( &impl->IJsonArray_iface, count, iids );
++}
++
++static HRESULT WINAPI vector_GetRuntimeClassName( IVector_IJsonValue *iface, HSTRING *name )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_GetRuntimeClassName( &impl->IJsonArray_iface, name );
++}
++
++static HRESULT WINAPI vector_GetTrustLevel( IVector_IJsonValue *iface, TrustLevel *level )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return IJsonArray_GetTrustLevel( &impl->IJsonArray_iface, level );
++}
++
++static HRESULT WINAPI vector_GetAt( IVector_IJsonValue *iface, UINT32 index, IJsonValue **value )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    if (!value) return E_POINTER;
++    if (index >= impl->length) return E_BOUNDS;
++    *value = impl->elements[index];
++    IJsonValue_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_get_Size( IVector_IJsonValue *iface, UINT32 *value )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    if (!value) return E_POINTER;
++    *value = impl->length;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetView( IVector_IJsonValue *iface, IVectorView_IJsonValue **value )
++{
++    FIXME( "iface %p, value %p stub!\n", iface, value );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_IndexOf( IVector_IJsonValue *iface, IJsonValue *element, UINT32 *index, BOOLEAN *found )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    UINT32 i;
++    if (!index || !found) return E_POINTER;
++    for (i = 0; i < impl->length; ++i) if (impl->elements[i] == element) break;
++    *index = i;
++    *found = i < impl->length;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_SetAt( IVector_IJsonValue *iface, UINT32 index, IJsonValue *value )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    if (index >= impl->length) return E_BOUNDS;
++    IJsonValue_AddRef( value );
++    IJsonValue_Release( impl->elements[index] );
++    impl->elements[index] = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_InsertAt( IVector_IJsonValue *iface, UINT32 index, IJsonValue *value )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    HRESULT hr;
++    if (index > impl->length) return E_BOUNDS;
++    if (FAILED(hr = json_array_push( &impl->IJsonArray_iface, value ))) return hr;
++    memmove( impl->elements + index + 1, impl->elements + index,
++            (impl->length - index - 1) * sizeof(*impl->elements) );
++    impl->elements[index] = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_RemoveAt( IVector_IJsonValue *iface, UINT32 index )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    if (index >= impl->length) return E_BOUNDS;
++    IJsonValue_Release( impl->elements[index] );
++    memmove( impl->elements + index, impl->elements + index + 1,
++            (impl->length - index - 1) * sizeof(*impl->elements) );
++    --impl->length;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_Append( IVector_IJsonValue *iface, IJsonValue *value )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    return json_array_push( &impl->IJsonArray_iface, value );
++}
++
++static HRESULT WINAPI vector_RemoveAtEnd( IVector_IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    if (!impl->length) return E_BOUNDS;
++    return vector_RemoveAt( iface, impl->length - 1 );
++}
++
++static HRESULT WINAPI vector_Clear( IVector_IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    while (impl->length) IJsonValue_Release( impl->elements[--impl->length] );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetMany( IVector_IJsonValue *iface, UINT32 start, UINT32 size,
++        IJsonValue **items, UINT32 *count )
++{
++    struct json_array *impl = impl_from_IVector_IJsonValue( iface );
++    UINT32 i;
++    if (!items || !count) return E_POINTER;
++    if (start > impl->length) return E_BOUNDS;
++    *count = min( size, impl->length - start );
++    for (i = 0; i < *count; ++i) IJsonValue_AddRef( items[i] = impl->elements[start + i] );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_ReplaceAll( IVector_IJsonValue *iface, UINT32 count, IJsonValue **items )
++{
++    HRESULT hr;
++    UINT32 i;
++    if (count && !items) return E_POINTER;
++    vector_Clear( iface );
++    for (i = 0; i < count; ++i) if (FAILED(hr = vector_Append( iface, items[i] ))) return hr;
++    return S_OK;
++}
++
++static const struct IVector_IJsonValueVtbl vector_vtbl =
++{
++    vector_QueryInterface, vector_AddRef, vector_Release,
++    vector_GetIids, vector_GetRuntimeClassName, vector_GetTrustLevel,
++    vector_GetAt, vector_get_Size, vector_GetView, vector_IndexOf,
++    vector_SetAt, vector_InsertAt, vector_RemoveAt, vector_Append,
++    vector_RemoveAtEnd, vector_Clear, vector_GetMany, vector_ReplaceAll,
++};
++
++static HRESULT WINAPI json_value_QueryInterface( IJsonValue *iface, REFIID iid, void **out )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_QueryInterface( &impl->IJsonArray_iface, iid, out );
++}
++
++static ULONG WINAPI json_value_AddRef( IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_AddRef( &impl->IJsonArray_iface );
++}
++
++static ULONG WINAPI json_value_Release( IJsonValue *iface )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_Release( &impl->IJsonArray_iface );
++}
++
++static HRESULT WINAPI json_value_GetIids( IJsonValue *iface, ULONG *count, IID **iids )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_GetIids( &impl->IJsonArray_iface, count, iids );
++}
++
++static HRESULT WINAPI json_value_GetRuntimeClassName( IJsonValue *iface, HSTRING *name )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_GetRuntimeClassName( &impl->IJsonArray_iface, name );
++}
++
++static HRESULT WINAPI json_value_GetTrustLevel( IJsonValue *iface, TrustLevel *level )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    return IJsonArray_GetTrustLevel( &impl->IJsonArray_iface, level );
++}
++
++static HRESULT WINAPI json_value_get_ValueType( IJsonValue *iface, JsonValueType *value )
++{
++    if (!value) return E_POINTER;
++    *value = JsonValueType_Array;
++    return S_OK;
++}
++
++static HRESULT concat_string( HSTRING *current, HSTRING next )
++{
++    HSTRING combined;
++    HRESULT hr = WindowsConcatString( *current, next, &combined );
++    if (SUCCEEDED(hr))
++    {
++        WindowsDeleteString( *current );
++        *current = combined;
++    }
++    return hr;
++}
++
++static HRESULT WINAPI json_value_Stringify( IJsonValue *iface, HSTRING *value )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    HSTRING separator = NULL, item = NULL;
++    UINT32 i;
++    HRESULT hr;
++    if (!value) return E_POINTER;
++    if (FAILED(hr = WindowsCreateString( L"[", 1, value ))) return hr;
++    for (i = 0; i < impl->length; ++i)
++    {
++        if (i)
++        {
++            WindowsCreateString( L",", 1, &separator );
++            hr = concat_string( value, separator );
++            WindowsDeleteString( separator );
++            if (FAILED(hr)) goto failed;
++        }
++        if (FAILED(hr = IJsonValue_Stringify( impl->elements[i], &item ))) goto failed;
++        hr = concat_string( value, item );
++        WindowsDeleteString( item );
++        item = NULL;
++        if (FAILED(hr)) goto failed;
++    }
++    WindowsCreateString( L"]", 1, &separator );
++    hr = concat_string( value, separator );
++    WindowsDeleteString( separator );
++    return hr;
++failed:
++    if (item) WindowsDeleteString( item );
++    WindowsDeleteString( *value );
++    *value = NULL;
++    return hr;
++}
++
++static HRESULT WINAPI json_value_GetString( IJsonValue *iface, HSTRING *value ) { return E_ILLEGAL_METHOD_CALL; }
++static HRESULT WINAPI json_value_GetNumber( IJsonValue *iface, DOUBLE *value ) { return E_ILLEGAL_METHOD_CALL; }
++static HRESULT WINAPI json_value_GetBoolean( IJsonValue *iface, boolean *value ) { return E_ILLEGAL_METHOD_CALL; }
++static HRESULT WINAPI json_value_GetObject( IJsonValue *iface, IJsonObject **value ) { return E_ILLEGAL_METHOD_CALL; }
++
++static HRESULT WINAPI json_value_GetArray( IJsonValue *iface, IJsonArray **value )
++{
++    struct json_array *impl = impl_from_IJsonValue( iface );
++    if (!value) return E_POINTER;
++    *value = &impl->IJsonArray_iface;
++    IJsonArray_AddRef( *value );
++    return S_OK;
++}
++
++static const struct IJsonValueVtbl json_value_vtbl =
++{
++    json_value_QueryInterface, json_value_AddRef, json_value_Release,
++    json_value_GetIids, json_value_GetRuntimeClassName, json_value_GetTrustLevel,
++    json_value_get_ValueType, json_value_Stringify, json_value_GetString,
++    json_value_GetNumber, json_value_GetBoolean, json_value_GetArray, json_value_GetObject,
++};
++
+ struct json_array_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+@@ -274,6 +566,8 @@ static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInsp
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+ 
+     impl->IJsonArray_iface.lpVtbl = &json_array_vtbl;
++    impl->IVector_IJsonValue_iface.lpVtbl = &vector_vtbl;
++    impl->IJsonValue_iface.lpVtbl = &json_value_vtbl;
+     impl->ref = 1;
+ 
+     *instance = (IInspectable *)&impl->IJsonArray_iface;
+diff --git a/dlls/windows.web/json_object.c b/dlls/windows.web/json_object.c
+index a765d5cfd6c..5fb00a6e0a0 100644
+--- a/dlls/windows.web/json_object.c
++++ b/dlls/windows.web/json_object.c
+@@ -26,6 +26,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(web);
+ struct json_object
+ {
+     IJsonObject IJsonObject_iface;
++    IJsonObjectWithDefaultValues IJsonObjectWithDefaultValues_iface;
++    IJsonValue IJsonValue_iface;
+     LONG ref;
+     IMap_HSTRING_IInspectable *members;
+ };
+@@ -35,6 +37,16 @@ static inline struct json_object *impl_from_IJsonObject( IJsonObject *iface )
+     return CONTAINING_RECORD( iface, struct json_object, IJsonObject_iface );
+ }
+ 
++static inline struct json_object *impl_from_IJsonValue( IJsonValue *iface )
++{
++    return CONTAINING_RECORD( iface, struct json_object, IJsonValue_iface );
++}
++
++static inline struct json_object *impl_from_IJsonObjectWithDefaultValues( IJsonObjectWithDefaultValues *iface )
++{
++    return CONTAINING_RECORD( iface, struct json_object, IJsonObjectWithDefaultValues_iface );
++}
++
+ static HRESULT WINAPI json_object_QueryInterface( IJsonObject *iface, REFIID iid, void **out )
+ {
+     struct json_object *impl = impl_from_IJsonObject( iface );
+@@ -51,6 +63,20 @@ static HRESULT WINAPI json_object_QueryInterface( IJsonObject *iface, REFIID iid
+         return S_OK;
+     }
+ 
++    if (IsEqualGUID( iid, &IID_IJsonValue ))
++    {
++        *out = &impl->IJsonValue_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, &IID_IJsonObjectWithDefaultValues ))
++    {
++        *out = &impl->IJsonObjectWithDefaultValues_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -218,6 +244,270 @@ static HRESULT WINAPI json_object_GetNamedBoolean( IJsonObject *iface, HSTRING n
+     return IJsonValue_GetBoolean( internal_value, value );
+ }
+ 
++static HRESULT WINAPI json_value_QueryInterface( IJsonValue *iface, REFIID iid, void **out )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_QueryInterface( &impl->IJsonObject_iface, iid, out );
++}
++
++static ULONG WINAPI json_value_AddRef( IJsonValue *iface )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_AddRef( &impl->IJsonObject_iface );
++}
++
++static ULONG WINAPI json_value_Release( IJsonValue *iface )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_Release( &impl->IJsonObject_iface );
++}
++
++static HRESULT WINAPI json_value_GetIids( IJsonValue *iface, ULONG *iid_count, IID **iids )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_GetIids( &impl->IJsonObject_iface, iid_count, iids );
++}
++
++static HRESULT WINAPI json_value_GetRuntimeClassName( IJsonValue *iface, HSTRING *class_name )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_GetRuntimeClassName( &impl->IJsonObject_iface, class_name );
++}
++
++static HRESULT WINAPI json_value_GetTrustLevel( IJsonValue *iface, TrustLevel *trust_level )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    return IJsonObject_GetTrustLevel( &impl->IJsonObject_iface, trust_level );
++}
++
++static HRESULT WINAPI json_value_get_ValueType( IJsonValue *iface, JsonValueType *value )
++{
++    if (!value) return E_POINTER;
++    *value = JsonValueType_Object;
++    return S_OK;
++}
++
++struct json_string_buffer
++{
++    WCHAR *data;
++    size_t length;
++    size_t capacity;
++};
++
++static HRESULT json_string_reserve( struct json_string_buffer *buffer, size_t count )
++{
++    WCHAR *data;
++    size_t capacity;
++
++    if (count <= buffer->capacity - buffer->length) return S_OK;
++    capacity = max( buffer->capacity * 2, buffer->length + count + 32 );
++    if (!(data = realloc( buffer->data, capacity * sizeof(*data) ))) return E_OUTOFMEMORY;
++    buffer->data = data;
++    buffer->capacity = capacity;
++    return S_OK;
++}
++
++static HRESULT json_string_append( struct json_string_buffer *buffer, const WCHAR *string, size_t length )
++{
++    HRESULT hr;
++
++    if (FAILED(hr = json_string_reserve( buffer, length ))) return hr;
++    memcpy( buffer->data + buffer->length, string, length * sizeof(*string) );
++    buffer->length += length;
++    return S_OK;
++}
++
++static HRESULT json_string_append_escaped( struct json_string_buffer *buffer, HSTRING string )
++{
++    const WCHAR *value = WindowsGetStringRawBuffer( string, NULL );
++    UINT32 length = WindowsGetStringLen( string );
++    HRESULT hr;
++    UINT32 i;
++
++    if (FAILED(hr = json_string_append( buffer, L"\"", 1 ))) return hr;
++    for (i = 0; i < length; ++i)
++    {
++        WCHAR escape[6];
++        const WCHAR *text = NULL;
++        size_t text_length = 0;
++
++        switch (value[i])
++        {
++        case L'\"': text = L"\\\""; text_length = 2; break;
++        case L'\\': text = L"\\\\"; text_length = 2; break;
++        case L'\b': text = L"\\b"; text_length = 2; break;
++        case L'\f': text = L"\\f"; text_length = 2; break;
++        case L'\n': text = L"\\n"; text_length = 2; break;
++        case L'\r': text = L"\\r"; text_length = 2; break;
++        case L'\t': text = L"\\t"; text_length = 2; break;
++        default:
++            if (value[i] < 0x20)
++            {
++                swprintf( escape, ARRAY_SIZE(escape), L"\\u%04x", value[i] );
++                text = escape;
++                text_length = 6;
++            }
++            else
++            {
++                text = &value[i];
++                text_length = 1;
++            }
++        }
++        if (FAILED(hr = json_string_append( buffer, text, text_length ))) return hr;
++    }
++    return json_string_append( buffer, L"\"", 1 );
++}
++
++static HRESULT json_string_append_value( struct json_string_buffer *buffer, IJsonValue *value )
++{
++    JsonValueType type;
++    HRESULT hr;
++
++    if (FAILED(hr = IJsonValue_get_ValueType( value, &type ))) return hr;
++    switch (type)
++    {
++    case JsonValueType_Null:
++        return json_string_append( buffer, L"null", 4 );
++    case JsonValueType_Boolean:
++    {
++        boolean boolean_value;
++        if (FAILED(hr = IJsonValue_GetBoolean( value, &boolean_value ))) return hr;
++        return json_string_append( buffer, boolean_value ? L"true" : L"false", boolean_value ? 4 : 5 );
++    }
++    case JsonValueType_Number:
++    {
++        WCHAR number[32];
++        DOUBLE number_value;
++        int length;
++        if (FAILED(hr = IJsonValue_GetNumber( value, &number_value ))) return hr;
++        if ((length = swprintf( number, ARRAY_SIZE(number), L"%.17g", number_value )) < 0) return E_FAIL;
++        return json_string_append( buffer, number, length );
++    }
++    case JsonValueType_String:
++    {
++        HSTRING string;
++        if (FAILED(hr = IJsonValue_GetString( value, &string ))) return hr;
++        hr = json_string_append_escaped( buffer, string );
++        WindowsDeleteString( string );
++        return hr;
++    }
++    case JsonValueType_Object:
++    case JsonValueType_Array:
++    {
++        HSTRING string;
++        if (FAILED(hr = IJsonValue_Stringify( value, &string ))) return hr;
++        hr = json_string_append( buffer, WindowsGetStringRawBuffer( string, NULL ), WindowsGetStringLen( string ) );
++        WindowsDeleteString( string );
++        return hr;
++    }
++    default:
++        return E_UNEXPECTED;
++    }
++}
++
++static HRESULT WINAPI json_value_Stringify( IJsonValue *iface, HSTRING *value )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++    IIterable_IKeyValuePair_HSTRING_IInspectable *iterable = NULL;
++    IIterator_IKeyValuePair_HSTRING_IInspectable *iterator = NULL;
++    struct json_string_buffer buffer = {0};
++    boolean current;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (FAILED(hr = json_string_append( &buffer, L"{", 1 ))) goto done;
++    if (FAILED(hr = IMap_HSTRING_IInspectable_QueryInterface( impl->members,
++            &IID_IIterable_IKeyValuePair_HSTRING_IInspectable, (void **)&iterable ))) goto done;
++    if (FAILED(hr = IIterable_IKeyValuePair_HSTRING_IInspectable_First( iterable, &iterator ))) goto done;
++    if (FAILED(hr = IIterator_IKeyValuePair_HSTRING_IInspectable_get_HasCurrent( iterator, &current ))) goto done;
++
++    while (current)
++    {
++        IKeyValuePair_HSTRING_IInspectable *pair = NULL;
++        IInspectable *inspectable = NULL;
++        IJsonValue *json_value = NULL;
++        HSTRING key = NULL;
++
++        if (buffer.length > 1 && FAILED(hr = json_string_append( &buffer, L",", 1 ))) goto pair_done;
++        if (FAILED(hr = IIterator_IKeyValuePair_HSTRING_IInspectable_get_Current( iterator, &pair ))) goto pair_done;
++        if (FAILED(hr = IKeyValuePair_HSTRING_IInspectable_get_Key( pair, &key ))) goto pair_done;
++        if (FAILED(hr = IKeyValuePair_HSTRING_IInspectable_get_Value( pair, &inspectable ))) goto pair_done;
++        if (FAILED(hr = IInspectable_QueryInterface( inspectable, &IID_IJsonValue, (void **)&json_value ))) goto pair_done;
++        if (FAILED(hr = json_string_append_escaped( &buffer, key ))) goto pair_done;
++        if (FAILED(hr = json_string_append( &buffer, L":", 1 ))) goto pair_done;
++        hr = json_string_append_value( &buffer, json_value );
++
++pair_done:
++        if (json_value) IJsonValue_Release( json_value );
++        if (inspectable) IInspectable_Release( inspectable );
++        if (key) WindowsDeleteString( key );
++        if (pair) IKeyValuePair_HSTRING_IInspectable_Release( pair );
++        if (FAILED(hr)) goto done;
++        if (FAILED(hr = IIterator_IKeyValuePair_HSTRING_IInspectable_MoveNext( iterator, &current ))) goto done;
++    }
++
++    if (FAILED(hr = json_string_append( &buffer, L"}", 1 ))) goto done;
++    hr = WindowsCreateString( buffer.data, buffer.length, value );
++
++done:
++    if (iterator) IIterator_IKeyValuePair_HSTRING_IInspectable_Release( iterator );
++    if (iterable) IIterable_IKeyValuePair_HSTRING_IInspectable_Release( iterable );
++    free( buffer.data );
++    return hr;
++}
++
++static HRESULT WINAPI json_value_GetString( IJsonValue *iface, HSTRING *value )
++{
++    return E_ILLEGAL_METHOD_CALL;
++}
++
++static HRESULT WINAPI json_value_GetNumber( IJsonValue *iface, DOUBLE *value )
++{
++    return E_ILLEGAL_METHOD_CALL;
++}
++
++static HRESULT WINAPI json_value_GetBoolean( IJsonValue *iface, boolean *value )
++{
++    return E_ILLEGAL_METHOD_CALL;
++}
++
++static HRESULT WINAPI json_value_GetArray( IJsonValue *iface, IJsonArray **value )
++{
++    return E_ILLEGAL_METHOD_CALL;
++}
++
++static HRESULT WINAPI json_value_GetObject( IJsonValue *iface, IJsonObject **value )
++{
++    struct json_object *impl = impl_from_IJsonValue( iface );
++
++    if (!value) return E_POINTER;
++    *value = &impl->IJsonObject_iface;
++    IJsonObject_AddRef( *value );
++    return S_OK;
++}
++
++static const struct IJsonValueVtbl json_value_vtbl =
++{
++    json_value_QueryInterface,
++    json_value_AddRef,
++    json_value_Release,
++    /* IInspectable methods */
++    json_value_GetIids,
++    json_value_GetRuntimeClassName,
++    json_value_GetTrustLevel,
++    /* IJsonValue methods */
++    json_value_get_ValueType,
++    json_value_Stringify,
++    json_value_GetString,
++    json_value_GetNumber,
++    json_value_GetBoolean,
++    json_value_GetArray,
++    json_value_GetObject,
++};
++
+ static const struct IJsonObjectVtbl json_object_vtbl =
+ {
+     json_object_QueryInterface,
+@@ -237,6 +527,140 @@ static const struct IJsonObjectVtbl json_object_vtbl =
+     json_object_GetNamedBoolean,
+ };
+ 
++static HRESULT WINAPI json_defaults_QueryInterface( IJsonObjectWithDefaultValues *iface, REFIID iid, void **out )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_QueryInterface( &impl->IJsonObject_iface, iid, out );
++}
++
++static ULONG WINAPI json_defaults_AddRef( IJsonObjectWithDefaultValues *iface )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_AddRef( &impl->IJsonObject_iface );
++}
++
++static ULONG WINAPI json_defaults_Release( IJsonObjectWithDefaultValues *iface )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_Release( &impl->IJsonObject_iface );
++}
++
++static HRESULT WINAPI json_defaults_GetIids( IJsonObjectWithDefaultValues *iface, ULONG *iid_count, IID **iids )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_GetIids( &impl->IJsonObject_iface, iid_count, iids );
++}
++
++static HRESULT WINAPI json_defaults_GetRuntimeClassName( IJsonObjectWithDefaultValues *iface, HSTRING *class_name )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_GetRuntimeClassName( &impl->IJsonObject_iface, class_name );
++}
++
++static HRESULT WINAPI json_defaults_GetTrustLevel( IJsonObjectWithDefaultValues *iface, TrustLevel *trust_level )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    return IJsonObject_GetTrustLevel( &impl->IJsonObject_iface, trust_level );
++}
++
++static HRESULT WINAPI json_defaults_GetNamedValue( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        IJsonValue *default_value, IJsonValue **value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedValue( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    *value = default_value;
++    if (default_value) IJsonValue_AddRef( default_value );
++    return S_OK;
++}
++
++static HRESULT WINAPI json_defaults_GetNamedObject( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        IJsonObject *default_value, IJsonObject **value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedObject( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    *value = default_value;
++    if (default_value) IJsonObject_AddRef( default_value );
++    return S_OK;
++}
++
++static HRESULT WINAPI json_defaults_GetNamedString( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        HSTRING default_value, HSTRING *value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedString( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    return WindowsDuplicateString( default_value, value );
++}
++
++static HRESULT WINAPI json_defaults_GetNamedArray( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        IJsonArray *default_value, IJsonArray **value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedArray( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    *value = default_value;
++    if (default_value) IJsonArray_AddRef( default_value );
++    return S_OK;
++}
++
++static HRESULT WINAPI json_defaults_GetNamedNumber( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        DOUBLE default_value, DOUBLE *value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedNumber( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    *value = default_value;
++    return S_OK;
++}
++
++static HRESULT WINAPI json_defaults_GetNamedBoolean( IJsonObjectWithDefaultValues *iface, HSTRING name,
++        boolean default_value, boolean *value )
++{
++    struct json_object *impl = impl_from_IJsonObjectWithDefaultValues( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    if ((hr = IJsonObject_GetNamedBoolean( &impl->IJsonObject_iface, name, value )) != WEB_E_JSON_VALUE_NOT_FOUND)
++        return hr;
++    *value = default_value;
++    return S_OK;
++}
++
++static const struct IJsonObjectWithDefaultValuesVtbl json_defaults_vtbl =
++{
++    json_defaults_QueryInterface,
++    json_defaults_AddRef,
++    json_defaults_Release,
++    /* IInspectable methods */
++    json_defaults_GetIids,
++    json_defaults_GetRuntimeClassName,
++    json_defaults_GetTrustLevel,
++    /* IJsonObjectWithDefaultValues methods */
++    json_defaults_GetNamedValue,
++    json_defaults_GetNamedObject,
++    json_defaults_GetNamedString,
++    json_defaults_GetNamedArray,
++    json_defaults_GetNamedNumber,
++    json_defaults_GetNamedBoolean,
++};
++
+ struct json_object_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+@@ -317,6 +741,8 @@ static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInsp
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+ 
+     impl->IJsonObject_iface.lpVtbl = &json_object_vtbl;
++    impl->IJsonObjectWithDefaultValues_iface.lpVtbl = &json_defaults_vtbl;
++    impl->IJsonValue_iface.lpVtbl = &json_value_vtbl;
+     impl->ref = 1;
+ 
+     WindowsCreateStringReference( RuntimeClass_Windows_Foundation_Collections_PropertySet, wcslen( RuntimeClass_Windows_Foundation_Collections_PropertySet ),
+diff --git a/dlls/windows.web/json_value.c b/dlls/windows.web/json_value.c
+index 857d3630312..e7d3f1d5597 100644
+--- a/dlls/windows.web/json_value.c
++++ b/dlls/windows.web/json_value.c
+@@ -219,8 +219,68 @@ static HRESULT WINAPI json_value_get_ValueType( IJsonValue *iface, JsonValueType
+ 
+ static HRESULT WINAPI json_value_Stringify( IJsonValue *iface, HSTRING *value )
+ {
+-    FIXME( "iface %p, value %p stub!\n", iface, value );
+-    return E_NOTIMPL;
++    struct json_value *impl = impl_from_IJsonValue( iface );
++    WCHAR number[32], *escaped;
++    IJsonValue *complex_value;
++    const WCHAR *string;
++    UINT32 i, length;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!value) return E_POINTER;
++    switch (impl->json_value_type)
++    {
++    case JsonValueType_Null:
++        return WindowsCreateString( L"null", 4, value );
++    case JsonValueType_Boolean:
++        return WindowsCreateString( impl->boolean_value ? L"true" : L"false",
++                impl->boolean_value ? 4 : 5, value );
++    case JsonValueType_Number:
++        if ((length = swprintf( number, ARRAY_SIZE(number), L"%.17g", impl->number_value )) == (UINT32)-1)
++            return E_FAIL;
++        return WindowsCreateString( number, length, value );
++    case JsonValueType_String:
++        string = WindowsGetStringRawBuffer( impl->string_value, &length );
++        if (!(escaped = malloc( (length * 6 + 2) * sizeof(*escaped) ))) return E_OUTOFMEMORY;
++        escaped[0] = L'\"';
++        for (i = 0, length = 1; i < WindowsGetStringLen( impl->string_value ); ++i)
++        {
++            switch (string[i])
++            {
++            case L'\"': escaped[length++] = L'\\'; escaped[length++] = L'\"'; break;
++            case L'\\': escaped[length++] = L'\\'; escaped[length++] = L'\\'; break;
++            case L'\b': escaped[length++] = L'\\'; escaped[length++] = L'b'; break;
++            case L'\f': escaped[length++] = L'\\'; escaped[length++] = L'f'; break;
++            case L'\n': escaped[length++] = L'\\'; escaped[length++] = L'n'; break;
++            case L'\r': escaped[length++] = L'\\'; escaped[length++] = L'r'; break;
++            case L'\t': escaped[length++] = L'\\'; escaped[length++] = L't'; break;
++            default:
++                if (string[i] < 0x20)
++                {
++                    swprintf( escaped + length, 7, L"\\u%04x", string[i] );
++                    length += 6;
++                }
++                else escaped[length++] = string[i];
++            }
++        }
++        escaped[length++] = L'\"';
++        hr = WindowsCreateString( escaped, length, value );
++        free( escaped );
++        return hr;
++    case JsonValueType_Array:
++        if (FAILED(hr = IJsonArray_QueryInterface( impl->array_value, &IID_IJsonValue, (void **)&complex_value ))) return hr;
++        hr = IJsonValue_Stringify( complex_value, value );
++        IJsonValue_Release( complex_value );
++        return hr;
++    case JsonValueType_Object:
++        if (FAILED(hr = IJsonObject_QueryInterface( impl->object_value, &IID_IJsonValue, (void **)&complex_value ))) return hr;
++        hr = IJsonValue_Stringify( complex_value, value );
++        IJsonValue_Release( complex_value );
++        return hr;
++    default:
++        return E_UNEXPECTED;
++    }
+ }
+ 
+ static HRESULT WINAPI json_value_GetString( IJsonValue *iface, HSTRING *value )
+diff --git a/dlls/windows.web/tests/web.c b/dlls/windows.web/tests/web.c
+index a023319e909..09cb5e25100 100644
+--- a/dlls/windows.web/tests/web.c
++++ b/dlls/windows.web/tests/web.c
+@@ -250,6 +250,8 @@ static void test_JsonObjectStatics(void)
+     IJsonObject *json_object = (void *)0xdeadbeef;
+     IJsonArray *child_array = (void *)0xdeadbeef;
+     IJsonValue *child_value = (void *)0xdeadbeef;
++    IJsonValue *object_value = (void *)0xdeadbeef;
++    IJsonObjectWithDefaultValues *defaults = (void *)0xdeadbeef;
+     BOOLEAN child_boolean;
+     HSTRING child_string;
+     DOUBLE child_number;
+@@ -299,6 +301,38 @@ static void test_JsonObjectStatics(void)
+     hr = IInspectable_QueryInterface( inspectable, &IID_IJsonObject, (void **)&json_object );
+     ok( hr == S_OK, "got hr %#lx.\n", hr );
+ 
++    hr = IInspectable_QueryInterface( inspectable, &IID_IJsonValue, (void **)&object_value );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        JsonValueType value_type = JsonValueType_Null;
++        IJsonObject *value_object = NULL;
++
++        hr = IJsonValue_get_ValueType( object_value, &value_type );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( value_type == JsonValueType_Object, "got value type %u.\n", value_type );
++        hr = IJsonValue_GetObject( object_value, &value_object );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( value_object == json_object, "got object %p, expected %p.\n", value_object, json_object );
++        if (value_object) IJsonObject_Release( value_object );
++        IJsonValue_Release( object_value );
++    }
++
++    hr = IInspectable_QueryInterface( inspectable, &IID_IJsonObjectWithDefaultValues, (void **)&defaults );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        boolean value = FALSE;
++        HSTRING missing = NULL;
++
++        WindowsCreateString( L"missing", 7, &missing );
++        hr = IJsonObjectWithDefaultValues_GetNamedBoolean( defaults, missing, TRUE, &value );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( value == TRUE, "got value %u.\n", value );
++        WindowsDeleteString( missing );
++        IJsonObjectWithDefaultValues_Release( defaults );
++    }
++
+     check_interface( inspectable, &IID_IAgileObject );
+     IInspectable_Release( inspectable );
+ 
+@@ -418,6 +452,18 @@ static void test_JsonObjectStatics(void)
+     hr = IJsonObject_SetNamedValue( json_object, str, child_value );
+     ok( hr == S_OK, "got hr %#lx.\n", hr );
+     IJsonValue_Release( child_value );
++    hr = IJsonObject_QueryInterface( json_object, &IID_IJsonValue, (void **)&object_value );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        HSTRING json = NULL;
++        hr = IJsonValue_Stringify( object_value, &json );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( !wcscmp( WindowsGetStringRawBuffer( json, NULL ), L"{\"key\":\"key\"}" ),
++            "got %s.\n", wine_dbgstr_hstring( json ) );
++        WindowsDeleteString( json );
++        IJsonValue_Release( object_value );
++    }
+     hr = IJsonObject_GetNamedValue( json_object, str, &child_value );
+     ok( hr == S_OK, "got hr %#lx.\n", hr );
+     IJsonValue_Release( child_value );
+diff --git a/include/windows.data.json.idl b/include/windows.data.json.idl
+index 4dfe36d095a..f6a68e55210 100644
+--- a/include/windows.data.json.idl
++++ b/include/windows.data.json.idl
+@@ -99,6 +99,24 @@ namespace Windows.Data.Json {
+         HRESULT GetNamedBoolean([in] HSTRING name, [out, retval] boolean *value);
+     }
+ 
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Data.Json.JsonObject),
++        uuid(d960d2a2-b7f0-4f00-8e44-d82cf415ea13)
++    ]
++    interface IJsonObjectWithDefaultValues : IInspectable
++    {
++        HRESULT GetNamedValue([in] HSTRING name, [in] Windows.Data.Json.IJsonValue *defaultValue,
++                [out, retval] Windows.Data.Json.JsonValue **value);
++        HRESULT GetNamedObject([in] HSTRING name, [in] Windows.Data.Json.IJsonObject *defaultValue,
++                [out, retval] Windows.Data.Json.JsonObject **value);
++        HRESULT GetNamedString([in] HSTRING name, [in] HSTRING defaultValue, [out, retval] HSTRING *value);
++        HRESULT GetNamedArray([in] HSTRING name, [in] Windows.Data.Json.IJsonArray *defaultValue,
++                [out, retval] Windows.Data.Json.JsonArray **value);
++        HRESULT GetNamedNumber([in] HSTRING name, [in] DOUBLE defaultValue, [out, retval] DOUBLE *value);
++        HRESULT GetNamedBoolean([in] HSTRING name, [in] boolean defaultValue, [out, retval] boolean *value);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+         uuid(a3219ecb-f0b3-4dcd-beee-19d48cd3ed1e)
+@@ -157,7 +175,7 @@ namespace Windows.Data.Json {
+         interface Windows.Data.Json.IJsonValue;
+         interface Windows.Foundation.Collections.IMap<HSTRING, Windows.Data.Json.IJsonValue *>;
+         interface Windows.Foundation.Collections.IIterable<Windows.Foundation.Collections.IKeyValuePair<HSTRING, Windows.Data.Json.IJsonValue *> *>;
+-        /* [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Data.Json.IJsonObjectWithDefaultValues; */
++        [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Data.Json.IJsonObjectWithDefaultValues;
+         [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Foundation.IStringable;
+     }
+ 
+

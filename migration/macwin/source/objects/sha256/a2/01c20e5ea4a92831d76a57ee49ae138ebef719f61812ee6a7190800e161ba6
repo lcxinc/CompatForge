@@ -1,0 +1,62 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Developer Tools",
+  "compatibilityRating" : "good",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "sqlitestudio",
+  "installer" : {
+    "arguments" : [
+      "--mode",
+      "unattended",
+      "--unattendedmodeui",
+      "none",
+      "--installer-language",
+      "zh_CN",
+      "--install_for",
+      "all"
+    ],
+    "fileName" : "SQLiteStudio-3.4.17-windows-x64-installer.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "5018ea571c2a3416944267d387cb75eea99d46ebd010f6aa5c35df1f7690c894",
+    "url" : "https://github.com/pawelsalawa/sqlitestudio/releases/download/3.4.17/SQLiteStudio-3.4.17-windows-x64-installer.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "SQLiteStudio",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\SQLiteStudio\\SQLiteStudio.exe",
+      "id" : "sqlitestudio",
+      "showInHome" : true
+    }
+  ],
+  "name" : "SQLiteStudio",
+  "postInstall" : [
+
+  ],
+  "publisher" : "SQLiteStudio",
+  "warnings" : [
+    "Database GUI sample used to exercise BitRock silent installation, Qt widget rendering, file dialogs, and local database workflows.",
+    "The launcher is automatically assigned the qt-widgets-software compatibility profile."
+  ]
+}

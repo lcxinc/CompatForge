@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/portable-probe.schema.json",
+  "title": "CompatForge Portable Probe Asset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "kind",
+    "source",
+    "contentPath",
+    "contentSha256",
+    "mediaType",
+    "executable",
+    "referencedAssetIds",
+    "intendedOwner",
+    "license",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "id": { "$ref": "#/$defs/id" },
+    "kind": { "enum": ["shell", "registry", "source", "binary", "data", "other"] },
+    "source": { "$ref": "#/$defs/sourceIdentity" },
+    "contentPath": { "$ref": "#/$defs/relativePath" },
+    "contentSha256": { "$ref": "#/$defs/sha256" },
+    "mediaType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 127,
+      "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+(?![\\s\\S])"
+    },
+    "executable": { "const": false },
+    "referencedAssetIds": {
+      "type": "array",
+      "maxItems": 90,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "intendedOwner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^compatforge/[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
+    },
+    "license": { "$ref": "#/$defs/reviewStatus" },
+    "provenance": { "$ref": "#/$defs/reviewStatus" }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?=.{1,1024}(?![\\s\\S]))(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+)*(?![\\s\\S])"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])"
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "reviewStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "reviewed" }
+      }
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceRepository", "sourceCommit", "sourcePath", "sourceSha256", "gitBlobOid", "gitMode"],
+      "properties": {
+        "sourceRepository": { "const": "a1112/Mac-Win" },
+        "sourceCommit": { "$ref": "#/$defs/commit" },
+        "sourcePath": { "$ref": "#/$defs/relativePath" },
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "gitBlobOid": { "$ref": "#/$defs/commit" },
+        "gitMode": { "enum": ["100644", "100755"] }
+      }
+    }
+  }
+}

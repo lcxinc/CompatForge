@@ -1,0 +1,63 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Documents",
+  "compatibilityRating" : "good",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8",
+    "MACWIN_FONTCONFIG_REPAIR" : "1",
+    "MACWIN_TEXT_RENDERING_REPAIR" : "1",
+    "WINEDEBUG" : "-all"
+  },
+  "id" : "sumatrapdf",
+  "installer" : {
+    "arguments" : [
+      "-silent"
+    ],
+    "fileName" : "SumatraPDF-3.6.1-64-install.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "1eee71cccd2ea6e94d5bcea54ee2f759844da3e1a0ee2f6045035b1d17b94381",
+    "url" : "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64-install.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "SumatraPDF",
+      "envOverrides" : {
+        "LANG" : "zh_CN.UTF-8",
+        "LC_ALL" : "zh_CN.UTF-8",
+        "LC_CTYPE" : "zh_CN.UTF-8",
+        "MACWIN_FONTCONFIG_REPAIR" : "1",
+        "MACWIN_TEXT_RENDERING_REPAIR" : "1",
+        "WINEDEBUG" : "-all"
+      },
+      "exePath" : "C:\\Program Files\\SumatraPDF\\SumatraPDF.exe",
+      "id" : "sumatrapdf",
+      "showInHome" : true
+    }
+  ],
+  "name" : "SumatraPDF",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Krzysztof Kowalczyk / SumatraPDF contributors",
+  "warnings" : [
+    "Lightweight document viewer sample used to exercise installer, font rendering, file dialogs, and ordinary document windows.",
+    "Downloaded from the official sumatrapdfreader.org release path and verified with SHA-256 before installation."
+  ]
+}

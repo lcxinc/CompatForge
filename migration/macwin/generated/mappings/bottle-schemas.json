@@ -1,0 +1,77 @@
+{
+  "records": [
+    {
+      "category": "bottle-schema",
+      "gitBlobOid": "2e407d86a9f1002fa4d6f8d25eaa0179ed5a4429",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/BottleService.swift",
+      "sourceRepository": "a1112/Mac-Win",
+      "sourceSha256": "5f79745e5262c57b8482b5a35b8a65985a87bb357d35e679a93ee0a6924aad56",
+      "status": "deferred",
+      "targetIssue": "MW-ASSET-003"
+    },
+    {
+      "category": "bottle-schema",
+      "gitBlobOid": "07d504af98ce0b23864677bdb9180d68f6b282bb",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/JSONStore.swift",
+      "sourceRepository": "a1112/Mac-Win",
+      "sourceSha256": "af72b14b83029129e85a94d4686fd04efab04575cedc6ae281a5877275b585a2",
+      "status": "deferred",
+      "targetIssue": "MW-ASSET-003"
+    },
+    {
+      "category": "bottle-schema",
+      "gitBlobOid": "6f9c981674dd7573b18252710a99f24ee787f8e2",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/MacWinPaths.swift",
+      "sourceRepository": "a1112/Mac-Win",
+      "sourceSha256": "2f87cd2508537b4f8d128ea118b0fdbaf880613832645713e89756c8003b9615",
+      "status": "deferred",
+      "targetIssue": "MW-ASSET-003"
+    },
+    {
+      "category": "bottle-schema",
+      "gitBlobOid": "79ab686ff80b393c119ede72d071c5aa74183721",
+      "gitMode": "100644",
+      "intendedOwner": "compatforge/bottle-schema",
+      "license": {
+        "status": "unresolved"
+      },
+      "provenance": {
+        "status": "unresolved"
+      },
+      "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+      "sourcePath": "MacWinManager/Sources/MacWinCore/Models.swift",
+      "sourceRepository": "a1112/Mac-Win",
+      "sourceSha256": "8c0cb0cdacaa83f99e6c5f41af3da3596f7a578edfcec052c2976ba75e9f4b6e",
+      "status": "deferred",
+      "targetIssue": "MW-ASSET-003"
+    }
+  ],
+  "schemaVersion": "1"
+}

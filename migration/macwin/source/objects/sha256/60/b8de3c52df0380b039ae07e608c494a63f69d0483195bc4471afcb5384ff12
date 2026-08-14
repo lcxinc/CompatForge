@@ -1,0 +1,85 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Office Suite",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "libreoffice",
+  "installer" : {
+    "arguments" : [
+      "/i",
+      "$installer",
+      "/qn",
+      "/norestart",
+      "REGISTER_ALL_MSO_TYPES=0",
+      "CREATEDESKTOPLINK=0"
+    ],
+    "command" : "msiexec",
+    "fileName" : "LibreOffice_26.2.4_Win_x86-64.msi",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "202f26cda071c5aa4996a5a28412fddceb3891dceb0366982c62650456c0730f",
+    "url" : "https://download.documentfoundation.org/libreoffice/stable/26.2.4/win/x86_64/LibreOffice_26.2.4_Win_x86-64.msi"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "LibreOffice Writer",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\LibreOffice\\program\\swriter.exe",
+      "id" : "libreoffice-writer",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "LibreOffice Calc",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\LibreOffice\\program\\scalc.exe",
+      "id" : "libreoffice-calc",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "LibreOffice Impress",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\LibreOffice\\program\\simpress.exe",
+      "id" : "libreoffice-impress",
+      "showInHome" : true
+    }
+  ],
+  "name" : "LibreOffice",
+  "postInstall" : [
+
+  ],
+  "publisher" : "The Document Foundation",
+  "warnings" : [
+    "Large office-suite MSI sample used to exercise document windows, CJK font fallback, file dialogs, OLE-style registration, and printing-adjacent code paths.",
+    "The zh-CN help pack is intentionally optional for v1 smoke coverage; first pass validates Writer, Calc, and Impress launchers."
+  ]
+}

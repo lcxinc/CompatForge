@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/macwin-source-pack.schema.json",
+  "title": "CompatForge Frozen Mac-Win Source Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repository",
+    "sourceTag",
+    "sourceTagObject",
+    "sourceCommit",
+    "inventoryCommit",
+    "digestAlgorithm",
+    "assetCount",
+    "categoryCounts",
+    "assets"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "repository": { "const": "a1112/Mac-Win" },
+    "sourceTag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
+    },
+    "sourceTagObject": { "$ref": "#/$defs/gitBlobOid" },
+    "sourceCommit": { "$ref": "#/$defs/commit" },
+    "inventoryCommit": { "$ref": "#/$defs/commit" },
+    "digestAlgorithm": { "const": "sha256" },
+    "assetCount": { "const": 90 },
+    "categoryCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalog", "patches", "probes", "fixtures", "bottleSchema"],
+      "properties": {
+        "catalog": { "const": 19 },
+        "patches": { "const": 11 },
+        "probes": { "const": 26 },
+        "fixtures": { "const": 30 },
+        "bottleSchema": { "const": 4 }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 90,
+      "maxItems": 90,
+      "items": { "$ref": "#/$defs/sourceRecord" }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?=.{1,1024}(?![\\s\\S]))(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+)*(?![\\s\\S])"
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "gitBlobOid": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+    },
+    "objectPath": {
+      "type": "string",
+      "minLength": 80,
+      "maxLength": 80,
+      "pattern": "^objects/sha256/[0-9a-f]{2}/[0-9a-f]{62}(?![\\s\\S])"
+    },
+    "reviewStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "unresolved" }
+      }
+    },
+    "sourceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "sourcePath",
+        "sourceCommit",
+        "gitBlobOid",
+        "sha256",
+        "byteSize",
+        "gitMode",
+        "kind",
+        "license",
+        "provenance",
+        "intendedOwner",
+        "externalRefs",
+        "developmentDependencies",
+        "objectPath"
+      ],
+      "properties": {
+        "category": {
+          "enum": ["catalog", "patches", "probes", "fixtures", "bottle-schema"]
+        },
+        "sourcePath": { "$ref": "#/$defs/relativePath" },
+        "sourceCommit": { "$ref": "#/$defs/commit" },
+        "gitBlobOid": { "$ref": "#/$defs/gitBlobOid" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byteSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8388608
+        },
+        "gitMode": { "enum": ["100644", "100755"] },
+        "kind": {
+          "enum": ["catalog-record", "source-patch", "probe", "test-fixture", "bottle-schema"]
+        },
+        "license": { "$ref": "#/$defs/reviewStatus" },
+        "provenance": { "$ref": "#/$defs/reviewStatus" },
+        "intendedOwner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^compatforge/[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
+        },
+        "externalRefs": {
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "developmentDependencies": {
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "objectPath": { "$ref": "#/$defs/objectPath" }
+      }
+    }
+  }
+}

@@ -1,0 +1,1143 @@
+diff --git a/dlls/dinput/tests/device8.c b/dlls/dinput/tests/device8.c
+index 37ed9428561..c2fefe37abe 100644
+--- a/dlls/dinput/tests/device8.c
++++ b/dlls/dinput/tests/device8.c
+@@ -1937,6 +1937,7 @@ static void test_hid_touch_screen(void)
+     RAWINPUTDEVICE rawdevice = {.usUsagePage = HID_USAGE_PAGE_DIGITIZER, .usUsage = HID_USAGE_DIGITIZER_TOUCH_SCREEN};
+     UINT rawbuffer_count, rawbuffer_size, expect_flags, id, width, height;
+     WCHAR device_path[MAX_PATH];
++    POINTER_INPUT_TYPE type;
+     char rawbuffer[1024];
+     RAWINPUT *rawinput;
+     HANDLE file;
+@@ -2022,6 +2023,9 @@ static void test_hid_touch_screen(void)
+     todo_wine /* missing POINTER_MESSAGE_FLAG_FIRSTBUTTON */
+     ok( HIWORD( pointer_wparam[0] ) == expect_flags, "got wparam %#Ix\n", pointer_wparam[0] );
+     ok( LOWORD( pointer_wparam[0] ) > 0, "got wparam %#Ix\n", pointer_wparam[0] );
++    ret = GetPointerType( LOWORD( pointer_wparam[0] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[0] ) * 128 / width == 0x08, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( HIWORD( pointer_lparam[0] ) * 128 / height == 0x10, "got lparam %#Ix\n", pointer_lparam[0] );
+     id = LOWORD( pointer_wparam[0] );
+@@ -2165,6 +2169,9 @@ static void test_hid_touch_screen(void)
+     todo_wine /* missing POINTER_MESSAGE_FLAG_FIRSTBUTTON */
+     ok( HIWORD( pointer_wparam[0] ) == expect_flags, "got wparam %#Ix\n", pointer_wparam[0] );
+     ok( LOWORD( pointer_wparam[0] ) > 0, "got wparam %#Ix\n", pointer_wparam[0] );
++    ret = GetPointerType( LOWORD( pointer_wparam[0] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[0] ) * 128 / width == 0x08, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( HIWORD( pointer_lparam[0] ) * 128 / height == 0x10, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( pointer_wparam[1] == 0, "got wparam %#Ix\n", pointer_wparam[1] );
+@@ -2189,6 +2196,9 @@ static void test_hid_touch_screen(void)
+         broken(HIWORD( pointer_wparam[0] ) == (expect_flags & ~POINTER_MESSAGE_FLAG_CONFIDENCE)), /* Win8 32bit */
+         "got wparam %#Ix\n", pointer_wparam[0] );
+     ok( LOWORD( pointer_wparam[0] ) == id, "got wparam %#Ix\n", pointer_wparam[0] );
++    ret = GetPointerType( LOWORD( pointer_wparam[0] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[0] ) * 128 / width == 0x08, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( HIWORD( pointer_lparam[0] ) * 128 / height == 0x10, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( pointer_wparam[1] == 0, "got wparam %#Ix\n", pointer_wparam[1] );
+@@ -2215,6 +2225,9 @@ static void test_hid_touch_screen(void)
+     todo_wine /* missing POINTER_MESSAGE_FLAG_FIRSTBUTTON */
+     ok( HIWORD( pointer_wparam[0] ) == expect_flags, "got wparam %#Ix\n", pointer_wparam[0] );
+     ok( LOWORD( pointer_wparam[0] ) > 0, "got wparam %#Ix\n", pointer_wparam[0] );
++    ret = GetPointerType( LOWORD( pointer_wparam[0] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[0] ) * 128 / width == 0x08, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( HIWORD( pointer_lparam[0] ) * 128 / height == 0x10, "got lparam %#Ix\n", pointer_lparam[0] );
+     id = LOWORD( pointer_wparam[0] );
+@@ -2226,6 +2239,9 @@ static void test_hid_touch_screen(void)
+         broken(HIWORD( pointer_wparam[1] ) == (expect_flags & ~POINTER_MESSAGE_FLAG_CONFIDENCE)), /* Win8 32bit */
+         "got wparam %#Ix\n", pointer_wparam[1] );
+     ok( LOWORD( pointer_wparam[1] ) == id + 1, "got wparam %#Ix\n", pointer_wparam[1] );
++    ret = GetPointerType( LOWORD( pointer_wparam[1] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[1] ) * 128 / width == 0x18, "got lparam %#Ix\n", pointer_lparam[1] );
+     ok( HIWORD( pointer_lparam[1] ) * 128 / height == 0x20, "got lparam %#Ix\n", pointer_lparam[1] );
+ 
+@@ -2249,6 +2265,9 @@ static void test_hid_touch_screen(void)
+         broken(HIWORD( pointer_wparam[0] ) == (expect_flags & ~POINTER_MESSAGE_FLAG_CONFIDENCE)), /* Win8 32bit */
+         "got wparam %#Ix\n", pointer_wparam[0] );
+     ok( LOWORD( pointer_wparam[0] ) == id, "got wparam %#Ix\n", pointer_wparam[0] );
++    ret = GetPointerType( LOWORD( pointer_wparam[0] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[0] ) * 128 / width == 0x08, "got lparam %#Ix\n", pointer_lparam[0] );
+     ok( HIWORD( pointer_lparam[0] ) * 128 / height == 0x10, "got lparam %#Ix\n", pointer_lparam[0] );
+ 
+@@ -2257,6 +2276,9 @@ static void test_hid_touch_screen(void)
+         broken(HIWORD( pointer_wparam[1] ) == (expect_flags & ~POINTER_MESSAGE_FLAG_CONFIDENCE)), /* Win8 32bit */
+         "got wparam %#Ix\n", pointer_wparam[1] );
+     ok( LOWORD( pointer_wparam[1] ) == id + 1, "got wparam %#Ix\n", pointer_wparam[1] );
++    ret = GetPointerType( LOWORD( pointer_wparam[1] ), &type );
++    ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
++    ok( type == PT_TOUCH, "got pointer type %#lx\n", type );
+     ok( LOWORD( pointer_lparam[1] ) * 128 / width == 0x18, "got lparam %#Ix\n", pointer_lparam[1] );
+     ok( HIWORD( pointer_lparam[1] ) * 128 / height == 0x20, "got lparam %#Ix\n", pointer_lparam[1] );
+ 
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index 48b38166b75..051f4e48ec9 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -750,26 +750,22 @@ BOOL WINAPI GetPointerDeviceProperties( HANDLE device, UINT32 *count,
+     return FALSE;
+ }
+ 
+-BOOL WINAPI GetPointerDeviceRects( HANDLE device, RECT *device_rect, RECT *display_rect )
+-{
+-    FIXME( "device %p, device_rect %p, display_rect %p stub!\n",
+-           device, device_rect, display_rect );
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
+-}
+-
+ BOOL WINAPI GetPointerPenInfo( UINT32 id, POINTER_PEN_INFO *info )
+ {
+-    FIXME( "id %u, info %p stub!\n", id, info );
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
++    UINT32 count = 1;
++
++    TRACE( "id %u, info %p\n", id, info );
++
++    return NtUserGetPointerInfoList( id, PT_PEN, 0, 0, sizeof(*info), &count, &count, info );
+ }
+ 
+ BOOL WINAPI GetPointerTouchInfo( UINT32 id, POINTER_TOUCH_INFO *info )
+ {
+-    FIXME( "id %u, info %p stub!\n", id, info );
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
++    UINT32 count = 1;
++
++    TRACE( "id %u, info %p stub!\n", id, info );
++
++    return NtUserGetPointerInfoList( id, PT_TOUCH, 0, 0, sizeof(*info), &count, &count, info );
+ }
+ 
+ BOOL WINAPI GetRawPointerDeviceData( UINT32 id, UINT32 hist_count, UINT32 prop_count,
+@@ -783,9 +779,50 @@ BOOL WINAPI GetRawPointerDeviceData( UINT32 id, UINT32 hist_count, UINT32 prop_c
+ 
+ BOOL WINAPI GetPointerTouchInfoHistory( UINT32 id, UINT32 *count, POINTER_TOUCH_INFO *info )
+ {
+-    FIXME( "id %u, count %p, info %p stub!\n", id, count, info );
+-    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
++    UINT32 pointers = 1;
++
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_TOUCH, 0, 0, sizeof(*info), count, &pointers, info );
++}
++
++BOOL WINAPI GetPointerPenInfoHistory( UINT32 id, UINT32 *count, POINTER_PEN_INFO *info )
++{
++    UINT32 pointers = 1;
++
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_PEN, 0, 0, sizeof(*info), count, &pointers, info );
++}
++
++BOOL WINAPI GetPointerFrameTouchInfo( UINT32 id, UINT32 *count, POINTER_TOUCH_INFO *info )
++{
++    UINT32 entries = 1;
++
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_TOUCH, 0, 0, sizeof(*info), &entries, count, info );
++}
++
++BOOL WINAPI GetPointerFramePenInfo( UINT32 id, UINT32 *count, POINTER_PEN_INFO *info )
++{
++    UINT32 entries = 1;
++
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_PEN, 0, 0, sizeof(*info), &entries, count, info );
++}
++
++BOOL WINAPI GetPointerFrameTouchInfoHistory( UINT32 id, UINT32 *entries, UINT32 *pointers, POINTER_TOUCH_INFO *info )
++{
++    TRACE( "id %u, entries %p, pointers %p, info %p\n", id, entries, pointers, info );
++    return NtUserGetPointerInfoList( id, PT_TOUCH, 0, 0, sizeof(*info), entries, pointers, info );
++}
++
++BOOL WINAPI GetPointerFramePenInfoHistory( UINT32 id, UINT32 *entries, UINT32 *pointers, POINTER_PEN_INFO *info )
++{
++    TRACE( "id %u, entries %p, pointers %p, info %p\n", id, entries, pointers, info );
++    return NtUserGetPointerInfoList( id, PT_PEN, 0, 0, sizeof(*info), entries, pointers, info );
+ }
+ 
+ 
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index 6333fcb48b4..2e98a5bf13e 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -507,29 +507,38 @@ LRESULT WINAPI PackTouchHitTestingProximityEvaluation(const TOUCH_HIT_TESTING_IN
+     return 0;
+ }
+ 
+-/**********************************************************************
+- * GetPointerType [USER32.@]
+- */
+-BOOL WINAPI GetPointerType(UINT32 id, POINTER_INPUT_TYPE *type)
++BOOL WINAPI GetPointerInfo(UINT32 id, POINTER_INFO *info)
+ {
+-    FIXME("(%d %p): stub\n", id, type);
++    UINT32 count = 1;
+ 
+-    if(!id || !type)
+-    {
+-        SetLastError(ERROR_INVALID_PARAMETER);
+-        return FALSE;
+-    }
++    TRACE( "id %d, info %p\n", id, info );
+ 
+-    *type = PT_MOUSE;
+-    return TRUE;
++    return NtUserGetPointerInfoList( id, PT_POINTER, 0, 0, sizeof(*info), &count, &count, info );
+ }
+ 
+-BOOL WINAPI GetPointerInfo(UINT32 id, POINTER_INFO *info)
++BOOL WINAPI GetPointerInfoHistory( UINT32 id, UINT32 *count, POINTER_INFO *info )
+ {
+-    FIXME("(%d %p): stub\n", id, info);
++    UINT32 pointers = 1;
+ 
+-    SetLastError(ERROR_INVALID_PARAMETER);
+-    return FALSE;
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_POINTER, 0, 0, sizeof(*info), count, &pointers, info );
++}
++
++BOOL WINAPI GetPointerFrameInfo( UINT32 id, UINT32 *count, POINTER_INFO *info )
++{
++    UINT32 entries = 1;
++
++    TRACE( "id %u, count %p, info %p\n", id, count, info );
++
++    return NtUserGetPointerInfoList( id, PT_POINTER, 0, 0, sizeof(*info), &entries, count, info );
++}
++
++BOOL WINAPI GetPointerFrameInfoHistory( UINT32 id, UINT32 *entries, UINT32 *pointers, POINTER_INFO *info )
++{
++    TRACE( "id %u, entries %p, pointers %p, info %p\n", id, entries, pointers, info );
++
++    return NtUserGetPointerInfoList( id, PT_POINTER, 0, 0, sizeof(*info), entries, pointers, info );
+ }
+ 
+ LRESULT WINAPI ImeWndProcA( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam )
+diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
+index 6ad01e82978..5f9712360eb 100644
+--- a/dlls/user32/tests/input.c
++++ b/dlls/user32/tests/input.c
+@@ -5627,9 +5627,7 @@ static void test_GetPointerInfo( BOOL mouse_in_pointer_enabled )
+     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
+     SetLastError( 0xdeadbeef );
+     ret = pGetPointerType( 0xdead, &type );
+-    todo_wine
+     ok( !ret, "GetPointerType succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
+     ret = pGetPointerType( 1, &type );
+     ok( ret, "GetPointerType failed, error %lu\n", GetLastError() );
+@@ -5754,7 +5752,6 @@ static void test_GetPointerInfo( BOOL mouse_in_pointer_enabled )
+ 
+     memset( pointer_info, 0xcd, sizeof(pointer_info) );
+     ret = pGetPointerInfo( 1, pointer_info );
+-    todo_wine_if(mouse_in_pointer_enabled)
+     ok( ret == mouse_in_pointer_enabled, "GetPointerInfo failed, error %lu\n", GetLastError() );
+     if (!mouse_in_pointer_enabled)
+     {
+@@ -5762,18 +5759,13 @@ static void test_GetPointerInfo( BOOL mouse_in_pointer_enabled )
+         return;
+     }
+ 
+-    todo_wine
+     ok( pointer_info[0].pointerType == PT_MOUSE, "got pointerType %lu\n", pointer_info[0].pointerType );
+-    todo_wine
+     ok( pointer_info[0].pointerId == 1, "got pointerId %u\n", pointer_info[0].pointerId );
+     ok( !!pointer_info[0].frameId, "got frameId %u\n", pointer_info[0].frameId );
+-    todo_wine
+     ok( pointer_info[0].pointerFlags == (0x40000 | POINTER_MESSAGE_FLAG_INRANGE),
+         "got pointerFlags %#x\n", pointer_info[0].pointerFlags );
+-    todo_wine
+     ok( pointer_info[0].sourceDevice == INVALID_HANDLE_VALUE || broken(!!pointer_info[0].sourceDevice) /* < w10 & 32bit */,
+         "got sourceDevice %p\n", pointer_info[0].sourceDevice );
+-    todo_wine
+     ok( pointer_info[0].hwndTarget == hwnd, "got hwndTarget %p\n", pointer_info[0].hwndTarget );
+     ok( !!pointer_info[0].ptPixelLocation.x, "got ptPixelLocation %s\n", wine_dbgstr_point( &pointer_info[0].ptPixelLocation ) );
+     ok( !!pointer_info[0].ptPixelLocation.y, "got ptPixelLocation %s\n", wine_dbgstr_point( &pointer_info[0].ptPixelLocation ) );
+@@ -5784,14 +5776,10 @@ static void test_GetPointerInfo( BOOL mouse_in_pointer_enabled )
+     ok( !!pointer_info[0].ptHimetricLocationRaw.x, "got ptHimetricLocationRaw %s\n", wine_dbgstr_point( &pointer_info[0].ptHimetricLocationRaw ) );
+     ok( !!pointer_info[0].ptHimetricLocationRaw.y, "got ptHimetricLocationRaw %s\n", wine_dbgstr_point( &pointer_info[0].ptHimetricLocationRaw ) );
+     ok( !!pointer_info[0].dwTime, "got dwTime %lu\n", pointer_info[0].dwTime );
+-    todo_wine
+     ok( pointer_info[0].historyCount == 1, "got historyCount %u\n", pointer_info[0].historyCount );
+-    todo_wine
+     ok( pointer_info[0].InputData == 0, "got InputData %u\n", pointer_info[0].InputData );
+-    todo_wine
+     ok( pointer_info[0].dwKeyStates == 0, "got dwKeyStates %lu\n", pointer_info[0].dwKeyStates );
+     ok( !!pointer_info[0].PerformanceCount, "got PerformanceCount %I64u\n", pointer_info[0].PerformanceCount );
+-    todo_wine
+     ok( pointer_info[0].ButtonChangeType == POINTER_CHANGE_FIRSTBUTTON_UP, "got ButtonChangeType %u\n", pointer_info[0].ButtonChangeType );
+ 
+     thread = CreateThread( NULL, 0, test_GetPointerInfo_thread, NULL, 0, NULL );
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 75c1cfd1999..f3289fa94b7 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -630,23 +630,23 @@
+ # @ stub GetPointerDeviceInputSpace
+ # @ stub GetPointerDeviceOrientation
+ @ stdcall GetPointerDeviceProperties(ptr ptr ptr)
+-@ stdcall GetPointerDeviceRects(ptr ptr ptr)
++@ stdcall GetPointerDeviceRects(ptr ptr ptr) NtUserGetPointerDeviceRects
+ @ stdcall GetPointerDevices(ptr ptr)
+-# @ stub GetPointerFrameInfo
+-# @ stub GetPointerFrameInfoHistory
+-# @ stub GetPointerFramePenInfo
+-# @ stub GetPointerFramePenInfoHistory
++@ stdcall GetPointerFrameInfo(long ptr ptr)
++@ stdcall GetPointerFrameInfoHistory(long ptr ptr ptr)
++@ stdcall GetPointerFramePenInfo(long ptr ptr)
++@ stdcall GetPointerFramePenInfoHistory(long ptr ptr ptr)
+ # @ stub GetPointerFrameTimes
+-# @ stub GetPointerFrameTouchInfo
+-# @ stub GetPointerFrameTouchInfoHistory
++@ stdcall GetPointerFrameTouchInfo(long ptr ptr)
++@ stdcall GetPointerFrameTouchInfoHistory(long ptr ptr ptr)
+ @ stdcall GetPointerInfo(long ptr)
+-# @ stub GetPointerInfoHistory
++@ stdcall GetPointerInfoHistory(long ptr ptr)
+ # @ stub GetPointerInputTransform
+ @ stdcall GetPointerPenInfo(long ptr)
+-# @ stub GetPointerPenInfoHistory
++@ stdcall GetPointerPenInfoHistory(long ptr ptr)
+ @ stdcall GetPointerTouchInfo(long ptr)
+ @ stdcall GetPointerTouchInfoHistory(long ptr ptr)
+-@ stdcall GetPointerType(long ptr)
++@ stdcall GetPointerType(long ptr) NtUserGetPointerType
+ @ stdcall GetPriorityClipboardFormat(ptr long) NtUserGetPriorityClipboardFormat
+ @ stdcall GetProcessDefaultLayout(ptr)
+ @ stdcall GetProcessDpiAwarenessInternal(long ptr)
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index b8c092bf7b8..f4a6da5618a 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -40,6 +40,8 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
+ WINE_DECLARE_DEBUG_CHANNEL(keyboard);
+ 
++#define HIMETRIC_PER_INCH 2540
++
+ static const WCHAR keyboard_layouts_keyW[] =
+ {
+     '\\','R','e','g','i','s','t','r','y',
+@@ -405,6 +407,15 @@ static const KBDTABLES kbdus_tables =
+ 
+ static LONG clipping_cursor; /* clipping thread counter */
+ static LONG enable_mouse_in_pointer = -1;
++static LONG last_frame = 0;
++
++struct pointer
++{
++    UINT32 id;
++    struct list entry;
++    POINTER_INPUT_TYPE type;
++    POINTER_INFO info;
++};
+ 
+ BOOL grab_pointer = TRUE;
+ BOOL grab_fullscreen = FALSE;
+@@ -2734,18 +2745,6 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
+     return ret;
+ }
+ 
+-/**********************************************************************
+- *       NtUserGetPointerInfoList    (win32u.@)
+- */
+-BOOL WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_PTR unk0, UINT_PTR unk1, SIZE_T size,
+-                                      UINT32 *entry_count, UINT32 *pointer_count, void *pointer_info )
+-{
+-    FIXME( "id %#x, type %#x, unk0 %#lx, unk1 %#lx, size %#lx, entry_count %p, pointer_count %p, pointer_info %p stub!\n",
+-           id, type, (long)unk0, (long)unk1, size, entry_count, pointer_count, pointer_info );
+-    RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
+-    return FALSE;
+-}
+-
+ static BOOL get_clip_cursor( RECT *rect, UINT dpi, MONITOR_DPI_TYPE type )
+ {
+     struct object_lock lock = OBJECT_LOCK_INIT;
+@@ -2868,6 +2867,145 @@ INT WINAPI NtUserScheduleDispatchNotification( HWND hwnd )
+     return 0;
+ }
+ 
++void destroy_thread_pointers(void)
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    struct pointer *pointer, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( pointer, next, &thread_info->known_pointers, struct pointer, entry )
++    {
++        list_remove( &pointer->entry );
++        free( pointer );
++    }
++}
++
++static struct pointer *pointer_create( UINT32 id, POINTER_INPUT_TYPE type )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    struct pointer *pointer;
++
++    TRACE( "allocating pointer id %d, type %#x\n", id, type );
++
++    if (!(pointer = calloc( 1, sizeof(*pointer) ))) return NULL;
++    pointer->id = id;
++    pointer->type = type;
++    list_add_tail( &thread_info->known_pointers, &pointer->entry );
++
++    return pointer;
++}
++
++static struct pointer *find_pointer( UINT32 id )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    struct pointer *pointer;
++
++    TRACE( "looking for pointer id %d\n", id );
++
++    LIST_FOR_EACH_ENTRY( pointer, &thread_info->known_pointers, struct pointer, entry )
++        if (pointer->id == id) return pointer;
++
++    WARN( "failed to find pointer with id %d\n", id );
++    return NULL;
++}
++
++static POINTER_INFO pointer_info_from_msg( const MSG *msg )
++{
++    POINT location = { LOWORD( msg->lParam ), HIWORD( msg->lParam ) };
++    LARGE_INTEGER counter;
++    POINTER_INFO info =
++    {
++        .pointerId = GET_POINTERID_WPARAM( msg->wParam ),
++        .sourceDevice = INVALID_HANDLE_VALUE,
++        .frameId = InterlockedIncrement( &last_frame ),
++        .hwndTarget = msg->hwnd,
++        .historyCount = 1,
++        .dwTime = msg->time,
++    };
++
++    info.pointerFlags = HIWORD( msg->wParam );
++    switch (msg->message)
++    {
++    case WM_POINTERUPDATE: info.pointerFlags |= POINTER_FLAG_UPDATE; break;
++    case WM_POINTERDOWN: info.pointerFlags |= POINTER_FLAG_DOWN; break;
++    case WM_POINTERUP: info.pointerFlags |= POINTER_FLAG_UP; break;
++    }
++    info.ptPixelLocation = info.ptPixelLocationRaw = location;
++
++    info.ptHimetricLocation.x = location.x * HIMETRIC_PER_INCH / system_dpi;
++    info.ptHimetricLocation.y = location.y * HIMETRIC_PER_INCH / system_dpi;
++    info.ptHimetricLocationRaw = info.ptHimetricLocation;
++
++    NtQueryPerformanceCounter( &counter, NULL );
++    info.PerformanceCount = counter.QuadPart;
++
++    return info;
++}
++
++static POINTER_BUTTON_CHANGE_TYPE compare_button( const POINTER_INFO *old, const POINTER_INFO *new )
++{
++    POINTER_BUTTON_CHANGE_TYPE change = POINTER_CHANGE_NONE;
++    static const struct
++    {
++        POINTER_FLAGS flag;
++        POINTER_BUTTON_CHANGE_TYPE down, up;
++    } map[] =
++    {
++        { POINTER_FLAG_FIRSTBUTTON, POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP },
++        { POINTER_FLAG_SECONDBUTTON, POINTER_CHANGE_SECONDBUTTON_DOWN, POINTER_CHANGE_SECONDBUTTON_UP },
++        { POINTER_FLAG_THIRDBUTTON, POINTER_CHANGE_THIRDBUTTON_DOWN, POINTER_CHANGE_THIRDBUTTON_UP },
++        { POINTER_FLAG_FOURTHBUTTON, POINTER_CHANGE_FOURTHBUTTON_DOWN, POINTER_CHANGE_FOURTHBUTTON_UP },
++        { POINTER_FLAG_FIFTHBUTTON, POINTER_CHANGE_FIFTHBUTTON_DOWN, POINTER_CHANGE_FIFTHBUTTON_UP },
++    };
++    POINTER_FLAGS down = ~old->pointerFlags & new->pointerFlags, up = old->pointerFlags & ~new->pointerFlags;
++
++    for (size_t i = 0; i < ARRAY_SIZE(map); i++)
++    {
++        if (down & map[i].flag) change |= map[i].down;
++        if (up & map[i].flag) change |= map[i].up;
++    }
++    return change;
++}
++
++void update_pointer_from_msg( POINTER_INPUT_TYPE type, const MSG *msg )
++{
++    POINTER_INFO info = pointer_info_from_msg( msg );
++    POINTER_BUTTON_CHANGE_TYPE buttons;
++    struct pointer *pointer;
++
++    TRACE( "updating pointer id %d.\n", info.pointerId );
++
++    if (!(pointer = find_pointer( info.pointerId )) && !(pointer = pointer_create( info.pointerId, type ))) return;
++
++    buttons = compare_button( &pointer->info, &info );
++    pointer->info = info;
++    pointer->info.pointerType = pointer->type;
++    pointer->info.ButtonChangeType = buttons;
++}
++
++static POINTER_INPUT_TYPE pointer_type_from_hw( const struct hw_msg_source *source )
++{
++    switch (source->origin)
++    {
++    case IMDT_PEN: return PT_PEN;
++    case IMDT_MOUSE: return PT_MOUSE;
++    case IMDT_TOUCH: return PT_TOUCH;
++    case IMDT_TOUCHPAD: return PT_TOUCHPAD;
++    default: return PT_POINTER;
++    }
++}
++
++/***********************************************************************
++ *          process_pointer_message
++ *
++ * returns TRUE if the contents of 'msg' should be passed to the application
++ */
++BOOL process_pointer_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data )
++{
++    update_pointer_from_msg( pointer_type_from_hw( &msg_data->source ), msg );
++    msg->pt = point_phys_to_win_dpi( msg->hwnd, msg->pt );
++    return TRUE;
++}
++
+ /**********************************************************************
+  *       NtUserInitializeTouchInjection    (win32u.@)
+  */
+@@ -2936,3 +3074,96 @@ NTSTATUS WINAPI NtCloseCompositionInputSink( HANDLE handle )
+     TRACE( "handle %p\n", handle );
+     return NtClose( handle );
+ }
++
++/**********************************************************************
++ *       NtUserGetPointerType    (win32u.@)
++ */
++BOOL WINAPI NtUserGetPointerType( UINT32 id, POINTER_INPUT_TYPE *type )
++{
++    struct pointer *pointer;
++
++    TRACE( "%u, %p\n", id, type );
++
++    /* pointerid 1 is always the mouse */
++    if (id == 1 && type)
++    {
++        *type = PT_MOUSE;
++        return TRUE;
++    }
++
++    if (!id || !type || !(pointer = find_pointer( id )))
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++
++    *type = pointer->type;
++    return TRUE;
++}
++
++/**********************************************************************
++ *       NtUserGetPointerInfoList    (win32u.@)
++ */
++BOOL WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_PTR unk0, UINT_PTR unk1, SIZE_T size,
++                                      UINT32 *entry_count, UINT32 *pointer_count, void *pointer_info )
++{
++    struct pointer *pointer;
++    size_t target_size = 0;
++
++    TRACE( "id %d, type %#x, unk0 %#lx, unk1 %#lx, size %#lx, entry_count %p, pointer_count %p, pointer_info %p\n",
++            id, type, (long)unk0, (long)unk1, size, entry_count, pointer_count, pointer_info );
++
++    switch (type)
++    {
++    case PT_MOUSE:
++    case PT_PEN: target_size = sizeof(POINTER_PEN_INFO); break;
++    case PT_POINTER: target_size = sizeof(POINTER_INFO); break;
++    case PT_TOUCHPAD:
++    case PT_TOUCH: target_size = sizeof(POINTER_TOUCH_INFO); break;
++    }
++
++    if (type == PT_MOUSE || size != target_size)
++    {
++        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++
++    if (!(pointer = find_pointer( id )))
++    {
++        TRACE( "pointer id %d not found.\n", id );
++        RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++
++    if (type != PT_POINTER) FIXME( "Pointer type %#x not implemented!", type );
++
++    *entry_count = 1;
++    *pointer_count = 1;
++
++    memset( pointer_info, 0, size );
++    *(POINTER_INFO *)pointer_info = pointer->info;
++    return TRUE;
++}
++
++/**********************************************************************
++ *       NtUserGetPointerDeviceRects    (win32u.@)
++ */
++BOOL WINAPI NtUserGetPointerDeviceRects( HANDLE handle, RECT *device_rect, RECT *display_rect )
++{
++    RECT rect;
++
++    if (handle != INVALID_HANDLE_VALUE)
++    {
++        FIXME( "Pointer devices are not implemented!\n" );
++        RtlSetLastWin32Error( ERROR_NO_DATA );
++        return FALSE;
++    }
++
++    rect = get_virtual_screen_rect( 0, MDT_DEFAULT );
++    SetRect( device_rect, 0, 0, (rect.right - rect.left) * HIMETRIC_PER_INCH / system_dpi,
++             (rect.bottom - rect.top) * HIMETRIC_PER_INCH / system_dpi );
++    *display_rect = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );
++
++    TRACE( "returning device %s, display %s\n", wine_dbgstr_rect(device_rect), wine_dbgstr_rect(display_rect) );
++    return TRUE;
++}
+diff --git a/dlls/win32u/main.c b/dlls/win32u/main.c
+index edb1d98b3f0..22e5368b132 100644
+--- a/dlls/win32u/main.c
++++ b/dlls/win32u/main.c
+@@ -1748,6 +1748,16 @@ BOOL SYSCALL_API NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, U
+     SYSCALL_FUNC( NtUserGetPointerInfoList );
+ }
+ 
++BOOL SYSCALL_API NtUserGetPointerType( UINT32 id, POINTER_INPUT_TYPE *type )
++{
++    SYSCALL_FUNC( NtUserGetPointerType );
++}
++
++BOOL SYSCALL_API NtUserGetPointerDeviceRects( HANDLE handle, RECT *device_rect, RECT *display_rect )
++{
++    SYSCALL_FUNC( NtUserGetPointerDeviceRects );
++}
++
+ INT SYSCALL_API NtUserGetPriorityClipboardFormat( UINT *list, INT count )
+ {
+     SYSCALL_FUNC( NtUserGetPriorityClipboardFormat );
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index b6cdd3efa0e..fc7177f2707 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2474,17 +2474,6 @@ static void send_parent_notify( HWND hwnd, WORD event, WORD idChild, POINT pt )
+     }
+ }
+ 
+-/***********************************************************************
+- *          process_pointer_message
+- *
+- * returns TRUE if the contents of 'msg' should be passed to the application
+- */
+-static BOOL process_pointer_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data )
+-{
+-    msg->pt = point_phys_to_win_dpi( msg->hwnd, msg->pt );
+-    return TRUE;
+-}
+-
+ /***********************************************************************
+  *          process_keyboard_message
+  *
+@@ -2695,7 +2684,21 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+             break;
+         }
+ 
+-        if (message) send_message( msg->hwnd, message, MAKELONG( 1, flags ), MAKELONG( msg->pt.x, msg->pt.y ) );
++        if (message)
++        {
++            MSG pointer_msg =
++            {
++                .message = message,
++                .lParam = MAKELONG( msg->pt.x, msg->pt.y ),
++                .wParam = MAKELONG( 1, flags ),
++                .hwnd = msg->hwnd,
++                .time = msg->time,
++                .pt = msg->pt,
++            };
++
++            update_pointer_from_msg( PT_MOUSE, &pointer_msg );
++            send_message( msg->hwnd, message, pointer_msg.wParam, pointer_msg.lParam );
++        }
+     }
+ 
+     /* FIXME: is this really the right place for this hook? */
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 978700a37aa..26125e185b1 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -127,6 +127,7 @@ struct user_thread_info
+     DWORD                         clipping_reset;         /* time when clipping was last reset */
+     struct session_thread_data   *session_data;           /* shared session thread data */
+     struct mouse_tracking_info   *mouse_tracking_info;    /* NtUserTrackMouseEvent handling */
++    struct list                   known_pointers;         /* list of known pointers */
+ };
+ 
+ extern struct user_thread_info *get_user_thread_info(void);
+diff --git a/dlls/win32u/syscall.c b/dlls/win32u/syscall.c
+index e9f36bdd32b..ca1be7227ca 100644
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -197,6 +197,7 @@ struct user_thread_info *get_user_thread_info(void)
+ 
+         info = calloc( 1, sizeof(*info) );
+         pthread_setspecific( user_thread_info_key, info );
++        list_init( &info->known_pointers );
+ 
+         if (teb)
+         {
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 79555a271ca..2b38ea732ac 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -292,7 +292,7 @@ union sysparam_all_entry
+     struct sysparam_pref_entry   pref;
+ };
+ 
+-static UINT system_dpi;
++UINT system_dpi;
+ static RECT work_area;
+ static DWORD process_layout = ~0u;
+ 
+@@ -7462,6 +7462,7 @@ static void thread_detach(void)
+     struct user_thread_info *thread_info = get_user_thread_info();
+ 
+     destroy_thread_windows();
++    destroy_thread_pointers();
+     user_driver->pThreadDetach();
+ 
+     free( thread_info->rawinput );
+diff --git a/dlls/win32u/tests/win32u.c b/dlls/win32u/tests/win32u.c
+index c227f621bb8..c12deef15e1 100644
+--- a/dlls/win32u/tests/win32u.c
++++ b/dlls/win32u/tests/win32u.c
+@@ -1941,7 +1941,6 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
+     entry_count = pointer_count = 2;
+     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
+     ok( !ret, "NtUserGetPointerInfoList succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
+     ok( pointer_count == 2, "got pointer_count %u\n", pointer_count );
+     ok( entry_count == 2, "got entry_count %u\n", entry_count );
+@@ -1956,7 +1955,6 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
+     entry_count = pointer_count = 2;
+     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
+     ok( !ret, "NtUserGetPointerInfoList succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
+     ok( pointer_count == 2, "got pointer_count %u\n", pointer_count );
+     ok( entry_count == 2, "got entry_count %u\n", entry_count );
+@@ -1973,11 +1971,9 @@ static void test_NtUserGetPointerInfoList( BOOL mouse_in_pointer_enabled )
+     memset( pointer_info, 0xcd, sizeof(pointer_info) );
+     entry_count = pointer_count = 2;
+     ret = NtUserGetPointerInfoList( 1, PT_POINTER, 0, 0, sizeof(POINTER_INFO), &entry_count, &pointer_count, pointer_info );
+-    todo_wine_if(mouse_in_pointer_enabled)
+     ok( ret == mouse_in_pointer_enabled, "NtUserGetPointerInfoList failed, error %lu\n", GetLastError() );
+     if (!ret)
+     {
+-        todo_wine
+         ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %lu\n", GetLastError() );
+         goto done;
+     }
+@@ -3062,6 +3058,56 @@ static void test_composition_input_sink(void)
+     }
+ }
+ 
++static BOOL CALLBACK get_virtual_screen_proc( HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM lp )
++{
++    RECT *virtual_rect = (RECT *)lp;
++    UnionRect( virtual_rect, virtual_rect, rect );
++    return TRUE;
++}
++
++static RECT get_virtual_screen_rect(void)
++{
++    RECT rect = {0};
++    EnumDisplayMonitors( 0, NULL, get_virtual_screen_proc, (LPARAM)&rect );
++    return rect;
++}
++
++void test_NtUserGetPointerDeviceRects( const char *arg )
++{
++    RECT screen, himetric_dev = {0}, device = {0}, display = {0};
++    DPI_AWARENESS_CONTEXT ctx = 0;
++    const UINT himetric = 2540;
++    UINT ret, dpi;
++
++    if (!strcmp( arg, "unaware" )) ctx = DPI_AWARENESS_CONTEXT_UNAWARE;
++    else if (!strcmp( arg, "system" )) ctx = DPI_AWARENESS_CONTEXT_SYSTEM_AWARE;
++    else if (!strcmp( arg, "monitor" )) ctx = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE;
++
++    if (ctx)
++    {
++        ret = SetProcessDpiAwarenessContext( ctx );
++        ok( ret, "SetProcessDpiAwarenessContext failed, error %lu.\n", GetLastError() );
++    }
++
++    screen = get_virtual_screen_rect();
++
++    /* operating on unaware scaled values returns wrong values */
++    ctx = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_SYSTEM_AWARE );
++
++    dpi = GetDpiForSystem();
++    himetric_dev.right = GetSystemMetrics( SM_CXVIRTUALSCREEN ) * himetric / dpi;
++    himetric_dev.bottom = GetSystemMetrics( SM_CYVIRTUALSCREEN ) * himetric / dpi;
++
++    SetThreadDpiAwarenessContext( ctx );
++
++    ret = NtUserGetPointerDeviceRects( INVALID_HANDLE_VALUE, &device, &display );
++    ok( ret, "NtUserGetPointerDeviceRects failed, error %lu.\n", GetLastError() );
++    ok( EqualRect( &device, &himetric_dev ), "device %s, expected %s\n",
++        wine_dbgstr_rect( &device ), wine_dbgstr_rect( &himetric_dev ) );
++    ok( EqualRect( &display, &screen ), "display %s, expected %s\n",
++        wine_dbgstr_rect( &display ), wine_dbgstr_rect( &screen ) );
++}
++
+ START_TEST(win32u)
+ {
+     char **argv;
+@@ -3097,6 +3143,14 @@ START_TEST(win32u)
+         return;
+     }
+ 
++    if (argc > 3 && !strcmp( argv[2], "NtUserGetPointerDeviceRects" ))
++    {
++        winetest_push_context( "dpi context %s", argv[3] );
++        test_NtUserGetPointerDeviceRects( argv[3] );
++        winetest_pop_context();
++        return;
++    }
++
+     test_NtUserEnumDisplayDevices();
+     test_window_props();
+     test_class();
+@@ -3124,6 +3178,10 @@ START_TEST(win32u)
+     run_in_process( argv, "NtUserEnableMouseInPointer 0" );
+     run_in_process( argv, "NtUserEnableMouseInPointer 1" );
+ 
++    run_in_process( argv, "NtUserGetPointerDeviceRects unaware" );
++    run_in_process( argv, "NtUserGetPointerDeviceRects system" );
++    run_in_process( argv, "NtUserGetPointerDeviceRects monitor" );
++
+     run_in_process( argv, "NtUserSetProcessDpiAwarenessContext 0x6010" );
+     run_in_process( argv, "NtUserSetProcessDpiAwarenessContext 0x11" );
+     run_in_process( argv, "NtUserSetProcessDpiAwarenessContext 0x12" );
+diff --git a/dlls/win32u/win32syscalls.h b/dlls/win32u/win32syscalls.h
+index 12b06a7f36f..473a0eb0f05 100644
+--- a/dlls/win32u/win32syscalls.h
++++ b/dlls/win32u/win32syscalls.h
+@@ -1068,13 +1068,13 @@
+     SYSCALL_ENTRY( 0x1428, NtUserGetPointerDeviceInputSpace, 0 ) \
+     SYSCALL_ENTRY( 0x1429, NtUserGetPointerDeviceOrientation, 0 ) \
+     SYSCALL_ENTRY( 0x142a, NtUserGetPointerDeviceProperties, 0 ) \
+-    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 0 ) \
++    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 12 ) \
+     SYSCALL_ENTRY( 0x142c, NtUserGetPointerDevices, 0 ) \
+     SYSCALL_ENTRY( 0x142d, NtUserGetPointerFrameTimes, 0 ) \
+     SYSCALL_ENTRY( 0x142e, NtUserGetPointerInfoList, 32 ) \
+     SYSCALL_ENTRY( 0x142f, NtUserGetPointerInputTransform, 0 ) \
+     SYSCALL_ENTRY( 0x1430, NtUserGetPointerProprietaryId, 0 ) \
+-    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 0 ) \
++    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 8 ) \
+     SYSCALL_ENTRY( 0x1432, NtUserGetPrecisionTouchPadConfiguration, 0 ) \
+     SYSCALL_ENTRY( 0x1433, NtUserGetPriorityClipboardFormat, 8 ) \
+     SYSCALL_ENTRY( 0x1434, NtUserGetProcessDefaultLayout, 4 ) \
+@@ -2610,13 +2610,13 @@
+     SYSCALL_ENTRY( 0x1428, NtUserGetPointerDeviceInputSpace, 0 ) \
+     SYSCALL_ENTRY( 0x1429, NtUserGetPointerDeviceOrientation, 0 ) \
+     SYSCALL_ENTRY( 0x142a, NtUserGetPointerDeviceProperties, 0 ) \
+-    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 0 ) \
++    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 24 ) \
+     SYSCALL_ENTRY( 0x142c, NtUserGetPointerDevices, 0 ) \
+     SYSCALL_ENTRY( 0x142d, NtUserGetPointerFrameTimes, 0 ) \
+     SYSCALL_ENTRY( 0x142e, NtUserGetPointerInfoList, 64 ) \
+     SYSCALL_ENTRY( 0x142f, NtUserGetPointerInputTransform, 0 ) \
+     SYSCALL_ENTRY( 0x1430, NtUserGetPointerProprietaryId, 0 ) \
+-    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 0 ) \
++    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 16 ) \
+     SYSCALL_ENTRY( 0x1432, NtUserGetPrecisionTouchPadConfiguration, 0 ) \
+     SYSCALL_ENTRY( 0x1433, NtUserGetPriorityClipboardFormat, 16 ) \
+     SYSCALL_ENTRY( 0x1434, NtUserGetProcessDefaultLayout, 8 ) \
+@@ -3827,12 +3827,10 @@
+     SYSCALL_STUB( NtUserGetPointerDeviceInputSpace ) \
+     SYSCALL_STUB( NtUserGetPointerDeviceOrientation ) \
+     SYSCALL_STUB( NtUserGetPointerDeviceProperties ) \
+-    SYSCALL_STUB( NtUserGetPointerDeviceRects ) \
+     SYSCALL_STUB( NtUserGetPointerDevices ) \
+     SYSCALL_STUB( NtUserGetPointerFrameTimes ) \
+     SYSCALL_STUB( NtUserGetPointerInputTransform ) \
+     SYSCALL_STUB( NtUserGetPointerProprietaryId ) \
+-    SYSCALL_STUB( NtUserGetPointerType ) \
+     SYSCALL_STUB( NtUserGetPrecisionTouchPadConfiguration ) \
+     SYSCALL_STUB( NtUserGetProcessUIContextInformation ) \
+     SYSCALL_STUB( NtUserGetProp2 ) \
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 6ee409af1d6..3c11d2e9174 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -1066,13 +1066,13 @@
+ @ stub -syscall NtUserGetPointerDeviceInputSpace
+ @ stub -syscall NtUserGetPointerDeviceOrientation
+ @ stub -syscall NtUserGetPointerDeviceProperties
+-@ stub -syscall NtUserGetPointerDeviceRects
++@ stdcall -syscall NtUserGetPointerDeviceRects(long ptr ptr)
+ @ stub -syscall NtUserGetPointerDevices
+ @ stub -syscall NtUserGetPointerFrameTimes
+ @ stdcall -syscall NtUserGetPointerInfoList(long long long long long ptr ptr ptr)
+ @ stub -syscall NtUserGetPointerInputTransform
+ @ stub -syscall NtUserGetPointerProprietaryId
+-@ stub -syscall NtUserGetPointerType
++@ stdcall -syscall NtUserGetPointerType(long ptr)
+ @ stub -syscall NtUserGetPrecisionTouchPadConfiguration
+ @ stdcall -syscall NtUserGetPriorityClipboardFormat(ptr long)
+ @ stdcall -syscall NtUserGetProcessDefaultLayout(ptr)
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index be303ae4d13..cb68f1b93b4 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -111,6 +111,10 @@ extern void update_current_mouse_window( HWND hwnd, INT hittest, POINT pos );
+ extern BOOL process_wine_clipcursor( HWND hwnd, UINT flags, BOOL reset );
+ extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset );
+ extern USHORT map_scan_to_kbd_vkey( USHORT scan, HKL layout );
++extern void destroy_thread_pointers(void);
++extern BOOL process_pointer_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data );
++extern void update_pointer_from_msg( POINTER_INPUT_TYPE type, const MSG *msg );
++extern NTSTATUS send_hardware_input( HWND hwnd, UINT flags, const INPUT *input, LPARAM lparam );
+ 
+ /* menu.c */
+ extern UINT draw_nc_menu_bar( HDC hdc, RECT *rect, HWND hwnd );
+@@ -155,6 +159,7 @@ extern void set_standard_scroll_painted( HWND hwnd, int bar, BOOL painted );
+ extern void track_scroll_bar( HWND hwnd, int scrollbar, POINT pt );
+ 
+ /* sysparams.c */
++extern UINT system_dpi;
+ extern BOOL decorated_mode;
+ extern UINT64 thunk_lock_callback;
+ extern HBRUSH get_55aa_brush(void);
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 547cbb9e4c5..e0c0b219aa9 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -174,6 +174,52 @@ typedef struct
+     ULONG dwExtraInfo;
+ } MOUSEMOVEPOINT32;
+ 
++typedef struct
++{
++    POINTER_INPUT_TYPE pointerType;
++    UINT32 pointerId;
++    UINT32 frameId;
++    POINTER_FLAGS pointerFlags;
++    ULONG sourceDevice;
++    ULONG hwndTarget;
++    POINT ptPixelLocation;
++    POINT ptHimetricLocation;
++    POINT ptPixelLocationRaw;
++    POINT ptHimetricLocationRaw;
++    DWORD dwTime;
++    UINT32 historyCount;
++    INT32 InputData;
++    DWORD dwKeyStates;
++    UINT64 PerformanceCount;
++    POINTER_BUTTON_CHANGE_TYPE ButtonChangeType;
++} POINTER_INFO32;
++
++typedef struct
++{
++    POINTER_INFO32 pointerInfo;
++    TOUCH_FLAGS touchFlags;
++    TOUCH_MASK touchMask;
++    RECT rcContact;
++    RECT rcContactRaw;
++    UINT32 orientation;
++    UINT32 pressure;
++} POINTER_TOUCH_INFO32;
++
++typedef struct
++{
++    POINTER_INFO32 pointerInfo;
++    PEN_FLAGS penFlags;
++    PEN_MASK penMask;
++    UINT32 pressure;
++    UINT32 rotation;
++    INT32 tiltX;
++    INT32 tiltY;
++} POINTER_PEN_INFO32;
++
++C_ASSERT( sizeof(POINTER_INFO32) == 88 );
++C_ASSERT( sizeof(POINTER_TOUCH_INFO32) == 136 );
++C_ASSERT( sizeof(POINTER_PEN_INFO32) == 112 );
++
+ typedef struct
+ {
+     UINT32 hdc;
+@@ -580,6 +626,29 @@ static MOUSEHOOKSTRUCTEX32 *mousehookstruct_64to32( const MOUSEHOOKSTRUCTEX *hoo
+     return hook32;
+ }
+ 
++static void pointer_info_64to32( const POINTER_INFO *src, POINTER_INFO32 *dst )
++{
++    POINTER_INFO32 info;
++
++    info.pointerType = src->pointerType;
++    info.pointerId = src->pointerId;
++    info.frameId = src->frameId;
++    info.pointerFlags = src->pointerFlags;
++    info.sourceDevice = HandleToUlong( src->sourceDevice );
++    info.hwndTarget = HandleToUlong( src->hwndTarget );
++    info.ptPixelLocation = src->ptPixelLocation;
++    info.ptHimetricLocation = src->ptHimetricLocation;
++    info.ptPixelLocationRaw = src->ptPixelLocationRaw;
++    info.ptHimetricLocationRaw = src->ptHimetricLocationRaw;
++    info.dwTime = src->dwTime;
++    info.historyCount = src->historyCount;
++    info.InputData = src->InputData;
++    info.dwKeyStates = src->dwKeyStates;
++    info.PerformanceCount = src->PerformanceCount;
++    info.ButtonChangeType = src->ButtonChangeType;
++    memcpy( dst, &info, sizeof(info) );
++}
++
+ static NTSTATUS dispatch_callback( ULONG id, void *args, ULONG len )
+ {
+     void *ret_ptr;
+@@ -2873,11 +2942,100 @@ NTSTATUS WINAPI wow64_NtUserGetPointerInfoList( UINT *args )
+     UINT unk0 = get_ulong( &args );
+     UINT unk1 = get_ulong( &args );
+     UINT size = get_ulong( &args );
+-    void *entry_count = get_ptr( &args );
+-    void *pointer_count = get_ptr( &args );
++    UINT32 *entry_count = get_ptr( &args );
++    UINT32 *pointer_count = get_ptr( &args );
+     void *pointer_info = get_ptr( &args );
++    union
++    {
++        POINTER_INFO info;
++        POINTER_TOUCH_INFO touch;
++        POINTER_PEN_INFO pen;
++    } native;
++    SIZE_T native_size;
++    BOOL ret;
++
++    switch (type)
++    {
++    case PT_PEN:
++        if (size != sizeof(POINTER_PEN_INFO32)) goto invalid_size;
++        native_size = sizeof(native.pen);
++        break;
++    case PT_POINTER:
++        if (size != sizeof(POINTER_INFO32)) goto invalid_size;
++        native_size = sizeof(native.info);
++        break;
++    case PT_TOUCHPAD:
++    case PT_TOUCH:
++        if (size != sizeof(POINTER_TOUCH_INFO32)) goto invalid_size;
++        native_size = sizeof(native.touch);
++        break;
++    default:
++        native_size = size;
++        break;
++    }
++
++    ret = NtUserGetPointerInfoList( id, type, unk0, unk1, native_size, entry_count, pointer_count, &native );
++    if (!ret) return FALSE;
++
++    switch (type)
++    {
++    case PT_PEN:
++    {
++        POINTER_PEN_INFO32 info;
++
++        memset( &info, 0, sizeof(info) );
++        pointer_info_64to32( &native.pen.pointerInfo, &info.pointerInfo );
++        info.penFlags = native.pen.penFlags;
++        info.penMask = native.pen.penMask;
++        info.pressure = native.pen.pressure;
++        info.rotation = native.pen.rotation;
++        info.tiltX = native.pen.tiltX;
++        info.tiltY = native.pen.tiltY;
++        memcpy( pointer_info, &info, sizeof(info) );
++        break;
++    }
++    case PT_POINTER:
++        pointer_info_64to32( &native.info, pointer_info );
++        break;
++    case PT_TOUCHPAD:
++    case PT_TOUCH:
++    {
++        POINTER_TOUCH_INFO32 info;
++
++        memset( &info, 0, sizeof(info) );
++        pointer_info_64to32( &native.touch.pointerInfo, &info.pointerInfo );
++        info.touchFlags = native.touch.touchFlags;
++        info.touchMask = native.touch.touchMask;
++        info.rcContact = native.touch.rcContact;
++        info.rcContactRaw = native.touch.rcContactRaw;
++        info.orientation = native.touch.orientation;
++        info.pressure = native.touch.pressure;
++        memcpy( pointer_info, &info, sizeof(info) );
++        break;
++    }
++    }
++    return TRUE;
++
++invalid_size:
++    set_last_error32( ERROR_INVALID_PARAMETER );
++    return FALSE;
++}
++
++NTSTATUS WINAPI wow64_NtUserGetPointerType( UINT *args )
++{
++    UINT id = get_ulong( &args );
++    POINTER_INPUT_TYPE *type = get_ptr( &args );
++
++    return NtUserGetPointerType( id, type );
++}
++
++NTSTATUS WINAPI wow64_NtUserGetPointerDeviceRects( UINT *args )
++{
++    HANDLE device = get_handle( &args );
++    RECT *device_rect = get_ptr( &args );
++    RECT *display_rect = get_ptr( &args );
+ 
+-    return NtUserGetPointerInfoList( id, type, unk0, unk1, size, entry_count, pointer_count, pointer_info );
++    return NtUserGetPointerDeviceRects( device, device_rect, display_rect );
+ }
+ 
+ NTSTATUS WINAPI wow64_NtUserGetPriorityClipboardFormat( UINT *args )
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 8955369af8d..d09ddfaaa63 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -885,6 +885,8 @@ W32KAPI BOOL    WINAPI NtUserGetObjectInformation( HANDLE handle, INT index, voi
+ W32KAPI HWND    WINAPI NtUserGetOpenClipboardWindow(void);
+ W32KAPI BOOL    WINAPI NtUserGetPointerInfoList( UINT32 id, POINTER_INPUT_TYPE type, UINT_PTR, UINT_PTR, SIZE_T size,
+                                                  UINT32 *entry_count, UINT32 *pointer_count, void *pointer_info );
++W32KAPI BOOL    WINAPI NtUserGetPointerType( UINT32 id, POINTER_INPUT_TYPE *type );
++W32KAPI BOOL    WINAPI NtUserGetPointerDeviceRects( HANDLE handle, RECT *device_rect, RECT *display_rect );
+ W32KAPI INT     WINAPI NtUserGetPriorityClipboardFormat( UINT *list, INT count );
+ W32KAPI BOOL    WINAPI NtUserGetProcessDefaultLayout( ULONG *layout );
+ W32KAPI ULONG   WINAPI NtUserGetProcessDpiAwarenessContext( HANDLE process );

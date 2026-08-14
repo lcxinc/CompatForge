@@ -1,0 +1,55 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "App Store",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "lenovo-app-store",
+  "installer" : {
+    "arguments" : [
+      "/S"
+    ],
+    "fileName" : "LenovoAppStoreInstall.exe",
+    "hints" : [
+
+    ],
+    "mode" : "localFile",
+    "sha256" : "4fd4b101cd0a52083b55f0d58dd8406a40331c1d7196d3f13e9f350cce5b87e9"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "联想应用商店",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files (x86)\\Lenovo\\LeAppStore\\LenovoAppStore.exe",
+      "id" : "lenovo-app-store",
+      "showInHome" : true
+    }
+  ],
+  "name" : "联想应用商店",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Lenovo",
+  "warnings" : [
+    "Uses a user-provided local Lenovo installer with SHA-256 validation; MacWin does not redistribute this installer.",
+    "This recipe exercises Lenovo CEF/WebView rendering, Chinese text, black-screen repair, and helper-process cleanup only.",
+    "Do not bypass Lenovo account, download, DRM, or security flows."
+  ]
+}

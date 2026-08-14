@@ -1,0 +1,55 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Developer Tools",
+  "compatibilityRating" : "good",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+
+  },
+  "id" : "notepad-plus-plus",
+  "installer" : {
+    "arguments" : [
+      "/i",
+      "$installer",
+      "/qn"
+    ],
+    "command" : "msiexec",
+    "fileName" : "npp.8.9.6.2.Installer.x64.msi",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "98a7d811ecd180cd8333c08ee913de8319df6a68be50c39dce2397b801875ea2",
+    "url" : "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.6.2/npp.8.9.6.2.Installer.x64.msi"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Notepad++",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\Notepad++\\notepad++.exe",
+      "id" : "notepad-plus-plus",
+      "showInHome" : true
+    }
+  ],
+  "name" : "Notepad++",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Notepad++ Team",
+  "warnings" : [
+    "Uses the official x64 MSI GitHub release asset and verifies the published SHA-256 digest. The .exe installer is avoided because it is a 32-bit NSIS stub."
+  ]
+}

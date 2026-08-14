@@ -1,0 +1,103 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Game Tests",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+
+  },
+  "id" : "macwin-game-tests",
+  "installer" : {
+    "hints" : [
+
+    ],
+    "mode" : "none"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "DX12 Device Probe (GPTK D3DMetal)",
+      "envOverrides" : {
+        "DYLD_FALLBACK_LIBRARY_PATH" : "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "DYLD_FRAMEWORK_PATH" : "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "DYLD_LIBRARY_PATH" : "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/external",
+        "MACWIN_GRAPHICS_PRESET" : "gptk-d3dmetal",
+        "MACWIN_PREFER_WINEDLLPATH" : "1",
+        "WINEDLLPATH" : "/Users/a1-6/Library/Application Support/MacWin/Engines/wine-11.11-x86_64-game/runtime/lib64/apple_gptk/wine",
+        "WINEDLLOVERRIDES" : "dxgi,d3d12,nvapi64,nvngx=n,b"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+      "id" : "dx12-device-d3dmetal",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D11 Game Loop (WineD3D Vulkan)",
+      "envOverrides" : {
+        "D3DM_SUPPORT_DXR" : "",
+        "DYLD_FALLBACK_LIBRARY_PATH" : "",
+        "DYLD_FRAMEWORK_PATH" : "",
+        "DYLD_LIBRARY_PATH" : "",
+        "MACWIN_GRAPHICS_PRESET" : "wined3d-vulkan",
+        "WINEDLLPATH" : "",
+        "WINEDLLOVERRIDES" : "",
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+      "id" : "d3d11-game-loop-vulkan",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Shader Loop (WineD3D Vulkan)",
+      "envOverrides" : {
+        "D3DM_SUPPORT_DXR" : "",
+        "DYLD_FALLBACK_LIBRARY_PATH" : "",
+        "DYLD_FRAMEWORK_PATH" : "",
+        "DYLD_LIBRARY_PATH" : "",
+        "MACWIN_GRAPHICS_PRESET" : "wined3d-vulkan",
+        "WINEDLLPATH" : "",
+        "WINEDLLOVERRIDES" : "",
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+      "id" : "shader-loop-vulkan",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "XAudio2 Game Audio",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+      "id" : "xaudio2-game-audio",
+      "showInHome" : true
+    }
+  ],
+  "name" : "MacWin Game Graphics Tests",
+  "postInstall" : [
+
+  ],
+  "publisher" : "MacWin",
+  "warnings" : [
+    "This recipe uses local synthetic game probes and the bundled GPTK/D3DMetal runtime. It is for graphics-path validation, not a commercial game compatibility claim.",
+    "Local validation currently passes DX12 through GPTK/D3DMetal, while D3D11 game-loop probes stay on WineD3D Vulkan for stability."
+  ]
+}

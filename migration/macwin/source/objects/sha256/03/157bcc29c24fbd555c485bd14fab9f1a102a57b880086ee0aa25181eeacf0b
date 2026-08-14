@@ -1,0 +1,56 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Engineering",
+  "compatibilityRating" : "good",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "LANG" : "zh_CN.UTF-8",
+    "LC_ALL" : "zh_CN.UTF-8",
+    "LC_CTYPE" : "zh_CN.UTF-8"
+  },
+  "id" : "ltspice",
+  "installer" : {
+    "arguments" : [
+      "$drive_c/Program Files/ADI/LTspice"
+    ],
+    "command" : "macwin-extract-msi-cab",
+    "fileName" : "LTspice64.msi",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "485dabd2d7d8293de733a399719f6538efda4a54b48b181a14e07271186984d3",
+    "url" : "https://ltspice.analog.com/software/LTspice64.msi"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "LTspice",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\ADI\\LTspice\\LTspice.exe",
+      "id" : "ltspice",
+      "showInHome" : true
+    }
+  ],
+  "name" : "LTspice",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Analog Devices",
+  "warnings" : [
+    "Validated with an RC transient simulation, numeric measurement checks, and a rendered netlist document window.",
+    "MacWin pre-seeds the first-run analytics preference as disabled, so no telemetry consent dialog blocks the initial launch."
+  ]
+}

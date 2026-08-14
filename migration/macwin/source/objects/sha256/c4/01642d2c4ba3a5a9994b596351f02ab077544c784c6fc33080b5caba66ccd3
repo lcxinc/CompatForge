@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MacWin Compatibility Probe <dev.local.macwin@local>
+Date: Sat, 18 Jul 2026 12:20:00 +0000
+Subject: [PATCH] Avoid nested workspace reset during dataset creation
+
+DataSetPackage::reset already brackets createDataSet with beginResetModel and
+endResetModel. Applying default workspace empty values inside createDataSet
+started a second model reset and propagated the nested reset through every
+dataset proxy. Allow initialization to reuse the outer reset while preserving
+the standalone reset used when preferences change later.
+
+diff --git a/Desktop/data/datasetpackage.cpp b/Desktop/data/datasetpackage.cpp
+--- a/Desktop/data/datasetpackage.cpp
++++ b/Desktop/data/datasetpackage.cpp
+@@ -50,7 +50,7 @@ DataSetPackage::DataSetPackage(QObject * parent) : QAbstractItemModel(parent)
+ 	_db			= new DatabaseInterface(true);
+ 
+ 	_dataSet	= new DataSet(); //We create one here to make sure filter() etc can actually work
+-	setDefaultWorkspaceValues();
++	setDefaultWorkspaceValues(false);
+ 	
+ 	connect(this, &DataSetPackage::isModifiedChanged,					this, &DataSetPackage::windowTitleChanged);
+ 	connect(this, &DataSetPackage::loadedChanged,						this, &DataSetPackage::windowTitleChanged);
+@@ -1475,7 +1475,7 @@ void DataSetPackage::createDataSet()
+ 	dbDelete();
+ 	deleteDataSet();
+ 	_dataSet = new DataSet();
+-	setDefaultWorkspaceValues();
++	setDefaultWorkspaceValues(false);
+ 	_dataSubModel->selectNode(_dataSet->dataNode());
+ 	_filterSubModel->selectNode(_dataSet->filtersNode());
+ 	
+@@ -2022,17 +2022,17 @@ bool DataSetPackage::workspaceShowRSyntax() const
+ 	return _dataSet ? _dataSet->showRSyntax() : PreferencesModel::prefs()->showRSyntaxInResults();
+ }
+ 
+-void DataSetPackage::setDefaultWorkspaceValues()
++void DataSetPackage::setDefaultWorkspaceValues(bool resetModel)
+ {
+ 	_dataSet->setShowRSyntax(PreferencesModel::prefs()->showRSyntaxInResults());
+ 
+-	setDefaultWorkspaceEmptyValues();
++	setDefaultWorkspaceEmptyValues(resetModel);
+ }
+ 
+-void DataSetPackage::setDefaultWorkspaceEmptyValues()
++void DataSetPackage::setDefaultWorkspaceEmptyValues(bool resetModel)
+ {
+ 	stringvec prefs = fq(PreferencesModel::prefs()->emptyValues());
+-	setWorkspaceEmptyValues(stringset(prefs.begin(), prefs.end()));
++	setWorkspaceEmptyValues(stringset(prefs.begin(), prefs.end()), resetModel);
+ }
+ 
+ void DataSetPackage::setWorkspaceEmptyValues(const stringset &emptyValues, bool reset)
+diff --git a/Desktop/data/datasetpackage.h b/Desktop/data/datasetpackage.h
+--- a/Desktop/data/datasetpackage.h
++++ b/Desktop/data/datasetpackage.h
+@@ -273,8 +273,8 @@ public:
+ 				bool						workspaceShowRSyntax()										const;
+ 				void						setWorkspaceEmptyValues(const stringset& emptyValues, bool resetModel = true);
+ 				void						setWorkspaceShowRSyntax(bool show);
+-				void						setDefaultWorkspaceValues();
+-				void						setDefaultWorkspaceEmptyValues();
++				void						setDefaultWorkspaceValues(bool resetModel = true);
++				void						setDefaultWorkspaceEmptyValues(bool resetModel = true);
+ 
+ 				void						databaseStartSynching(bool syncImmediately);
+ 				void						databaseStopSynching();

@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: MacWin Compatibility Probe <dev.local.macwin@local>
+Date: Tue, 30 Jun 2026 04:40:00 +0000
+Subject: [PATCH] Initialize EngineSync IPC state before dataset reset
+
+Wine/Whisky compatibility probing shows a startup fail-fast before the first
+EngineRepresentation, JASPEngine, Desktop started, or loadQML milestone. The
+observed order is:
+
+  EngineSync::EngineSync
+    -> DataSetPackage::setEngineSync
+      -> DataSetPackage::reset
+        -> DataSetPackage::endLoadingData
+          -> DataSetPackage::enginesReceiveNewData
+            -> EngineSync::enginesReceiveNewData
+
+Because the call is on the GUI thread, DataSetPackage dispatches directly into
+EngineSync while its constructor has not returned yet. Initialize the IPC memory
+name before attaching EngineSync to DataSetPackage. This keeps the initial reset
+synchronous, before the downstream proxy chain is constructed, while making the
+constructor re-entry observe valid EngineSync state.
+
+diff --git a/Desktop/engine/enginesync.cpp b/Desktop/engine/enginesync.cpp
+index 0000000..0000000 100644
+--- a/Desktop/engine/enginesync.cpp
++++ b/Desktop/engine/enginesync.cpp
+@@ -93,9 +93,9 @@ EngineSync::EngineSync(QObject *parent)
+ 	// So lets put it on 500ms...
+ 	QTimer::singleShot(500, this, &EngineSync::deleteOrphanedTempFiles);
+ 
+-	DataSetPackage::pkg()->setEngineSync(this);
+-
+ 	_memoryName = "JASP-IPC-" + std::to_string(ProcessInfo::currentPID());
++
++	DataSetPackage::pkg()->setEngineSync(this);
+ }
+ 
+ EngineSync::~EngineSync()

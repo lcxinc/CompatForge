@@ -1,0 +1,71 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Game Store",
+  "compatibilityRating" : "experimental",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "requiresWin32" : true,
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "MACWIN_DISABLE_DWM_COMPOSITION" : "1",
+    "MACWIN_FORCE_MOUSE_FOCUS" : "1",
+    "MACWIN_FORCE_OPAQUE_LAYERED_WINDOWS" : "1",
+    "MACWIN_STEAMWEBHELPER_ARGS" : "--disable-direct-composition --disable-gpu --disable-gpu-compositing --disable-gpu-rasterization --disable-gpu-sandbox --disable-backgrounding-occluded-windows --disable-zero-copy --disable-native-gpu-memory-buffers --disable-vulkan --disable-webgpu --disable-accelerated-2d-canvas --disable-accelerated-video-decode --disable-accelerated-video-encode --disable-oop-rasterization --disable-oop-rasterization-ddl --disable-gpu-memory-buffer-compositor-resources --disable-partial-raster --in-process-gpu --use-gl=disabled --enable-features=FontSrcLocalMatching --disable-features=CalculateNativeWinOcclusion,VizDisplayCompositor,Vulkan,WebGPU,DirectCompositionUseDCompVisualTree,UseDCompVisualTree,CanvasOopRasterization,UseChromeOSDirectVideoDecoder",
+    "MACWIN_WINHTTP_IGNORE_UNKNOWN_CA" : "1",
+    "MACWIN_STEAMWEBHELPER_FORCE_OPAQUE" : "1",
+    "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0",
+    "WINEDEBUG" : "-all"
+  },
+  "id" : "steam",
+  "installer" : {
+    "arguments" : [
+      "/S"
+    ],
+    "fileName" : "SteamSetup.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb",
+    "url" : "https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+        "-no-cef-sandbox",
+        "-cef-disable-gpu",
+        "-cef-disable-gpu-compositing"
+      ],
+      "displayName" : "Steam",
+      "envOverrides" : {
+        "MACWIN_DISABLE_DWM_COMPOSITION" : "1",
+        "MACWIN_FORCE_MOUSE_FOCUS" : "1",
+        "MACWIN_FORCE_OPAQUE_LAYERED_WINDOWS" : "1",
+        "MACWIN_STEAMWEBHELPER_ARGS" : "--disable-direct-composition --disable-gpu --disable-gpu-compositing --disable-gpu-rasterization --disable-gpu-sandbox --disable-backgrounding-occluded-windows --disable-zero-copy --disable-native-gpu-memory-buffers --disable-vulkan --disable-webgpu --disable-accelerated-2d-canvas --disable-accelerated-video-decode --disable-accelerated-video-encode --disable-oop-rasterization --disable-oop-rasterization-ddl --disable-gpu-memory-buffer-compositor-resources --disable-partial-raster --in-process-gpu --use-gl=disabled --enable-features=FontSrcLocalMatching --disable-features=CalculateNativeWinOcclusion,VizDisplayCompositor,Vulkan,WebGPU,DirectCompositionUseDCompVisualTree,UseDCompVisualTree,CanvasOopRasterization,UseChromeOSDirectVideoDecoder",
+        "MACWIN_WINHTTP_IGNORE_UNKNOWN_CA" : "1",
+        "MACWIN_STEAMWEBHELPER_FORCE_OPAQUE" : "1",
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0",
+        "WINEDEBUG" : "-all"
+      },
+      "exePath" : "C:\\Program Files\\Steam\\Steam.exe",
+      "id" : "steam",
+      "showInHome" : true
+    }
+  ],
+  "name" : "Steam",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Valve",
+  "warnings" : [
+    "SteamSetup.exe is a 32-bit installer and requires the WoW64 engine.",
+    "This recipe only installs and launches Steam. It does not bypass login, DRM, anti-cheat, or game service limits.",
+    "Some games may still require D3DMetal/DXVK-specific tuning after installation."
+  ]
+}

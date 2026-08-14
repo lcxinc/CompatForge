@@ -1,0 +1,181 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Diagnostics",
+  "compatibilityRating" : "excellent",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "requiresWin32" : true,
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+    "MACWIN_WINHTTP_IGNORE_UNKNOWN_CA" : "1",
+    "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+  },
+  "id" : "macwin-core-capability-tests",
+  "installer" : {
+    "hints" : [
+
+    ],
+    "mode" : "none"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Win32 Console Probe",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/00_console_probe.exe",
+      "id" : "console-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "TLS / WinHTTP Probe",
+      "envOverrides" : {
+        "MACWIN_WINHTTP_IGNORE_UNKNOWN_CA" : "1"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/10_tls_winhttp_probe.exe",
+      "id" : "tls-winhttp-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Network Adapter Probe",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/15_iphlpapi_probe.exe",
+      "id" : "network-adapter-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "TLS / WinHTTP Probe (32-bit)",
+      "envOverrides" : {
+        "MACWIN_WINHTTP_IGNORE_UNKNOWN_CA" : "1"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/10_tls_winhttp_probe.exe",
+      "id" : "tls-winhttp-probe-win32",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Network Adapter Probe (32-bit)",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin32/15_iphlpapi_probe.exe",
+      "id" : "network-adapter-probe-win32",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "Vulkan Device Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/20_vulkan_probe.exe",
+      "id" : "vulkan-device-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D11 Device Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/30_d3d11_probe.exe",
+      "id" : "d3d11-device-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D12 Device Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/35_d3d12_device_probe.exe",
+      "id" : "d3d12-device-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "XAudio2 Probe",
+      "envOverrides" : {
+
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/40_xaudio2_probe.exe",
+      "id" : "xaudio2-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D9 Legacy Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/45_d3d9_legacy_probe.exe",
+      "id" : "d3d9-legacy-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D11 Game Loop Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/50_game_loop_probe.exe",
+      "id" : "d3d11-game-loop-probe",
+      "showInHome" : true
+    },
+    {
+      "args" : [
+
+      ],
+      "displayName" : "D3D11 Shader Loop Probe",
+      "envOverrides" : {
+        "WINE_D3D_CONFIG" : "renderer=vulkan,csmt=0x0"
+      },
+      "exePath" : "/Users/a1-6/project/Mac-Win/refs/exe-tests/bin/60_game_shader_probe.exe",
+      "id" : "d3d11-shader-loop-probe",
+      "showInHome" : true
+    }
+  ],
+  "name" : "MacWin Core Capability Tests",
+  "postInstall" : [
+
+  ],
+  "publisher" : "MacWin",
+  "warnings" : [
+    "Installs local synthetic probes as launchers so each Wine subsystem can be tested from the app grid.",
+    "Includes 32-bit WinHTTP and network adapter probes, so it requires the WoW64 engine."
+  ]
+}

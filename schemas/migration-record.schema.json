@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/migration-record.schema.json",
+  "title": "CompatForge Deferred Mac-Win Migration Records",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 15,
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?=.{1,1024}(?![\\s\\S]))(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+)*(?![\\s\\S])"
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "reviewStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "unresolved" }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceRepository",
+        "sourcePath",
+        "sourceCommit",
+        "gitBlobOid",
+        "gitMode",
+        "sourceSha256",
+        "category",
+        "status",
+        "targetIssue",
+        "intendedOwner",
+        "license",
+        "provenance"
+      ],
+      "properties": {
+        "sourceRepository": { "const": "a1112/Mac-Win" },
+        "sourcePath": { "$ref": "#/$defs/relativePath" },
+        "sourceCommit": { "$ref": "#/$defs/commit" },
+        "gitBlobOid": { "$ref": "#/$defs/commit" },
+        "gitMode": { "enum": ["100644", "100755"] },
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "category": { "enum": ["patches", "bottle-schema"] },
+        "status": { "const": "deferred" },
+        "targetIssue": { "enum": ["MW-ASSET-002", "MW-ASSET-003"] },
+        "intendedOwner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^compatforge/[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
+        },
+        "license": { "$ref": "#/$defs/reviewStatus" },
+        "provenance": { "$ref": "#/$defs/reviewStatus" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "category": { "const": "patches" } } },
+          "then": { "properties": { "targetIssue": { "const": "MW-ASSET-002" } } }
+        },
+        {
+          "if": { "properties": { "category": { "const": "bottle-schema" } } },
+          "then": { "properties": { "targetIssue": { "const": "MW-ASSET-003" } } }
+        }
+      ]
+    }
+  }
+}

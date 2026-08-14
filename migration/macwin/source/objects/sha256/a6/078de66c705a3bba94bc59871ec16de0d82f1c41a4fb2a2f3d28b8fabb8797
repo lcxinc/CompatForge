@@ -1,0 +1,18 @@
+@article{macwin2026,
+  author = {Chen, Lin and Smith, Ada},
+  title = {MacWin compatibility validation},
+  journal = {Portable Research Tools},
+  year = {2026},
+  volume = {11},
+  number = {2},
+  pages = {17--29},
+  doi = {10.1234/macwin.2026.17}
+}
+
+@book{wineguide2025,
+  author = {Taylor, Robin},
+  title = {Reliable Windows Workloads on macOS},
+  publisher = {Open Systems Press},
+  year = {2025},
+  isbn = {978-1-23456-789-0}
+}

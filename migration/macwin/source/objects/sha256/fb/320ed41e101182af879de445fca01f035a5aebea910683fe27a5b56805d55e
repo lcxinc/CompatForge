@@ -1,0 +1,52 @@
+{
+  "bottleTemplate" : {
+    "arch" : "win64",
+    "windowsVersion" : "win11"
+  },
+  "category" : "Utilities",
+  "compatibilityRating" : "excellent",
+  "engineRequirements" : {
+    "minWineVersion" : "wine-11.11",
+    "supportedArch" : [
+      "win64"
+    ]
+  },
+  "env" : {
+
+  },
+  "id" : "7zip",
+  "installer" : {
+    "arguments" : [
+      "/S"
+    ],
+    "fileName" : "7z2601-x64.exe",
+    "hints" : [
+
+    ],
+    "mode" : "download",
+    "sha256" : "d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d",
+    "url" : "https://www.7-zip.org/a/7z2601-x64.exe"
+  },
+  "launchers" : [
+    {
+      "args" : [
+
+      ],
+      "displayName" : "7-Zip File Manager",
+      "envOverrides" : {
+
+      },
+      "exePath" : "C:\\Program Files\\7-Zip\\7zFM.exe",
+      "id" : "7zip-file-manager",
+      "showInHome" : true
+    }
+  ],
+  "name" : "7-Zip",
+  "postInstall" : [
+
+  ],
+  "publisher" : "Igor Pavlov",
+  "warnings" : [
+    "Downloaded only from the official 7-zip.org domain. Avoid similarly named third-party domains."
+  ]
+}

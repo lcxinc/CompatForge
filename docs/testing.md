@@ -71,6 +71,17 @@ recipe digest
 
 每个失败至少归入：unsupported、runtime-regression、recipe-regression、host-driver、translator、graphics、installer-upstream、policy-blocked、test-infrastructure。未知失败不能自动发布为兼容 Recipe。
 
+## Mac-Win portable asset 离线门禁
+
+[Mac-Win portable asset 迁移边界](migration/macwin-portable-assets.md)记录冻结源身份、90 条输入的真实状态、隔离/延期条件和精确输出摘要。该门禁只验证离线表示与副作用边界，不执行迁移资产，也不产生应用兼容结论。
+
+```text
+python -B tools/convert_macwin_assets.py --check
+python -B scripts/validate_repository.py
+```
+
+评审生成变化时还需显式运行两次 `python -B tools/convert_macwin_assets.py --write`，确认第二次保持字节完全不变，并复核 source pack、generated graph、Git 元数据、Runtime Pack store、Bottle fixtures 与外部 sentinel 的前后快照。
+
 ## Phase 0 门禁
 
 当前仓库执行：
