@@ -7890,23 +7890,6 @@ class MacWinMigrationCliTests(unittest.TestCase):
 
     def test_every_reviewed_patch_has_a_canonical_bounded_quarantine_explanation(self) -> None:
         common = _load_macwin_asset_common()
-        expected_fields = {
-            "action",
-            "category",
-            "evidenceLocators",
-            "intendedOwner",
-            "outputKind",
-            "reason",
-            "releaseCondition",
-            "schemaVersion",
-            "sourceCommit",
-            "sourceKind",
-            "sourcePath",
-            "sourceRepository",
-            "sourceSha256",
-            "status",
-            "targetIssue",
-        }
         paths = tuple(record.source_path for record in self.result.patch_review.records)
         assets = {
             asset.source_path: asset
@@ -7916,32 +7899,162 @@ class MacWinMigrationCliTests(unittest.TestCase):
         self.assertEqual(len(paths), 11)
         for source_path in paths:
             with self.subTest(source_path=source_path):
-                first = self._run_cli("--explain", source_path)
-                second = self._run_cli("--explain", source_path)
-                self.assertEqual((first.returncode, first.stderr), (0, b""))
-                self.assertEqual(second.stdout, first.stdout)
-                self.assertLessEqual(len(first.stdout), 1024 * 1024)
-                explanation = common.parse_json_bytes(
-                    first.stdout, label="patch explanation"
+                self._assert_reviewed_patch_explanation(
+                    common, source_path, assets[source_path]
                 )
-                self.assertEqual(first.stdout, common.canonical_json_bytes(explanation))
-                self.assertEqual(set(explanation), expected_fields)
-                self.assertEqual(explanation["sourcePath"], source_path)
-                self.assertEqual(explanation["status"], "quarantined")
-                self.assertEqual(explanation["action"], "quarantine")
-                self.assertEqual(explanation["reason"], "missing-license")
-                self.assertNotIn("content", explanation)
-                self.assertNotIn("patchBytes", explanation)
-                content_lines = tuple(
-                    line
-                    for line in assets[source_path].raw.splitlines()
-                    if len(line) >= 32
-                    and line[:1] in {b"+", b"-"}
-                    and not line.startswith((b"+++", b"---"))
+
+    def _assert_reviewed_patch_explanation(
+        self, common, source_path: str, asset
+    ) -> None:
+        expected = {
+            "action": "quarantine",
+            "category": "patches",
+            "evidenceLocators": [f"{source_path}#patchLicense"],
+            "intendedOwner": asset.intended_owner,
+            "outputKind": "patch-mapping",
+            "reason": "missing-license",
+            "releaseCondition": "Record patch-specific license evidence and repeat review.",
+            "schemaVersion": "1",
+            "sourceCommit": asset.source_commit,
+            "sourceKind": asset.kind,
+            "sourcePath": source_path,
+            "sourceRepository": self.result.source_pack.repository,
+            "sourceSha256": asset.sha256,
+            "status": "quarantined",
+            "targetIssue": "MW-ASSET-002",
+        }
+        first = self._run_cli("--explain", source_path)
+        second = self._run_cli("--explain", source_path)
+        self.assertEqual((first.returncode, first.stderr), (0, b""))
+        self.assertEqual(second.stdout, first.stdout)
+        self.assertLessEqual(len(first.stdout), 1024 * 1024)
+        explanation = common.parse_json_bytes(
+            first.stdout, label="patch explanation"
+        )
+        self.assertEqual(first.stdout, common.canonical_json_bytes(explanation))
+        content_lines = self._meaningful_patch_content_lines(asset.raw)
+        self.assertTrue(content_lines)
+        for value in self._json_string_values(explanation):
+            for line, content in content_lines:
+                if line in value or value == content or (
+                    (len(content) >= 8 or any(mark in content for mark in '\t"\\'))
+                    and content in value
+                ):
+                    self.fail("patch explanation reflects authenticated patch content")
+        self.assertEqual(explanation, expected)
+
+    @staticmethod
+    def _meaningful_patch_content_lines(patch_raw: bytes) -> tuple[tuple[str, str], ...]:
+        result = []
+        for line in patch_raw.decode("utf-8", "strict").splitlines():
+            if (
+                not line.startswith(("+", "-"))
+                or line.startswith(("+++ ", "--- "))
+            ):
+                continue
+            content = line[1:]
+            if content.strip():
+                result.append((line, content))
+        return tuple(result)
+
+    @classmethod
+    def _json_string_values(cls, value: object) -> tuple[str, ...]:
+        if type(value) is str:
+            return (value,)
+        if type(value) is list:
+            return tuple(
+                item
+                for member in value
+                for item in cls._json_string_values(member)
+            )
+        if type(value) is dict:
+            return tuple(
+                item
+                for member in value.values()
+                for item in cls._json_string_values(member)
+            )
+        return ()
+
+    def test_patch_explanation_contract_rejects_decoded_content_reflection_mutants(self) -> None:
+        common = _load_macwin_asset_common()
+        assets = {
+            asset.source_path: asset
+            for asset in self.result.source_pack.assets
+            if asset.category == "patches"
+        }
+        cases: dict[str, tuple[str, str]] = {}
+        for source_path, asset in assets.items():
+            for line in asset.raw.decode("utf-8", "strict").splitlines():
+                if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
+                    continue
+                content = line[1:]
+                if not content.strip():
+                    continue
+                if "tab" not in cases and "\t" in line and len(line) >= 32:
+                    cases["tab"] = (source_path, line)
+                if "quote" not in cases and '"' in line and len(line) >= 32:
+                    cases["quote"] = (source_path, line)
+                if "backslash" not in cases and "\\" in line and len(line) >= 32:
+                    cases["backslash"] = (source_path, line)
+                if (
+                    "short" not in cases
+                    and len(line) <= 3
+                    and not any(character in line for character in '\t"\\')
+                ):
+                    cases["short"] = (source_path, line)
+        self.assertEqual(set(cases), {"tab", "quote", "backslash", "short"})
+
+        for name, (source_path, reflected_line) in cases.items():
+            explanation = common.parse_json_bytes(
+                self.converter.explain_conversion(self.result, source_path),
+                label="patch explanation",
+            )
+            explanation["releaseCondition"] = reflected_line
+            forged = common.canonical_json_bytes(explanation)
+            self.assertEqual(
+                common.parse_json_bytes(forged, label="patch explanation")[
+                    "releaseCondition"
+                ],
+                reflected_line,
+            )
+            injected_calls = []
+
+            def inject(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+                injected_calls.append(arguments)
+                return subprocess.CompletedProcess(
+                    (
+                        sys.executable,
+                        "-B",
+                        str(ROOT / "tools/convert_macwin_assets.py"),
+                        *arguments,
+                    ),
+                    0,
+                    forged,
+                    b"",
                 )
-                self.assertTrue(content_lines)
-                for line in content_lines:
-                    self.assertNotIn(line, first.stdout)
+
+            caught = None
+            with self.subTest(mutant=name), mock.patch.object(
+                self, "_run_cli", side_effect=inject
+            ):
+                try:
+                    self._assert_reviewed_patch_explanation(
+                        common, source_path, assets[source_path]
+                    )
+                except AssertionError as error:
+                    caught = error
+                self.assertEqual(
+                    injected_calls,
+                    [
+                        ("--explain", source_path),
+                        ("--explain", source_path),
+                    ],
+                )
+                self.assertIsNotNone(caught, f"{name} reflection mutant was accepted")
+                self.assertIn(
+                    "patch explanation reflects authenticated patch content",
+                    str(caught),
+                )
 
     def test_explain_accepts_an_exact_unique_output_path_alias(self) -> None:
         helper = MacWinRecipeConversionTests(methodName="runTest")
