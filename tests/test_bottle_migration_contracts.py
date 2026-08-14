@@ -16,6 +16,19 @@ SCHEMA_NAMES = (
 )
 DIGEST_A = "sha256:" + ("a" * 64)
 DIGEST_B = "sha256:" + ("b" * 64)
+WINDOWS_SUPERSCRIPT_DEVICE_PATHS = (
+    "COM¹",
+    "COM².txt",
+    "COM³",
+    "LPT¹",
+    "LPT².txt",
+    "LPT³.log",
+    "com¹",
+    "cOm².TxT",
+    "lPt³.LoG",
+    "COM¹ .txt",
+    "lpt²   .log",
+)
 
 
 class BottleMigrationSchemaTests(unittest.TestCase):
@@ -232,6 +245,21 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 ):
                     self._assert_valid(value, contract, schema)
 
+    def test_schema_patterns_reject_windows_superscript_device_aliases(self) -> None:
+        for name in (
+            "bottle-snapshot.schema.json",
+            "bottle-migration-plan.schema.json",
+        ):
+            pattern = self._schema(name)["$defs"]["relativePath"]["pattern"]
+            for value in WINDOWS_SUPERSCRIPT_DEVICE_PATHS:
+                with self.subTest(schema=name, value=value):
+                    self.assertIsNone(re.search(pattern, value))
+
+    def test_oracle_rejects_windows_superscript_device_aliases(self) -> None:
+        for value in WINDOWS_SUPERSCRIPT_DEVICE_PATHS:
+            with self.subTest(value=value), self.assertRaises(AssertionError):
+                self._assert_portable_path(value)
+
     def test_snapshot_paths_reject_casefold_collisions(self) -> None:
         name = "bottle-snapshot.schema.json"
         collision = copy.deepcopy(self._instances()[name])
@@ -429,6 +457,11 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         components = value.split("/")
         if not 1 <= len(components) <= 128:
             raise AssertionError("path depth is invalid")
+        serial_suffixes = tuple(str(index) for index in range(1, 10)) + (
+            "¹",
+            "²",
+            "³",
+        )
         reserved = {
             "con",
             "prn",
@@ -436,8 +469,8 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             "nul",
             "conin$",
             "conout$",
-            *(f"com{index}" for index in range(1, 10)),
-            *(f"lpt{index}" for index in range(1, 10)),
+            *(f"com{suffix}" for suffix in serial_suffixes),
+            *(f"lpt{suffix}" for suffix in serial_suffixes),
         }
         forbidden = set('<>:"\\|?*')
         for component in components:
