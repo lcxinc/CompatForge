@@ -1,7 +1,9 @@
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_rfc3339;
-use serde::{Deserialize, Serialize};
+use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 pub const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 4096;
@@ -17,7 +19,9 @@ pub struct LegacyBottleManifest {
     pub windows_version: String,
     pub arch: LegacyWineArch,
     pub engine_id: String,
+    #[serde(deserialize_with = "deserialize_environment")]
     pub env_overrides: BTreeMap<String, String>,
+    #[serde(deserialize_with = "deserialize_launchers")]
     pub installed_apps: Vec<LegacyLauncher>,
     pub created_at: String,
     pub updated_at: String,
@@ -67,15 +71,25 @@ pub struct LegacyLauncher {
     pub bottle_id: String,
     pub display_name: String,
     pub exe_path: String,
+    #[serde(deserialize_with = "deserialize_arguments")]
     pub args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_path: Option<String>,
+    #[serde(deserialize_with = "deserialize_environment")]
     pub env_overrides: BTreeMap<String, String>,
     pub show_in_home: bool,
 }
 
 impl LegacyLauncher {
     fn validate(&self, bottle_id: &str) -> Result<(), BottleMigrationError> {
+        self.validate_fields()?;
+        if self.bottle_id != bottle_id {
+            return Err(invalid_manifest());
+        }
+        Ok(())
+    }
+
+    fn validate_fields(&self) -> Result<(), BottleMigrationError> {
         for value in [
             &self.id,
             &self.app_id,
@@ -85,7 +99,7 @@ impl LegacyLauncher {
         ] {
             validate_required_text(value)?;
         }
-        if self.bottle_id != bottle_id || self.args.len() > MAX_ARGUMENTS {
+        if self.args.len() > MAX_ARGUMENTS {
             return Err(invalid_manifest());
         }
         for argument in &self.args {
@@ -103,6 +117,153 @@ impl LegacyLauncher {
 pub enum LegacyWineArch {
     Win32,
     Win64,
+}
+
+fn deserialize_arguments<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ArgumentsVisitor;
+
+    impl<'de> Visitor<'de> for ArgumentsVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an argument sequence")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut arguments = Vec::new();
+            while let Some(argument) = sequence.next_element::<String>()? {
+                #[cfg(test)]
+                record_argument_deserialized();
+                if arguments.len() == MAX_ARGUMENTS {
+                    return Err(A::Error::custom("too many launcher arguments"));
+                }
+                validate_text(&argument).map_err(|_| A::Error::custom("invalid launcher argument"))?;
+                arguments.push(argument);
+            }
+            Ok(arguments)
+        }
+    }
+
+    deserializer.deserialize_seq(ArgumentsVisitor)
+}
+
+fn deserialize_launchers<'de, D>(deserializer: D) -> Result<Vec<LegacyLauncher>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct LaunchersVisitor;
+
+    impl<'de> Visitor<'de> for LaunchersVisitor {
+        type Value = Vec<LegacyLauncher>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a launcher sequence")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut launchers = Vec::new();
+            while let Some(launcher) = sequence.next_element::<LegacyLauncher>()? {
+                #[cfg(test)]
+                record_launcher_deserialized();
+                if launchers.len() == MAX_LAUNCHERS {
+                    return Err(A::Error::custom("too many launchers"));
+                }
+                launcher
+                    .validate_fields()
+                    .map_err(|_| A::Error::custom("invalid launcher"))?;
+                launchers.push(launcher);
+            }
+            Ok(launchers)
+        }
+    }
+
+    deserializer.deserialize_seq(LaunchersVisitor)
+}
+
+fn deserialize_environment<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct EnvironmentVisitor;
+
+    impl<'de> Visitor<'de> for EnvironmentVisitor {
+        type Value = BTreeMap<String, String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a bounded environment map")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut environment = BTreeMap::new();
+            while let Some(key) = map.next_key::<String>()? {
+                #[cfg(test)]
+                record_environment_entry_deserialized();
+                if environment.len() == MAX_ENV_OVERRIDES {
+                    return Err(A::Error::custom("too many environment entries"));
+                }
+                validate_required_text(&key).map_err(|_| A::Error::custom("invalid environment key"))?;
+                if environment.contains_key(&key) {
+                    return Err(A::Error::custom("duplicate environment key"));
+                }
+                let value = map.next_value::<String>()?;
+                validate_text(&value).map_err(|_| A::Error::custom("invalid environment value"))?;
+                environment.insert(key, value);
+            }
+            Ok(environment)
+        }
+    }
+
+    deserializer.deserialize_map(EnvironmentVisitor)
+}
+
+#[cfg(test)]
+thread_local! {
+    static ARGUMENTS_DESERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static LAUNCHERS_DESERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ENVIRONMENT_ENTRIES_DESERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_argument_deserialized() {
+    ARGUMENTS_DESERIALIZED.set(ARGUMENTS_DESERIALIZED.get() + 1);
+}
+
+#[cfg(test)]
+fn record_launcher_deserialized() {
+    LAUNCHERS_DESERIALIZED.set(LAUNCHERS_DESERIALIZED.get() + 1);
+}
+
+#[cfg(test)]
+fn record_environment_entry_deserialized() {
+    ENVIRONMENT_ENTRIES_DESERIALIZED.set(ENVIRONMENT_ENTRIES_DESERIALIZED.get() + 1);
+}
+
+#[cfg(test)]
+fn reset_deserialization_probes() {
+    ARGUMENTS_DESERIALIZED.set(0);
+    LAUNCHERS_DESERIALIZED.set(0);
+    ENVIRONMENT_ENTRIES_DESERIALIZED.set(0);
+}
+
+#[cfg(test)]
+fn deserialization_probe_counts() -> (usize, usize, usize) {
+    (
+        ARGUMENTS_DESERIALIZED.get(),
+        LAUNCHERS_DESERIALIZED.get(),
+        ENVIRONMENT_ENTRIES_DESERIALIZED.get(),
+    )
 }
 
 fn validate_environment(environment: &BTreeMap<String, String>) -> Result<(), BottleMigrationError> {
@@ -177,6 +338,42 @@ mod tests {
         assert_eq!(error.to_string(), "Bottle manifest is invalid");
     }
 
+    fn manifest_json_with_raw_environment(bottle_environment: &str, launcher_environment: &str) -> String {
+        let mut value = valid_manifest();
+        value["envOverrides"] = json!("__BOTTLE_ENVIRONMENT__");
+        value["installedApps"][0]["envOverrides"] = json!("__LAUNCHER_ENVIRONMENT__");
+        serde_json::to_string(&value)
+            .unwrap()
+            .replace("\"__BOTTLE_ENVIRONMENT__\"", &format!("{{{bottle_environment}}}"))
+            .replace("\"__LAUNCHER_ENVIRONMENT__\"", &format!("{{{launcher_environment}}}"))
+    }
+
+    fn assert_invalid_json(json: &str) {
+        let error = LegacyBottleManifest::from_json(json).unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::InvalidManifest);
+        assert_eq!(error.to_string(), "Bottle manifest is invalid");
+    }
+
+    fn assert_duplicate_environment_cases(in_launcher: bool) {
+        let duplicate_keys = r#""DUP":"first","DUP":"second""#;
+        let repeated_keys = (0..=MAX_ENV_OVERRIDES)
+            .map(|_| r#""DUP":"value""#)
+            .collect::<Vec<_>>()
+            .join(",");
+        let oversized = "x".repeat(MAX_TEXT_BYTES + 1);
+        let oversized_first = format!(r#""DUP":"{oversized}","DUP":"small""#);
+        let oversized_last = format!(r#""DUP":"small","DUP":"{oversized}""#);
+
+        for environment in [duplicate_keys, &repeated_keys, &oversized_first, &oversized_last] {
+            let json = if in_launcher {
+                manifest_json_with_raw_environment("", environment)
+            } else {
+                manifest_json_with_raw_environment(environment, "")
+            };
+            assert_invalid_json(&json);
+        }
+    }
+
     #[test]
     fn legacy_contract_is_closed_and_bounded() {
         let mut unknown = valid_manifest();
@@ -215,6 +412,16 @@ mod tests {
         let mut foreign = valid_manifest();
         foreign["installedApps"][0]["bottleId"] = json!("bottle-2");
         assert_invalid(&foreign);
+    }
+
+    #[test]
+    fn legacy_contract_rejects_duplicate_bottle_environment_keys() {
+        assert_duplicate_environment_cases(false);
+    }
+
+    #[test]
+    fn legacy_contract_rejects_duplicate_launcher_environment_keys() {
+        assert_duplicate_environment_cases(true);
     }
 
     #[test]
@@ -318,6 +525,69 @@ mod tests {
             env.insert(format!("KEY_{index}"), json!("value"));
         }
         assert_invalid(&launcher_env_over_limit);
+    }
+
+    #[test]
+    fn bounded_argument_deserializer_stops_after_first_excess_item() {
+        let mut at_limit = valid_manifest();
+        at_limit["installedApps"][0]["args"] = json!(vec!["arg"; MAX_ARGUMENTS]);
+        super::reset_deserialization_probes();
+        assert!(parse(&at_limit).is_ok());
+        assert_eq!(super::deserialization_probe_counts().0, MAX_ARGUMENTS);
+
+        let mut over_limit = valid_manifest();
+        over_limit["installedApps"][0]["args"] = json!(vec!["arg"; MAX_ARGUMENTS + 10]);
+        super::reset_deserialization_probes();
+        assert_invalid(&over_limit);
+        assert_eq!(super::deserialization_probe_counts().0, MAX_ARGUMENTS + 1);
+    }
+
+    #[test]
+    fn bounded_launcher_deserializer_stops_after_first_excess_item() {
+        let manifest_with_launchers = |count: usize| {
+            let mut value = valid_manifest();
+            let template = value["installedApps"][0].clone();
+            let launchers = value["installedApps"].as_array_mut().unwrap();
+            launchers.clear();
+            for index in 0..count {
+                let mut launcher = template.clone();
+                launcher["id"] = json!(format!("launcher-{index}"));
+                launcher["args"] = json!([]);
+                launcher["envOverrides"] = json!({});
+                launchers.push(launcher);
+            }
+            value
+        };
+
+        let at_limit = manifest_with_launchers(MAX_LAUNCHERS);
+        super::reset_deserialization_probes();
+        assert!(parse(&at_limit).is_ok());
+        assert_eq!(super::deserialization_probe_counts().1, MAX_LAUNCHERS);
+
+        let over_limit = manifest_with_launchers(MAX_LAUNCHERS + 10);
+        super::reset_deserialization_probes();
+        assert_invalid(&over_limit);
+        assert_eq!(super::deserialization_probe_counts().1, MAX_LAUNCHERS + 1);
+    }
+
+    #[test]
+    fn bounded_environment_deserializer_stops_after_first_excess_entry() {
+        let unique_environment = |count: usize| {
+            (0..count)
+                .map(|index| format!(r#""KEY_{index}":"value""#))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        let at_limit = manifest_json_with_raw_environment(&unique_environment(MAX_ENV_OVERRIDES), "");
+        super::reset_deserialization_probes();
+        assert!(LegacyBottleManifest::from_json(&at_limit).is_ok());
+        assert_eq!(super::deserialization_probe_counts().2, MAX_ENV_OVERRIDES);
+
+        let over_limit = manifest_json_with_raw_environment(&unique_environment(MAX_ENV_OVERRIDES + 10), "");
+        super::reset_deserialization_probes();
+        assert_invalid_json(&over_limit);
+        assert_eq!(super::deserialization_probe_counts().2, MAX_ENV_OVERRIDES + 1);
     }
 
     #[test]
