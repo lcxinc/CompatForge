@@ -1,12 +1,14 @@
 use crate::contract::{LegacyBottleManifest, MAX_MANIFEST_BYTES};
-use crate::digest::{
-    canonical_compact_json, canonical_pretty_json_lf, copy_and_digest, digest_reader, sha256_bytes, STREAM_BUFFER_BYTES,
-};
+use crate::digest::{copy_and_digest, digest_reader};
+#[cfg(test)]
+use crate::digest::{sha256_bytes, STREAM_BUFFER_BYTES};
 use crate::path::{self, EntryKind};
 use crate::platform::{self, FileIdentity};
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_id;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
@@ -30,6 +32,7 @@ thread_local! {
     };
     static SNAPSHOT_COMPARISON_BYTES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static SNAPSHOT_STAGE_HOOK: std::cell::RefCell<Option<SnapshotTestHook>> = const { std::cell::RefCell::new(None) };
+    static SNAPSHOT_MANIFEST_LIMIT_OVERRIDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -45,8 +48,12 @@ enum SnapshotTestStage {
     AfterSourcePreflight,
     AfterFileCopy,
     BeforeSourceRevalidation,
+    AfterSourceRevalidation,
+    AfterSnapshotManifestMeasurement,
     BeforeObjectPublish,
     BeforeSnapshotPublish,
+    AfterSnapshotPublish,
+    BeforeSnapshotReturn,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -121,6 +128,14 @@ struct OwnedTemporaryPath {
     owned: bool,
 }
 
+#[derive(Debug)]
+struct SnapshotPublication {
+    target: PathBuf,
+    directory: PathBuf,
+    created: bool,
+    identity: Option<FileIdentity>,
+}
+
 impl OwnedTemporaryPath {
     fn new(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -179,7 +194,7 @@ struct SourceSignature {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceSignatureKind {
-    File(u64),
+    File { size: u64, digest: String },
     Directory,
     Link(String),
 }
@@ -189,7 +204,10 @@ impl From<&SourceEntry> for SourceSignature {
         match entry {
             SourceEntry::File(file) => Self {
                 path: file.relative_path.clone(),
-                kind: SourceSignatureKind::File(file.size),
+                kind: SourceSignatureKind::File {
+                    size: file.size,
+                    digest: file.preflight_digest.clone(),
+                },
                 identity: file.identity,
             },
             SourceEntry::Directory {
@@ -312,16 +330,31 @@ impl BottleStore {
         snapshot.validate().map_err(|_| unsafe_entry())?;
         run_snapshot_test_hook(SnapshotTestStage::BeforeSourceRevalidation, "");
         verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
+        run_snapshot_test_hook(SnapshotTestStage::AfterSourceRevalidation, "");
+        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
         store
             .verify_legacy_manifest_object(&snapshot)
             .map_err(|_| source_changed())?;
 
-        let compact = canonical_compact_json(&snapshot).map_err(|_| transaction_failed())?;
-        let snapshot_digest = sha256_bytes(&compact);
-        let published = canonical_pretty_json_lf(&snapshot).map_err(|_| transaction_failed())?;
-        checked_snapshot_manifest_size(published.len()).map_err(|_| unsafe_entry())?;
-        store.publish_snapshot(&snapshot_digest, &published)?;
-        store.verify_snapshot(&snapshot_digest)?;
+        let published_size = measure_snapshot_json(&snapshot, snapshot_manifest_limit()).map_err(|_| unsafe_entry())?;
+        run_snapshot_test_hook(SnapshotTestStage::AfterSnapshotManifestMeasurement, "");
+        checked_snapshot_manifest_size(published_size).map_err(|_| unsafe_entry())?;
+        let snapshot_digest = digest_snapshot_json(&snapshot).map_err(|_| transaction_failed())?;
+        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
+        let publication = store.publish_snapshot(&snapshot_digest, &snapshot)?;
+        let post_publication = (|| {
+            run_snapshot_test_hook(SnapshotTestStage::AfterSnapshotPublish, "");
+            verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
+            store.verify_snapshot(&snapshot_digest)?;
+            run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotReturn, "");
+            verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
+            store.verify_snapshot(&snapshot_digest)?;
+            Ok(())
+        })();
+        if let Err(error) = post_publication {
+            store.rollback_snapshot(publication, &snapshot)?;
+            return Err(error);
+        }
 
         Ok(SnapshotReceipt {
             bottle_id: snapshot.bottle_id,
@@ -349,12 +382,10 @@ impl BottleStore {
         let snapshot: BottleSnapshot = serde_json::from_slice(&bytes).map_err(|_| snapshot_corrupt())?;
         snapshot.validate()?;
 
-        let compact = canonical_compact_json(&snapshot).map_err(|_| snapshot_corrupt())?;
-        if sha256_bytes(&compact) != digest {
+        if digest_snapshot_json(&snapshot).map_err(|_| snapshot_corrupt())? != digest {
             return Err(snapshot_corrupt());
         }
-        let canonical = canonical_pretty_json_lf(&snapshot).map_err(|_| snapshot_corrupt())?;
-        if bytes != canonical {
+        if !snapshot_json_matches(&snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
             return Err(snapshot_corrupt());
         }
 
@@ -426,13 +457,25 @@ impl BottleStore {
         Ok(())
     }
 
-    fn publish_snapshot(&self, digest: &str, bytes: &[u8]) -> Result<(), BottleMigrationError> {
+    fn publish_snapshot(
+        &self,
+        digest: &str,
+        snapshot: &BottleSnapshot,
+    ) -> Result<SnapshotPublication, BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(transaction_failed)?;
         let directory = self.root.join("snapshots").join("sha256");
         fs::create_dir_all(&directory).map_err(|_| transaction_failed())?;
         let target = directory.join(format!("{digest_hex}.json"));
         match fs::symlink_metadata(&target) {
-            Ok(_) => return compare_existing_snapshot(&target, bytes),
+            Ok(_) => {
+                compare_existing_snapshot_model(&target, snapshot)?;
+                return Ok(SnapshotPublication {
+                    target,
+                    directory,
+                    created: false,
+                    identity: None,
+                });
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(_) => return Err(snapshot_corrupt()),
         }
@@ -440,22 +483,65 @@ impl BottleStore {
         let mut temporary = OwnedTemporaryPath::new(temporary_path(&directory, "snapshot"));
         (|| {
             let mut file = temporary.create_new().map_err(|_| transaction_failed())?;
-            file.write_all(bytes).map_err(|_| transaction_failed())?;
+            render_snapshot_json(snapshot, true, &mut file).map_err(|_| transaction_failed())?;
+            file.write_all(b"\n").map_err(|_| transaction_failed())?;
             file.sync_all().map_err(|_| transaction_failed())?;
             drop(file);
+            let (owned_handle, owned_identity) =
+                platform::bind_regular(temporary.path()).map_err(|_| transaction_failed())?;
             run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotPublish, "");
             match fs::hard_link(temporary.path(), &target) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    compare_existing_snapshot(&target, bytes)?;
+                    compare_existing_snapshot_model(&target, snapshot)?;
+                    drop(owned_handle);
                     temporary.remove().map_err(|_| transaction_failed())?;
-                    return Ok(());
+                    return Ok(SnapshotPublication {
+                        target,
+                        directory,
+                        created: false,
+                        identity: None,
+                    });
                 }
                 Err(_) => return Err(transaction_failed()),
             }
+            drop(owned_handle);
             temporary.remove().map_err(|_| transaction_failed())?;
-            sync_directory(&directory)
+            sync_directory(&directory)?;
+            Ok(SnapshotPublication {
+                target,
+                directory,
+                created: true,
+                identity: Some(owned_identity),
+            })
         })()
+    }
+
+    fn rollback_snapshot(
+        &self,
+        publication: SnapshotPublication,
+        snapshot: &BottleSnapshot,
+    ) -> Result<(), BottleMigrationError> {
+        if !publication.created {
+            return Ok(());
+        }
+        let expected_identity = publication.identity.ok_or_else(snapshot_corrupt)?;
+        let (mut target, actual_identity) = match platform::bind_regular(&publication.target) {
+            Ok(bound) => bound,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(snapshot_corrupt()),
+        };
+        if actual_identity != expected_identity {
+            return Ok(());
+        }
+        let bytes = read_bounded_file(&mut target, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        platform::verify_regular(&target, expected_identity).map_err(|_| snapshot_corrupt())?;
+        if !snapshot_json_matches(snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
+            return Err(snapshot_corrupt());
+        }
+        drop(target);
+        fs::remove_file(&publication.target).map_err(|_| snapshot_corrupt())?;
+        sync_directory(&publication.directory)
     }
 
     fn verify_legacy_manifest_object(&self, snapshot: &BottleSnapshot) -> Result<(), BottleMigrationError> {
@@ -670,6 +756,221 @@ fn resolve_store_root_without_writing(root: &Path) -> Result<PathBuf, BottleMigr
     }
 }
 
+struct BoundedCounter {
+    length: usize,
+    maximum: usize,
+}
+
+impl Write for BoundedCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next = self
+            .length
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("snapshot length overflow"))?;
+        if next > self.maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "snapshot manifest exceeds its size bound",
+            ));
+        }
+        self.length = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct DigestWriter(Sha256);
+
+impl Write for DigestWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct SliceComparisonWriter<'a> {
+    expected: &'a [u8],
+    offset: usize,
+    matches: bool,
+}
+
+impl Write for SliceComparisonWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let end = self.offset.saturating_add(bytes.len());
+        if self.expected.get(self.offset..end) != Some(bytes) {
+            self.matches = false;
+        }
+        self.offset = end;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn snapshot_manifest_limit() -> usize {
+    #[cfg(test)]
+    let maximum = SNAPSHOT_MANIFEST_LIMIT_OVERRIDE
+        .with(|snapshot_manifest_limit| snapshot_manifest_limit.get().unwrap_or(MAX_SNAPSHOT_MANIFEST_BYTES));
+    #[cfg(not(test))]
+    let maximum = MAX_SNAPSHOT_MANIFEST_BYTES;
+    maximum
+}
+
+fn measure_snapshot_json(snapshot: &BottleSnapshot, maximum: usize) -> io::Result<usize> {
+    let mut counter = BoundedCounter { length: 0, maximum };
+    render_snapshot_json(snapshot, true, &mut counter)?;
+    counter.write_all(b"\n")?;
+    Ok(counter.length)
+}
+
+fn digest_snapshot_json(snapshot: &BottleSnapshot) -> io::Result<String> {
+    let mut output = DigestWriter(Sha256::new());
+    render_snapshot_json(snapshot, false, &mut output)?;
+    let mut digest = String::with_capacity(71);
+    digest.push_str("sha256:");
+    for byte in output.0.finalize() {
+        write!(&mut digest, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    Ok(digest)
+}
+
+fn snapshot_json_matches(snapshot: &BottleSnapshot, expected: &[u8]) -> io::Result<bool> {
+    let mut output = SliceComparisonWriter {
+        expected,
+        offset: 0,
+        matches: true,
+    };
+    render_snapshot_json(snapshot, true, &mut output)?;
+    output.write_all(b"\n")?;
+    Ok(output.matches && output.offset == expected.len())
+}
+
+fn render_snapshot_json(snapshot: &BottleSnapshot, pretty: bool, output: &mut impl Write) -> io::Result<()> {
+    output.write_all(b"{")?;
+    write_member_prefix(output, "bottleId", 0, 1, pretty)?;
+    write_json_string(output, &snapshot.bottle_id)?;
+    write_member_prefix(output, "entries", 1, 1, pretty)?;
+    output.write_all(b"[")?;
+    for (index, entry) in snapshot.entries.iter().enumerate() {
+        if index == 0 {
+            if pretty {
+                output.write_all(b"\n")?;
+            }
+        } else if pretty {
+            output.write_all(b",\n")?;
+        } else {
+            output.write_all(b",")?;
+        }
+        write_indent(output, 2, pretty)?;
+        render_snapshot_entry(entry, pretty, output)?;
+    }
+    if !snapshot.entries.is_empty() {
+        if pretty {
+            output.write_all(b"\n")?;
+        }
+        write_indent(output, 1, pretty)?;
+    }
+    output.write_all(b"]")?;
+    write_member_prefix(output, "entryCount", 2, 1, pretty)?;
+    write!(output, "{}", snapshot.entry_count)?;
+    write_member_prefix(output, "legacyFormat", 3, 1, pretty)?;
+    write_json_string(output, &snapshot.legacy_format)?;
+    write_member_prefix(output, "schemaVersion", 4, 1, pretty)?;
+    write_json_string(output, &snapshot.schema_version)?;
+    write_member_prefix(output, "totalFileBytes", 5, 1, pretty)?;
+    write!(output, "{}", snapshot.total_file_bytes)?;
+    if pretty {
+        output.write_all(b"\n")?;
+    }
+    output.write_all(b"}")
+}
+
+fn render_snapshot_entry(entry: &SnapshotEntry, pretty: bool, output: &mut impl Write) -> io::Result<()> {
+    output.write_all(b"{")?;
+    match entry {
+        SnapshotEntry::File { path, size, digest } => {
+            write_member_prefix(output, "digest", 0, 3, pretty)?;
+            write_json_string(output, digest)?;
+            write_member_prefix(output, "kind", 1, 3, pretty)?;
+            write_json_string(output, "file")?;
+            write_member_prefix(output, "path", 2, 3, pretty)?;
+            write_json_string(output, path)?;
+            write_member_prefix(output, "size", 3, 3, pretty)?;
+            write!(output, "{size}")?;
+        }
+        SnapshotEntry::Directory { path } => {
+            write_member_prefix(output, "kind", 0, 3, pretty)?;
+            write_json_string(output, "directory")?;
+            write_member_prefix(output, "path", 1, 3, pretty)?;
+            write_json_string(output, path)?;
+        }
+        SnapshotEntry::Link { path, target } => {
+            write_member_prefix(output, "kind", 0, 3, pretty)?;
+            write_json_string(output, "link")?;
+            write_member_prefix(output, "path", 1, 3, pretty)?;
+            write_json_string(output, path)?;
+            write_member_prefix(output, "target", 2, 3, pretty)?;
+            write_json_string(output, target)?;
+        }
+    }
+    if pretty {
+        output.write_all(b"\n")?;
+    }
+    write_indent(output, 2, pretty)?;
+    output.write_all(b"}")
+}
+
+fn write_member_prefix(output: &mut impl Write, key: &str, index: usize, depth: usize, pretty: bool) -> io::Result<()> {
+    if index == 0 {
+        if pretty {
+            output.write_all(b"\n")?;
+        }
+    } else if pretty {
+        output.write_all(b",\n")?;
+    } else {
+        output.write_all(b",")?;
+    }
+    write_indent(output, depth, pretty)?;
+    write_json_string(output, key)?;
+    if pretty {
+        output.write_all(b": ")
+    } else {
+        output.write_all(b":")
+    }
+}
+
+fn write_indent(output: &mut impl Write, depth: usize, pretty: bool) -> io::Result<()> {
+    if pretty {
+        for _ in 0..depth {
+            output.write_all(b"  ")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_json_string(output: &mut impl Write, value: &str) -> io::Result<()> {
+    serde_json::to_writer(output, value).map_err(io::Error::other)
+}
+
+fn compare_existing_snapshot_model(path: &Path, snapshot: &BottleSnapshot) -> Result<(), BottleMigrationError> {
+    let expected_size = measure_snapshot_json(snapshot, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+    let bytes = read_bounded(path, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+    if bytes.len() != expected_size || !snapshot_json_matches(snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
+        return Err(snapshot_corrupt());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn compare_existing_snapshot(path: &Path, expected: &[u8]) -> Result<(), BottleMigrationError> {
     if expected.len() > MAX_SNAPSHOT_MANIFEST_BYTES {
         return Err(snapshot_corrupt());
@@ -756,7 +1057,7 @@ fn checked_entry_count(current: usize) -> Result<(), BottleMigrationError> {
 }
 
 fn checked_snapshot_manifest_size(size: usize) -> Result<(), BottleMigrationError> {
-    if size > MAX_SNAPSHOT_MANIFEST_BYTES {
+    if size > snapshot_manifest_limit() {
         Err(unsafe_entry())
     } else {
         Ok(())
@@ -1604,6 +1905,146 @@ mod tests {
     }
 
     #[test]
+    fn publication_consistency_rejects_source_change_after_revalidation_without_publishing_snapshot() {
+        let temporary = TemporaryDirectory::new("snapshot-post-validation-race");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourceRevalidation, "", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+        let store = temporary.path().join("store");
+        let published =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!published.exists());
+    }
+
+    #[test]
+    fn publication_consistency_rolls_back_an_owned_snapshot_when_source_changes_after_publish() {
+        let temporary = TemporaryDirectory::new("snapshot-post-publish-race");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSnapshotPublish, "", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+        let store = temporary.path().join("store");
+        let published =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(
+            !published.exists(),
+            "a snapshot created by the failed call must be rolled back"
+        );
+    }
+
+    #[test]
+    fn publication_consistency_never_rolls_back_a_preexisting_snapshot_on_final_source_change() {
+        let temporary = TemporaryDirectory::new("snapshot-final-return-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let receipt = BottleStore::new(&store).snapshot(&source).unwrap();
+        let published = store.join(format!(
+            "snapshots/sha256/{}.json",
+            receipt.snapshot_digest.strip_prefix("sha256:").unwrap()
+        ));
+        let original_snapshot = fs::read(&published).unwrap();
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::BeforeSnapshotReturn, "", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert_eq!(
+            fs::read(published).unwrap(),
+            original_snapshot,
+            "a preexisting identical snapshot is never owned by the failed call"
+        );
+    }
+
+    #[test]
+    fn publication_rollback_never_deletes_a_replacement_it_does_not_own() {
+        let temporary = TemporaryDirectory::new("snapshot-rollback-ownership-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let published =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        let raced_target = published.clone();
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSnapshotPublish, "", move || {
+            fs::remove_file(&raced_target).unwrap();
+            fs::write(&raced_target, b"foreign snapshot sentinel").unwrap();
+            fs::write(&payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert_eq!(fs::read(published).unwrap(), b"foreign snapshot sentinel");
+    }
+
+    #[test]
+    fn snapshot_manifest_bound_is_checked_before_canonical_json_materialization() {
+        let temporary = TemporaryDirectory::new("snapshot-canonical-resource-bound");
+        let source = create_regular_source(temporary.path());
+        let post_bound_work_started = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&post_bound_work_started);
+        set_snapshot_hook(
+            super::SnapshotTestStage::AfterSnapshotManifestMeasurement,
+            "",
+            move || observed.set(true),
+        );
+        super::SNAPSHOT_MANIFEST_LIMIT_OVERRIDE.with(|limit| limit.set(Some(128)));
+
+        let result = BottleStore::new(temporary.path().join("store")).snapshot(&source);
+        super::SNAPSHOT_MANIFEST_LIMIT_OVERRIDE.with(|limit| limit.set(None));
+
+        assert_eq!(result.unwrap_err().code(), DiagnosticCode::UnsafeEntry);
+        assert!(
+            !post_bound_work_started.get(),
+            "the size bound must reject before a compact or pretty JSON buffer is materialized"
+        );
+    }
+
+    #[test]
     fn snapshot_security_path_and_resource_bounds_are_exact() {
         let maximum_path = "a".repeat(super::MAX_PATH_BYTES);
         assert!(super::validate_basic_path(&maximum_path).is_ok());
@@ -1625,6 +2066,18 @@ mod tests {
         assert!(super::checked_entry_count(super::MAX_ENTRIES).is_err());
         assert!(super::checked_snapshot_manifest_size(super::MAX_SNAPSHOT_MANIFEST_BYTES).is_ok());
         assert!(super::checked_snapshot_manifest_size(super::MAX_SNAPSHOT_MANIFEST_BYTES + 1).is_err());
+        let mut bounded_counter = super::BoundedCounter {
+            length: super::MAX_SNAPSHOT_MANIFEST_BYTES - 1,
+            maximum: super::MAX_SNAPSHOT_MANIFEST_BYTES,
+        };
+        std::io::Write::write_all(&mut bounded_counter, b"x").unwrap();
+        assert_eq!(bounded_counter.length, super::MAX_SNAPSHOT_MANIFEST_BYTES);
+        assert!(std::io::Write::write_all(&mut bounded_counter, b"x").is_err());
+        assert_eq!(
+            bounded_counter.length,
+            super::MAX_SNAPSHOT_MANIFEST_BYTES,
+            "the rejecting write must not advance or allocate"
+        );
     }
 
     #[cfg(unix)]
