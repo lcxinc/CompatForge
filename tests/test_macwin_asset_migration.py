@@ -10123,6 +10123,8 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             "runs-on: ubuntu\n&alias runs-on: macos\n",
             "null: first\n~: second\n",
             "true: first\nTrue: second\n",
+            'on: first\n"on": second\n',
+            'yes: first\n"yes": second\n',
             re.sub(
                 r"(?m)^(        run: .+)$",
                 r"\1\n        run: echo hidden",
@@ -10367,9 +10369,9 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) is None:
             raise ValueError(f"unsupported plain workflow key at line {number}")
         implicit = key.casefold()
-        if implicit in {"true", "yes", "on"}:
+        if implicit == "true":
             return "\0yaml-bool:true"
-        if implicit in {"false", "no", "off"}:
+        if implicit == "false":
             return "\0yaml-bool:false"
         if implicit == "null":
             return "\0yaml-null"
