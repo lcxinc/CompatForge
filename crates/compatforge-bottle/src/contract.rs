@@ -253,6 +253,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_contract_rejects_non_digit_timestamp_components_without_panicking() {
+        const TIMESTAMP: &str = "2026-08-08T00:00:00+08:30";
+        const DIGIT_POSITIONS: [usize; 18] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24];
+
+        for replacement in ["/", "é"] {
+            for position in DIGIT_POSITIONS {
+                let mut timestamp = TIMESTAMP.to_owned();
+                timestamp.replace_range(position..position + 1, replacement);
+                let mut value = valid_manifest();
+                value["createdAt"] = json!(timestamp);
+                assert_invalid(&value);
+            }
+        }
+    }
+
+    #[test]
     fn legacy_contract_enforces_exact_collection_bounds() {
         let mut at_launcher_limit = valid_manifest();
         let launchers = at_launcher_limit["installedApps"].as_array_mut().unwrap();

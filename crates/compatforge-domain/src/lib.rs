@@ -1222,7 +1222,10 @@ fn is_rfc3339(value: &[u8]) -> bool {
 
 fn decimal(value: &[u8], start: usize, end: usize) -> Option<u32> {
     value.get(start..end)?.iter().try_fold(0, |result, byte| {
-        byte.is_ascii_digit().then_some(result * 10 + u32::from(byte - b'0'))
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        Some(result * 10 + u32::from(byte - b'0'))
     })
 }
 
@@ -1342,6 +1345,25 @@ mod tests {
             let mut manifest = valid_bottle_manifest();
             manifest.created_at = timestamp.into();
             manifest.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn bottle_manifest_rejects_non_digit_timestamp_components_without_panicking() {
+        const TIMESTAMP: &str = "2026-08-08T00:00:00+08:30";
+        const DIGIT_POSITIONS: [usize; 18] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 23, 24];
+
+        for replacement in ["/", "é"] {
+            for position in DIGIT_POSITIONS {
+                let mut timestamp = TIMESTAMP.to_owned();
+                timestamp.replace_range(position..position + 1, replacement);
+                let mut manifest = valid_bottle_manifest();
+                manifest.created_at = timestamp;
+                assert_eq!(
+                    manifest.validate(),
+                    Err(ContractError::UnsupportedValue("bottle.createdAt"))
+                );
+            }
         }
     }
 
