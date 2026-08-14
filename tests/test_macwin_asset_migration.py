@@ -10163,23 +10163,7 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
 
     def test_workflow_changes_only_pins_and_read_only_migration_checks(self) -> None:
         text = self._workflow_text()
-        lowered = text.lower()
-        for forbidden in (
-            "convert_macwin_assets.py --write",
-            "import_macwin_assets.py",
-            "curl ",
-            "wget ",
-            "invoke-webrequest",
-            "continue-on-error",
-            "|| true",
-            "if: always()",
-        ):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, lowered)
-        self.assertNotRegex(
-            text,
-            r"(?im)^\s*run:\s*.*(?:migration/macwin/source|examples/bottles).*(?:python|bash|sh|powershell|cmd)",
-        )
+        self._assert_no_forbidden_operations(text)
         normalized = text.replace(self.CHECKOUT, "actions/checkout@v4")
         normalized = normalized.replace(self.SETUP_PYTHON, "actions/setup-python@v5")
         normalized = normalized.replace(self.MIGRATION_STEP, "")
@@ -10191,6 +10175,74 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
             self.BASELINE_SHA256,
         )
+
+    def test_workflow_rejects_forbidden_migration_operations(self) -> None:
+        text = self._workflow_text()
+        command = "run: python -B tools/convert_macwin_assets.py --check"
+        mutants = (
+            text.replace(command, "run: python -B tools/import_macwin_source_pack.py", 1),
+            text.replace(command, "run: python migration/macwin/source/index.json", 1),
+            text.replace(
+                command,
+                'run: python -c "import urllib.request; urllib.request.urlopen(\'https://invalid.example/\')"',
+                1,
+            ),
+            text.replace(command, "run: echo ${{ secrets.MUTANT }}", 1),
+            text.replace(command, f"{command} || :", 1),
+            text.replace(command, "run: echo ${{secrets.MUTANT}}", 1),
+            text.replace(command, f"{command} || echo ignored", 1),
+            text.replace(command, f"{command}; exit 0", 1),
+            text.replace(command, "run: echo $(python -V)", 1),
+        )
+        for mutant in mutants:
+            changed = next(
+                line
+                for line in mutant.splitlines()
+                if "MUTANT" in line
+                or "invalid.example" in line
+                or "import_macwin" in line
+                or "source/index" in line
+                or "||" in line
+                or "; exit 0" in line
+                or "$(" in line
+            )
+            with self.subTest(command=changed), self.assertRaises(ValueError):
+                self._assert_no_forbidden_operations(mutant)
+
+    def _assert_no_forbidden_operations(self, text: str) -> None:
+        lowered = text.lower()
+        for forbidden in (
+            "convert_macwin_assets.py --write",
+            "import_macwin_source_pack",
+            "curl ",
+            "wget ",
+            "invoke-webrequest",
+            "urllib.request",
+            "urlopen(",
+            "urlretrieve(",
+            "requests.get(",
+            "requests.post(",
+            "http://",
+            "https://",
+            "continue-on-error",
+            "||",
+            "; exit 0",
+            "set +e",
+            "if: always()",
+            "$(",
+        ):
+            if forbidden in lowered:
+                raise ValueError(f"forbidden workflow operation: {forbidden}")
+        expressions = re.findall(r"\$\{\{.*?\}\}", text)
+        if any(expression != "${{ matrix.os }}" for expression in expressions):
+            raise ValueError("workflow uses an unapproved expression")
+        if re.search(
+            r"(?im)^(?=[^\r\n]*(?:migration[\\/]macwin[\\/]source|examples[\\/]bottles))"
+            r"(?=[^\r\n]*\b(?:python(?:3|\.exe)?|bash|sh|powershell|pwsh|cmd(?:\.exe)?)\b)"
+            r"[^\r\n]*$",
+            text,
+        ):
+            raise ValueError("workflow executes a governed asset")
 
     def _workflow_text(self) -> str:
         raw = self.WORKFLOW.read_bytes()
