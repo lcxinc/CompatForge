@@ -2,11 +2,13 @@ use crate::contract::{LegacyBottleManifest, MAX_MANIFEST_BYTES};
 use crate::digest::{
     canonical_compact_json, canonical_pretty_json_lf, copy_and_digest, digest_reader, sha256_bytes, STREAM_BUFFER_BYTES,
 };
+use crate::path::{self, EntryKind};
+use crate::platform::{self, FileIdentity};
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_id;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,6 +29,23 @@ thread_local! {
         std::cell::RefCell::new(None)
     };
     static SNAPSHOT_COMPARISON_BYTES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SNAPSHOT_STAGE_HOOK: std::cell::RefCell<Option<SnapshotTestHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct SnapshotTestHook {
+    stage: SnapshotTestStage,
+    path: String,
+    hook: Box<dyn FnOnce()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotTestStage {
+    AfterSourcePreflight,
+    AfterFileCopy,
+    BeforeSourceRevalidation,
+    BeforeObjectPublish,
+    BeforeSnapshotPublish,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -45,12 +64,13 @@ pub struct BottleSnapshot {
 pub enum SnapshotEntry {
     File { path: String, size: u64, digest: String },
     Directory { path: String },
+    Link { path: String, target: String },
 }
 
 impl SnapshotEntry {
     fn path(&self) -> &str {
         match self {
-            Self::File { path, .. } | Self::Directory { path } => path,
+            Self::File { path, .. } | Self::Directory { path } | Self::Link { path, .. } => path,
         }
     }
 }
@@ -71,15 +91,27 @@ pub struct BottleStore {
 
 #[derive(Debug)]
 struct SourceFile {
-    source_path: PathBuf,
     relative_path: String,
     size: u64,
+    identity: FileIdentity,
+    file: File,
+    preflight_digest: String,
 }
 
 #[derive(Debug)]
 enum SourceEntry {
     File(SourceFile),
-    Directory(String),
+    Directory {
+        relative_path: String,
+        identity: FileIdentity,
+        _handle: File,
+    },
+    Link {
+        relative_path: String,
+        target: String,
+        identity: FileIdentity,
+        _handle: Option<File>,
+    },
 }
 
 #[derive(Debug)]
@@ -114,6 +146,7 @@ impl OwnedTemporaryPath {
         Ok(())
     }
 
+    #[cfg(test)]
     fn disarm(&mut self) {
         self.owned = false;
     }
@@ -131,7 +164,52 @@ impl SourceEntry {
     fn path(&self) -> &str {
         match self {
             Self::File(file) => &file.relative_path,
-            Self::Directory(path) => path,
+            Self::Directory { relative_path, .. } | Self::Link { relative_path, .. } => relative_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceSignature {
+    path: String,
+    kind: SourceSignatureKind,
+    identity: FileIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceSignatureKind {
+    File(u64),
+    Directory,
+    Link(String),
+}
+
+impl From<&SourceEntry> for SourceSignature {
+    fn from(entry: &SourceEntry) -> Self {
+        match entry {
+            SourceEntry::File(file) => Self {
+                path: file.relative_path.clone(),
+                kind: SourceSignatureKind::File(file.size),
+                identity: file.identity,
+            },
+            SourceEntry::Directory {
+                relative_path,
+                identity,
+                ..
+            } => Self {
+                path: relative_path.clone(),
+                kind: SourceSignatureKind::Directory,
+                identity: *identity,
+            },
+            SourceEntry::Link {
+                relative_path,
+                target,
+                identity,
+                ..
+            } => Self {
+                path: relative_path.clone(),
+                kind: SourceSignatureKind::Link(target.clone()),
+                identity: *identity,
+            },
         }
     }
 }
@@ -149,6 +227,7 @@ impl BottleStore {
         }
 
         let source_root = fs::canonicalize(source).map_err(|_| unsafe_entry())?;
+        let (root_handle, root_identity) = platform::bind_directory(&source_root).map_err(|_| unsafe_entry())?;
         let store_root = resolve_store_root_without_writing(&self.root)?;
         if store_root == source_root || store_root.starts_with(&source_root) || source_root.starts_with(&store_root) {
             return Err(unsafe_entry());
@@ -157,11 +236,20 @@ impl BottleStore {
 
         let mut source_entries = Vec::new();
         let mut total_file_bytes = 0_u64;
-        collect_source_entries(&source_root, &source_root, &mut source_entries, &mut total_file_bytes)?;
+        collect_source_entries(
+            &source_root,
+            &source_root,
+            &root_handle,
+            &mut source_entries,
+            &mut total_file_bytes,
+        )?;
         source_entries.sort_by(|left, right| left.path().cmp(right.path()));
+        validate_source_graph(&source_entries)?;
+        let source_signatures = source_entries.iter().map(SourceSignature::from).collect::<Vec<_>>();
+        run_snapshot_test_hook(SnapshotTestStage::AfterSourcePreflight, "");
 
         let manifest_source = source_entries
-            .iter()
+            .iter_mut()
             .find_map(|entry| match entry {
                 SourceEntry::File(file) if file.relative_path == "manifest.json" => Some(file),
                 _ => None,
@@ -171,19 +259,28 @@ impl BottleStore {
             return Err(invalid_manifest());
         }
         let manifest_bytes =
-            read_bounded(&manifest_source.source_path, MAX_MANIFEST_BYTES).map_err(|_| invalid_manifest())?;
+            read_bounded_file(&mut manifest_source.file, MAX_MANIFEST_BYTES).map_err(|_| invalid_manifest())?;
+        manifest_source.file.rewind().map_err(|_| source_changed())?;
         let manifest_json = std::str::from_utf8(&manifest_bytes).map_err(|_| invalid_manifest())?;
         let legacy_manifest = LegacyBottleManifest::from_json(manifest_json)?;
         validate_id("legacyBottle.id", &legacy_manifest.id).map_err(|_| invalid_manifest())?;
 
         let mut snapshot_entries = Vec::with_capacity(source_entries.len());
-        for source_entry in source_entries {
+        for source_entry in &mut source_entries {
             match source_entry {
-                SourceEntry::Directory(path) => snapshot_entries.push(SnapshotEntry::Directory { path }),
+                SourceEntry::Directory { relative_path, .. } => snapshot_entries.push(SnapshotEntry::Directory {
+                    path: relative_path.clone(),
+                }),
+                SourceEntry::Link {
+                    relative_path, target, ..
+                } => snapshot_entries.push(SnapshotEntry::Link {
+                    path: relative_path.clone(),
+                    target: target.clone(),
+                }),
                 SourceEntry::File(file) => {
-                    let digest = store.publish_object(&file)?;
+                    let digest = store.publish_object(file)?;
                     snapshot_entries.push(SnapshotEntry::File {
-                        path: file.relative_path,
+                        path: file.relative_path.clone(),
                         size: file.size,
                         digest,
                     });
@@ -200,6 +297,8 @@ impl BottleStore {
             total_file_bytes,
         };
         snapshot.validate().map_err(|_| unsafe_entry())?;
+        run_snapshot_test_hook(SnapshotTestStage::BeforeSourceRevalidation, "");
+        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
         store
             .verify_legacy_manifest_object(&snapshot)
             .map_err(|_| source_changed())?;
@@ -207,9 +306,7 @@ impl BottleStore {
         let compact = canonical_compact_json(&snapshot).map_err(|_| transaction_failed())?;
         let snapshot_digest = sha256_bytes(&compact);
         let published = canonical_pretty_json_lf(&snapshot).map_err(|_| transaction_failed())?;
-        if published.len() > MAX_SNAPSHOT_MANIFEST_BYTES {
-            return Err(unsafe_entry());
-        }
+        checked_snapshot_manifest_size(published.len()).map_err(|_| unsafe_entry())?;
         store.publish_snapshot(&snapshot_digest, &published)?;
         store.verify_snapshot(&snapshot_digest)?;
 
@@ -257,17 +354,24 @@ impl BottleStore {
         Ok(snapshot)
     }
 
-    fn publish_object(&self, source: &SourceFile) -> Result<String, BottleMigrationError> {
+    fn publish_object(&self, source: &mut SourceFile) -> Result<String, BottleMigrationError> {
         let object_directory = self.root.join("objects").join("sha256");
         fs::create_dir_all(&object_directory).map_err(|_| transaction_failed())?;
         let mut temporary = OwnedTemporaryPath::new(temporary_path(&object_directory, "object"));
         (|| {
-            let mut input = File::open(&source.source_path).map_err(|_| source_changed())?;
+            platform::verify_regular(&source.file, source.identity).map_err(|_| source_changed())?;
             let mut output = temporary.create_new().map_err(|_| transaction_failed())?;
-            let (digest, copied) = copy_and_digest(&mut input, &mut output).map_err(|_| source_changed())?;
-            if copied != source.size || copied > MAX_FILE_BYTES {
+            let (digest, copied) = copy_and_digest(&mut source.file, &mut output).map_err(|_| source_changed())?;
+            if copied != source.size || copied > MAX_FILE_BYTES || digest != source.preflight_digest {
                 return Err(source_changed());
             }
+            run_snapshot_test_hook(SnapshotTestStage::AfterFileCopy, &source.relative_path);
+            source.file.rewind().map_err(|_| source_changed())?;
+            let (readback_digest, readback_size) = digest_reader(&mut source.file).map_err(|_| source_changed())?;
+            if readback_digest != digest || readback_size != copied {
+                return Err(source_changed());
+            }
+            platform::verify_regular(&source.file, source.identity).map_err(|_| source_changed())?;
             output.sync_all().map_err(|_| transaction_failed())?;
             drop(output);
             let digest_hex = digest_hex(&digest).ok_or_else(transaction_failed)?;
@@ -277,8 +381,17 @@ impl BottleStore {
                 temporary.remove().map_err(|_| transaction_failed())?;
                 return Ok(digest);
             }
-            fs::rename(temporary.path(), &target).map_err(|_| transaction_failed())?;
-            temporary.disarm();
+            run_snapshot_test_hook(SnapshotTestStage::BeforeObjectPublish, &source.relative_path);
+            match fs::hard_link(temporary.path(), &target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    self.verify_object(&digest, copied)?;
+                    temporary.remove().map_err(|_| transaction_failed())?;
+                    return Ok(digest);
+                }
+                Err(_) => return Err(transaction_failed()),
+            }
+            temporary.remove().map_err(|_| transaction_failed())?;
             sync_directory(&object_directory)?;
             self.verify_object(&digest, copied)?;
             Ok(digest)
@@ -317,8 +430,17 @@ impl BottleStore {
             file.write_all(bytes).map_err(|_| transaction_failed())?;
             file.sync_all().map_err(|_| transaction_failed())?;
             drop(file);
-            fs::rename(temporary.path(), &target).map_err(|_| transaction_failed())?;
-            temporary.disarm();
+            run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotPublish, "");
+            match fs::hard_link(temporary.path(), &target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    compare_existing_snapshot(&target, bytes)?;
+                    temporary.remove().map_err(|_| transaction_failed())?;
+                    return Ok(());
+                }
+                Err(_) => return Err(transaction_failed()),
+            }
+            temporary.remove().map_err(|_| transaction_failed())?;
             sync_directory(&directory)
         })()
     }
@@ -379,11 +501,19 @@ impl BottleSnapshot {
                 if total > MAX_TOTAL_FILE_BYTES {
                     return Err(snapshot_corrupt());
                 }
+            } else if let SnapshotEntry::Link { target, .. } = entry {
+                validate_basic_path(target).map_err(|_| snapshot_corrupt())?;
             }
         }
         if total != self.total_file_bytes {
             return Err(snapshot_corrupt());
         }
+        path::validate_graph(self.entries.iter().map(|entry| match entry {
+            SnapshotEntry::File { path, .. } => (path.as_str(), EntryKind::File),
+            SnapshotEntry::Directory { path } => (path.as_str(), EntryKind::Directory),
+            SnapshotEntry::Link { path, target } => (path.as_str(), EntryKind::Link(target)),
+        }))
+        .map_err(|_| snapshot_corrupt())?;
         Ok(())
     }
 }
@@ -391,6 +521,7 @@ impl BottleSnapshot {
 fn collect_source_entries(
     root: &Path,
     directory: &Path,
+    directory_handle: &File,
     entries: &mut Vec<SourceEntry>,
     total_file_bytes: &mut u64,
 ) -> Result<(), BottleMigrationError> {
@@ -402,25 +533,89 @@ fn collect_source_entries(
         let metadata = fs::symlink_metadata(&path).map_err(|_| unsafe_entry())?;
         let file_type = metadata.file_type();
         if file_type.is_symlink() {
-            return Err(unsafe_entry());
+            let (handle, identity, raw_target) =
+                platform::bind_link_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
+            let target = path::normalize_link_target(&relative_path, &raw_target).map_err(|_| unsafe_entry())?;
+            push_entry(
+                entries,
+                SourceEntry::Link {
+                    relative_path,
+                    target,
+                    identity,
+                    _handle: handle,
+                },
+            )?;
+            continue;
         }
         if file_type.is_dir() {
-            push_entry(entries, SourceEntry::Directory(relative_path))?;
-            collect_source_entries(root, &path, entries, total_file_bytes)?;
+            let (handle, identity) =
+                platform::bind_directory_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
+            collect_source_entries(root, &path, &handle, entries, total_file_bytes)?;
+            push_entry(
+                entries,
+                SourceEntry::Directory {
+                    relative_path,
+                    identity,
+                    _handle: handle,
+                },
+            )?;
         } else if file_type.is_file() {
             let size = metadata.len();
             checked_regular_file_size(size, total_file_bytes)?;
+            let (mut file, identity) =
+                platform::bind_regular_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
+            let (preflight_digest, preflight_size) = digest_reader(&mut file).map_err(|_| source_changed())?;
+            if preflight_size != size {
+                return Err(source_changed());
+            }
+            file.rewind().map_err(|_| source_changed())?;
+            platform::verify_regular(&file, identity).map_err(|_| source_changed())?;
             push_entry(
                 entries,
                 SourceEntry::File(SourceFile {
-                    source_path: path,
                     relative_path,
                     size,
+                    identity,
+                    file,
+                    preflight_digest,
                 }),
             )?;
         } else {
             return Err(unsafe_entry());
         }
+    }
+    Ok(())
+}
+
+fn validate_source_graph(entries: &[SourceEntry]) -> Result<(), BottleMigrationError> {
+    path::validate_graph(entries.iter().map(|entry| match entry {
+        SourceEntry::File(file) => (file.relative_path.as_str(), EntryKind::File),
+        SourceEntry::Directory { relative_path, .. } => (relative_path.as_str(), EntryKind::Directory),
+        SourceEntry::Link {
+            relative_path, target, ..
+        } => (relative_path.as_str(), EntryKind::Link(target)),
+    }))
+    .map_err(|_| unsafe_entry())
+}
+
+fn verify_source_tree(
+    root: &Path,
+    expected_root: FileIdentity,
+    expected_entries: &[SourceSignature],
+    expected_total: u64,
+) -> Result<(), BottleMigrationError> {
+    let (_root_handle, actual_root) = platform::bind_directory(root).map_err(|_| source_changed())?;
+    if actual_root != expected_root {
+        return Err(source_changed());
+    }
+    let mut entries = Vec::new();
+    let mut total = 0;
+    collect_source_entries(root, root, &_root_handle, &mut entries, &mut total).map_err(|_| source_changed())?;
+    entries.sort_by(|left, right| left.path().cmp(right.path()));
+    validate_source_graph(&entries).map_err(|_| source_changed())?;
+    let actual = entries.iter().map(SourceSignature::from).collect::<Vec<_>>();
+    if actual != expected_entries || total != expected_total {
+        return Err(source_changed());
     }
     Ok(())
 }
@@ -534,11 +729,25 @@ fn checked_regular_file_size(size: u64, total: &mut u64) -> Result<(), BottleMig
 }
 
 fn push_entry(entries: &mut Vec<SourceEntry>, entry: SourceEntry) -> Result<(), BottleMigrationError> {
-    if entries.len() == MAX_ENTRIES {
-        return Err(unsafe_entry());
-    }
+    checked_entry_count(entries.len())?;
     entries.push(entry);
     Ok(())
+}
+
+fn checked_entry_count(current: usize) -> Result<(), BottleMigrationError> {
+    if current >= MAX_ENTRIES {
+        Err(unsafe_entry())
+    } else {
+        Ok(())
+    }
+}
+
+fn checked_snapshot_manifest_size(size: usize) -> Result<(), BottleMigrationError> {
+    if size > MAX_SNAPSHOT_MANIFEST_BYTES {
+        Err(unsafe_entry())
+    } else {
+        Ok(())
+    }
 }
 
 fn portable_relative_path(root: &Path, path: &Path) -> Result<String, BottleMigrationError> {
@@ -546,14 +755,7 @@ fn portable_relative_path(root: &Path, path: &Path) -> Result<String, BottleMigr
     let mut components = Vec::new();
     for component in relative.components() {
         let value = component.as_os_str().to_str().ok_or_else(unsafe_entry)?;
-        if value.is_empty()
-            || value == "."
-            || value == ".."
-            || value.ends_with([' ', '.'])
-            || value
-                .chars()
-                .any(|character| character.is_control() || "<>:\"\\|?*".contains(character))
-        {
+        if path::validate_component(value).is_err() {
             return Err(unsafe_entry());
         }
         components.push(value);
@@ -564,17 +766,7 @@ fn portable_relative_path(root: &Path, path: &Path) -> Result<String, BottleMigr
 }
 
 fn validate_basic_path(value: &str) -> Result<(), BottleMigrationError> {
-    let depth = value.split('/').count();
-    if value.is_empty()
-        || value.len() > MAX_PATH_BYTES
-        || depth > MAX_PATH_DEPTH
-        || value
-            .split('/')
-            .any(|component| component.is_empty() || matches!(component, "." | ".."))
-    {
-        return Err(unsafe_entry());
-    }
-    Ok(())
+    path::validate_relative_path(value).map_err(|_| unsafe_entry())
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
@@ -588,6 +780,21 @@ fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
     let mut file = File::open(path)?;
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(maximum));
     Read::by_ref(&mut file)
+        .take(u64::try_from(maximum).expect("read bound fits u64") + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > maximum {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bounded file rejected"));
+    }
+    Ok(bytes)
+}
+
+fn read_bounded_file(file: &mut File, maximum: usize) -> io::Result<Vec<u8>> {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.len() > u64::try_from(maximum).expect("read bound fits u64") {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bounded file rejected"));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(maximum));
+    Read::by_ref(file)
         .take(u64::try_from(maximum).expect("read bound fits u64") + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
@@ -619,6 +826,23 @@ fn temporary_path(directory: &Path, label: &str) -> PathBuf {
     let counter = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     directory.join(format!(".{label}.tmp-{}-{counter}", std::process::id()))
 }
+
+#[cfg(test)]
+fn run_snapshot_test_hook(stage: SnapshotTestStage, path: &str) {
+    let hook = SNAPSHOT_STAGE_HOOK.with(|slot| {
+        let matches = slot
+            .borrow()
+            .as_ref()
+            .is_some_and(|candidate| candidate.stage == stage && candidate.path == path);
+        matches.then(|| slot.borrow_mut().take().expect("a matching snapshot hook exists").hook)
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_snapshot_test_hook(_stage: SnapshotTestStage, _path: &str) {}
 
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), BottleMigrationError> {
@@ -800,6 +1024,36 @@ mod tests {
 
     fn snapshot_comparison_bytes_read() -> usize {
         super::SNAPSHOT_COMPARISON_BYTES_READ.get()
+    }
+
+    #[cfg(windows)]
+    fn process_handle_count() -> u32 {
+        #[link(name = "Kernel32")]
+        extern "system" {
+            #[link_name = "GetCurrentProcess"]
+            fn get_current_process() -> *mut core::ffi::c_void;
+            #[link_name = "GetProcessHandleCount"]
+            fn get_process_handle_count(process: *mut core::ffi::c_void, count: *mut u32) -> i32;
+        }
+
+        let mut count = 0_u32;
+        // SAFETY: the pseudo-handle returned by `GetCurrentProcess` is always
+        // valid in this process and `count` is a live output location.
+        let succeeded = unsafe { get_process_handle_count(get_current_process(), std::ptr::addr_of_mut!(count)) };
+        assert_ne!(succeeded, 0);
+        count
+    }
+
+    fn set_snapshot_hook(stage: super::SnapshotTestStage, path: &str, hook: impl FnOnce() + 'static) {
+        super::SNAPSHOT_STAGE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(super::SnapshotTestHook {
+                    stage,
+                    path: path.into(),
+                    hook: Box::new(hook),
+                }))
+                .is_none());
+        });
     }
 
     #[test]
@@ -1069,6 +1323,20 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_security_rejects_casefolded_store_overlap_before_writing() {
+        let temporary = TemporaryDirectory::new("snapshot-casefold-overlap");
+        let source = create_regular_source(temporary.path());
+        let folded_source = temporary.path().join("SOURCE");
+        let store = folded_source.join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+        assert!(!source.join("store").exists());
+    }
+
     #[test]
     fn snapshot_rejects_oversized_regular_file_during_preflight() {
         let mut total = 0;
@@ -1087,5 +1355,500 @@ mod tests {
         let error = checked_regular_file_size(1, &mut total).unwrap_err();
         assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
         assert_eq!(total, MAX_TOTAL_FILE_BYTES);
+    }
+
+    #[test]
+    fn snapshot_security_accepts_a_safe_internal_link_contract() {
+        let json = br#"{
+            "schemaVersion":"1",
+            "legacyFormat":"macwin-bottle-v1",
+            "bottleId":"bottle-1",
+            "entries":[
+                {"kind":"file","path":"manifest.json","size":0,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+                {"kind":"link","path":"payload-link","target":"manifest.json"}
+            ],
+            "entryCount":2,
+            "totalFileBytes":0
+        }"#;
+
+        let parsed = serde_json::from_slice::<BottleSnapshot>(json);
+
+        assert!(
+            parsed.is_ok(),
+            "safe internal links must be part of the closed snapshot contract"
+        );
+        parsed.unwrap().validate().unwrap();
+    }
+
+    #[test]
+    fn snapshot_security_rejects_a_leaf_replaced_after_preflight() {
+        let temporary = TemporaryDirectory::new("snapshot-leaf-replacement");
+        let source_root = temporary.path().join("source");
+        fs::create_dir(&source_root).unwrap();
+        let source_path = source_root.join("payload.txt");
+        fs::write(&source_path, b"original").unwrap();
+        let mut entries = Vec::new();
+        let mut total = 0;
+        let (root_handle, _) = super::platform::bind_directory(&source_root).unwrap();
+        super::collect_source_entries(&source_root, &source_root, &root_handle, &mut entries, &mut total).unwrap();
+        let super::SourceEntry::File(source) = entries.pop().unwrap() else {
+            panic!("the fixture is one regular file");
+        };
+        let original_identity = source.identity;
+        drop(source);
+        fs::remove_file(&source_path).unwrap();
+        fs::write(&source_path, b"replaced").unwrap();
+        let (file, _) = super::platform::bind_regular(&source_path).unwrap();
+        let mut replaced_source = super::SourceFile {
+            relative_path: "payload.txt".into(),
+            size: 8,
+            identity: original_identity,
+            file,
+            preflight_digest: super::sha256_bytes(b"original"),
+        };
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(store)
+            .publish_object(&mut replaced_source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+    }
+
+    fn security_snapshot(entries: Vec<SnapshotEntry>) -> BottleSnapshot {
+        let total_file_bytes = entries
+            .iter()
+            .map(|entry| match entry {
+                SnapshotEntry::File { size, .. } => *size,
+                SnapshotEntry::Directory { .. } | SnapshotEntry::Link { .. } => 0,
+            })
+            .sum();
+        BottleSnapshot {
+            schema_version: "1".into(),
+            legacy_format: "macwin-bottle-v1".into(),
+            bottle_id: "bottle-1".into(),
+            entry_count: entries.len(),
+            entries,
+            total_file_bytes,
+        }
+    }
+
+    fn security_file(path: &str) -> SnapshotEntry {
+        SnapshotEntry::File {
+            path: path.into(),
+            size: 0,
+            digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+        }
+    }
+
+    #[test]
+    fn snapshot_security_rejects_collisions_ambiguous_components_and_unsafe_link_graphs() {
+        let cases = [
+            vec![security_file("Data"), security_file("data")],
+            vec![security_file("strasse"), security_file("straße")],
+            vec![security_file("Σ"), security_file("ς")],
+            vec![security_file("leaf"), security_file("leaf/child")],
+            vec![security_file("CON.txt")],
+            vec![security_file("trailing.")],
+            vec![security_file("control\u{1}")],
+            vec![security_file("e\u{301}.txt")],
+            vec![
+                SnapshotEntry::Link {
+                    path: "a".into(),
+                    target: "b".into(),
+                },
+                SnapshotEntry::Link {
+                    path: "b".into(),
+                    target: "a".into(),
+                },
+            ],
+            vec![SnapshotEntry::Link {
+                path: "missing-link".into(),
+                target: "missing-target".into(),
+            }],
+        ];
+
+        for entries in cases {
+            let error = security_snapshot(entries).validate().unwrap_err();
+            assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        }
+    }
+
+    #[test]
+    fn snapshot_security_rejects_same_size_mutation_with_restored_timestamp() {
+        let temporary = TemporaryDirectory::new("snapshot-same-size-race");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterFileCopy, "payload.txt", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+
+        let error = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!temporary.path().join("store/snapshots").exists());
+    }
+
+    #[test]
+    fn snapshot_security_rejects_restored_timestamp_mutation_before_copy() {
+        let temporary = TemporaryDirectory::new("snapshot-precopy-race");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+
+        let error = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!temporary.path().join("store/snapshots").exists());
+    }
+
+    #[test]
+    fn snapshot_security_rejects_a_late_child_before_publication() {
+        let temporary = TemporaryDirectory::new("snapshot-late-child");
+        let source = create_regular_source(temporary.path());
+        let late_child = source.join("late.txt");
+        set_snapshot_hook(super::SnapshotTestStage::BeforeSourceRevalidation, "", move || {
+            fs::write(late_child, b"late child\n").unwrap();
+        });
+
+        let error = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!temporary.path().join("store/snapshots").exists());
+    }
+
+    #[test]
+    fn snapshot_security_never_overwrites_an_object_store_race() {
+        let temporary = TemporaryDirectory::new("snapshot-object-race");
+        let source = create_regular_source(temporary.path());
+        let target = temporary
+            .path()
+            .join("store/objects/sha256/fded28721427e68a8055a2f21a3de49f18f6f40eef790ddd0e8aeae7679b64bd");
+        let raced_target = target.clone();
+        set_snapshot_hook(
+            super::SnapshotTestStage::BeforeObjectPublish,
+            "manifest.json",
+            move || {
+                fs::write(raced_target, b"foreign object sentinel").unwrap();
+            },
+        );
+
+        let error = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(fs::read(target).unwrap(), b"foreign object sentinel");
+        assert!(!temporary.path().join("store/snapshots").exists());
+    }
+
+    #[test]
+    fn snapshot_security_never_overwrites_a_snapshot_store_race() {
+        let temporary = TemporaryDirectory::new("snapshot-manifest-race");
+        let source = create_regular_source(temporary.path());
+        let target = temporary
+            .path()
+            .join("store/snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        let raced_target = target.clone();
+        set_snapshot_hook(super::SnapshotTestStage::BeforeSnapshotPublish, "", move || {
+            fs::write(raced_target, b"foreign snapshot sentinel").unwrap();
+        });
+
+        let error = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(fs::read(target).unwrap(), b"foreign snapshot sentinel");
+    }
+
+    #[test]
+    fn snapshot_security_path_and_resource_bounds_are_exact() {
+        let maximum_path = "a".repeat(super::MAX_PATH_BYTES);
+        assert!(super::validate_basic_path(&maximum_path).is_ok());
+        assert!(super::validate_basic_path(&format!("{maximum_path}a")).is_err());
+
+        let maximum_depth = std::iter::repeat("a")
+            .take(super::MAX_PATH_DEPTH)
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(super::validate_basic_path(&maximum_depth).is_ok());
+        assert!(super::validate_basic_path(&format!("{maximum_depth}/a")).is_err());
+
+        let mut total = super::MAX_TOTAL_FILE_BYTES - super::MAX_FILE_BYTES;
+        super::checked_regular_file_size(super::MAX_FILE_BYTES, &mut total).unwrap();
+        assert_eq!(total, super::MAX_TOTAL_FILE_BYTES);
+        assert!(super::checked_regular_file_size(1, &mut total).is_err());
+
+        assert!(super::checked_entry_count(super::MAX_ENTRIES - 1).is_ok());
+        assert!(super::checked_entry_count(super::MAX_ENTRIES).is_err());
+        assert!(super::checked_snapshot_manifest_size(super::MAX_SNAPSHOT_MANIFEST_BYTES).is_ok());
+        assert!(super::checked_snapshot_manifest_size(super::MAX_SNAPSHOT_MANIFEST_BYTES + 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_accepts_safe_relative_symlink_and_never_follows_it() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TemporaryDirectory::new("snapshot-safe-link");
+        let source = create_regular_source(temporary.path());
+        symlink("payload.txt", source.join("payload-link")).unwrap();
+        fs::create_dir(source.join("links")).unwrap();
+        symlink("../payload.txt", source.join("links/nested-link")).unwrap();
+        let store = temporary.path().join("store");
+
+        let receipt = BottleStore::new(&store).snapshot(&source).unwrap();
+        let snapshot = BottleStore::new(store)
+            .verify_snapshot(&receipt.snapshot_digest)
+            .unwrap();
+
+        assert!(snapshot.entries.contains(&SnapshotEntry::Link {
+            path: "payload-link".into(),
+            target: "payload.txt".into(),
+        }));
+        assert!(snapshot.entries.contains(&SnapshotEntry::Link {
+            path: "links/nested-link".into(),
+            target: "payload.txt".into(),
+        }));
+        assert_eq!(snapshot.total_file_bytes, 239, "link target bytes are not copied twice");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_absolute_escaping_and_cyclic_symlinks_before_store_write() {
+        use std::os::unix::fs::symlink;
+
+        for case in ["absolute", "escaping", "cycle"] {
+            let temporary = TemporaryDirectory::new(case);
+            let source = create_regular_source(temporary.path());
+            let outside = temporary.path().join("outside.txt");
+            fs::write(&outside, b"external sentinel\n").unwrap();
+            match case {
+                "absolute" => symlink(&outside, source.join("unsafe-link")).unwrap(),
+                "escaping" => symlink("../outside.txt", source.join("unsafe-link")).unwrap(),
+                "cycle" => {
+                    symlink("cycle-b", source.join("cycle-a")).unwrap();
+                    symlink("cycle-a", source.join("cycle-b")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let store = temporary.path().join("store");
+
+            let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+            assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+            assert_eq!(fs::read(&outside).unwrap(), b"external sentinel\n");
+            assert!(!store.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_fifo_socket_and_non_utf8_entries() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let fifo_case = TemporaryDirectory::new("snapshot-fifo");
+        let fifo_source = create_regular_source(fifo_case.path());
+        let fifo = fifo_source.join("unsafe-fifo");
+        let fifo_name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo_name` is a valid NUL-terminated pathname and the mode
+        // contains only ordinary permission bits.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        let error = BottleStore::new(fifo_case.path().join("store"))
+            .snapshot(&fifo_source)
+            .unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+
+        let socket_case = TemporaryDirectory::new("snapshot-socket");
+        let socket_source = create_regular_source(socket_case.path());
+        let _listener = std::os::unix::net::UnixListener::bind(socket_source.join("unsafe-socket")).unwrap();
+        let error = BottleStore::new(socket_case.path().join("store"))
+            .snapshot(&socket_source)
+            .unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+
+        let unicode_case = TemporaryDirectory::new("snapshot-invalid-unicode");
+        let unicode_source = create_regular_source(unicode_case.path());
+        let invalid_name = std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
+        fs::write(unicode_source.join(invalid_name), b"invalid path\n").unwrap();
+        let error = BottleStore::new(unicode_case.path().join("store"))
+            .snapshot(&unicode_source)
+            .unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+    }
+
+    #[cfg(windows)]
+    fn create_directory_junction(link: &Path, target: &Path) {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::AsRawHandle as _;
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00a4;
+        const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
+
+        #[link(name = "Kernel32")]
+        extern "system" {
+            #[link_name = "DeviceIoControl"]
+            fn device_io_control(
+                device: *mut core::ffi::c_void,
+                control_code: u32,
+                input: *mut core::ffi::c_void,
+                input_size: u32,
+                output: *mut core::ffi::c_void,
+                output_size: u32,
+                returned: *mut u32,
+                overlapped: *mut core::ffi::c_void,
+            ) -> i32;
+        }
+
+        fs::create_dir(link).unwrap();
+        let canonical_target = fs::canonicalize(target).unwrap();
+        let substitute = format!(r"\??\{}", canonical_target.display())
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let print = canonical_target.as_os_str().encode_wide().collect::<Vec<_>>();
+        let substitute_bytes = u16::try_from(substitute.len() * 2).unwrap();
+        let print_offset = substitute_bytes + 2;
+        let print_bytes = u16::try_from(print.len() * 2).unwrap();
+        let data_length = 8_u16 + substitute_bytes + 2 + print_bytes + 2;
+        let mut buffer = Vec::with_capacity(8 + usize::from(data_length));
+        buffer.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        buffer.extend_from_slice(&data_length.to_le_bytes());
+        buffer.extend_from_slice(&0_u16.to_le_bytes());
+        buffer.extend_from_slice(&0_u16.to_le_bytes());
+        buffer.extend_from_slice(&substitute_bytes.to_le_bytes());
+        buffer.extend_from_slice(&print_offset.to_le_bytes());
+        buffer.extend_from_slice(&print_bytes.to_le_bytes());
+        for unit in substitute
+            .iter()
+            .chain(std::iter::once(&0))
+            .chain(print.iter())
+            .chain(std::iter::once(&0))
+        {
+            buffer.extend_from_slice(&unit.to_le_bytes());
+        }
+        let directory = fs::OpenOptions::new()
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(link)
+            .unwrap();
+        let mut returned = 0_u32;
+        // SAFETY: the owned directory handle is valid; the input points to a
+        // fully initialized mount-point reparse buffer for the call duration;
+        // no output buffer or overlapped operation is requested.
+        let succeeded = unsafe {
+            device_io_control(
+                directory.as_raw_handle().cast(),
+                FSCTL_SET_REPARSE_POINT,
+                buffer.as_mut_ptr().cast(),
+                u32::try_from(buffer.len()).unwrap(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::addr_of_mut!(returned),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            succeeded,
+            0,
+            "junction creation failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_security_rejects_a_windows_junction_without_reading_the_target() {
+        let temporary = TemporaryDirectory::new("snapshot-junction");
+        let source = create_regular_source(temporary.path());
+        let outside = temporary.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), b"external sentinel\n").unwrap();
+        let junction = source.join("unsafe-junction");
+        create_directory_junction(&junction, &outside);
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"external sentinel\n");
+        assert!(!store.exists());
+        fs::remove_dir(&junction).unwrap();
+    }
+
+    #[test]
+    fn resource_cleanup_closes_held_source_handles_on_error_and_unwind() {
+        if std::env::var_os("COMPATFORGE_HANDLE_COUNT_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "snapshot::tests::resource_cleanup_closes_held_source_handles_on_error_and_unwind",
+                    "--nocapture",
+                ])
+                .env("COMPATFORGE_HANDLE_COUNT_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let temporary = TemporaryDirectory::new("snapshot-held-cleanup");
+        let source = create_regular_source(temporary.path());
+        #[cfg(windows)]
+        let handles_before = process_handle_count();
+        let source_for_unwind = source.clone();
+        let panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let unwind = std::panic::catch_unwind(move || {
+            let mut entries = Vec::new();
+            let mut total = 0;
+            let (root_handle, _) = super::platform::bind_directory(&source_for_unwind).unwrap();
+            super::collect_source_entries(
+                &source_for_unwind,
+                &source_for_unwind,
+                &root_handle,
+                &mut entries,
+                &mut total,
+            )
+            .unwrap();
+            panic!("controlled held-handle unwind");
+        });
+        std::panic::set_hook(panic_hook);
+        assert!(unwind.is_err());
+        fs::remove_dir_all(&source).unwrap();
+        assert!(!source.exists());
+        #[cfg(windows)]
+        assert_eq!(process_handle_count(), handles_before);
     }
 }

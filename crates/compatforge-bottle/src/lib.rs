@@ -1,10 +1,12 @@
 //! Offline, read-only Bottle migration contracts.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod contract;
 mod digest;
 pub mod error;
+mod path;
+mod platform;
 pub mod snapshot;
 
 pub use contract::{
