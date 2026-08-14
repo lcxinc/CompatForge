@@ -10119,6 +10119,10 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 "permissions: {contents: read, contents: write}\n",
                 1,
             ),
+            "runs-on: ubuntu\n!!str runs-on: macos\n",
+            "runs-on: ubuntu\n&alias runs-on: macos\n",
+            "null: first\n~: second\n",
+            "true: first\nTrue: second\n",
             re.sub(
                 r"(?m)^(        run: .+)$",
                 r"\1\n        run: echo hidden",
@@ -10331,6 +10335,15 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             if not key.endswith("'"):
                 raise ValueError(f"invalid quoted workflow key at line {number}")
             return key[1:-1].replace("''", "'")
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) is None:
+            raise ValueError(f"unsupported plain workflow key at line {number}")
+        implicit = key.casefold()
+        if implicit in {"true", "yes", "on"}:
+            return "\0yaml-bool:true"
+        if implicit in {"false", "no", "off"}:
+            return "\0yaml-bool:false"
+        if implicit == "null":
+            return "\0yaml-null"
         return key
 
 
