@@ -10092,6 +10092,7 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
     CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
     SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
     BASELINE_SHA256 = "fe0e4abe26bdbe5d3944f0e8f5e220b47ae482b5e251e64b6dcf7528ac270ab5"
+    APPROVED_RUN_COMMANDS_SHA256 = "65796ad6d780377973bf6d759eb69771a07b3705b7b5ee51371d7a5c8679ae69"
     MIGRATION_STEP = (
         "      - name: Check portable Mac-Win assets\n"
         "        run: python -B tools/convert_macwin_assets.py --check\n"
@@ -10218,6 +10219,30 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 "run: node migration/macwin/source/objects/sha256/aa/payload",
                 1,
             ),
+            text.replace(
+                command,
+                "run: python -B tools/convert_macwin_assets.py  --write",
+                1,
+            ),
+            text.replace(
+                command,
+                "run: |\n          python -B tools/convert_macwin_assets.py \\\n            --write",
+                1,
+            ),
+            text.replace(command, "run: echo ${RUNNER_TEMP}", 1),
+            text.replace(command, "run: echo ${env:RUNNER_TEMP}", 1),
+            text.replace(command, "run: echo %RUNNER_TEMP%", 1),
+            text.replace(command, "run: echo $PWD", 1),
+            text.replace(
+                command,
+                "run: |\n          python -B tools/convert_macwin_assets.py --check\n          exit 0",
+                1,
+            ),
+            text.replace(
+                command,
+                "run: iwr ('ht'+'tps'+':'+'//'+'invalid.example/')",
+                1,
+            ),
         )
         for mutant in mutants:
             changed = next(
@@ -10236,11 +10261,21 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 or "generated/fixtures" in line
                 or "run: node" in line
                 or "run: echo ${{ matrix.os }}" in line
+                or "--write" in line
+                or "${RUNNER_TEMP}" in line
+                or "${env:RUNNER_TEMP}" in line
+                or "%RUNNER_TEMP%" in line
+                or "run: echo $PWD" in line
+                or "exit 0" in line
+                or "run: iwr" in line
             )
             with self.subTest(command=changed), self.assertRaises(ValueError):
                 self._assert_no_forbidden_operations(mutant)
 
     def _assert_no_forbidden_operations(self, text: str) -> None:
+        run_commands = self._run_command_bytes(text)
+        if hashlib.sha256(run_commands).hexdigest() != self.APPROVED_RUN_COMMANDS_SHA256:
+            raise ValueError("workflow run commands differ from the reviewed allowlist")
         lowered = text.lower()
         for forbidden in (
             "convert_macwin_assets.py --write",
@@ -10278,6 +10313,25 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             text,
         ):
             raise ValueError("workflow directly references a governed asset")
+
+    @staticmethod
+    def _run_command_bytes(text: str) -> bytes:
+        selected: list[str] = []
+        block_indent: int | None = None
+        for line in text.splitlines():
+            indent = len(line) - len(line.lstrip(" "))
+            if block_indent is not None:
+                if not line.strip() or indent > block_indent:
+                    selected.append(line)
+                    continue
+                block_indent = None
+            match = re.match(r"^(\s*)run:\s*(.*)$", line)
+            if match is None:
+                continue
+            selected.append(line)
+            if match.group(2) in {"|", ">", "|-", ">-", "|+", ">+"}:
+                block_indent = len(match.group(1))
+        return ("\n".join(selected) + "\n").encode("utf-8")
 
     def _workflow_text(self) -> str:
         raw = self.WORKFLOW.read_bytes()
