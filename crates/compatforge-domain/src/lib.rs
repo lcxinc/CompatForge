@@ -774,6 +774,49 @@ pub struct BottleManifest {
     pub updated_at: String,
 }
 
+impl BottleManifest {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_schema_version(&self.schema_version)?;
+        validate_id("bottle.id", &self.id)?;
+        if self.name.is_empty() {
+            return Err(ContractError::MissingField("bottle.name"));
+        }
+        if !matches!(
+            self.guest.architecture,
+            CpuArchitecture::I386 | CpuArchitecture::X86_64 | CpuArchitecture::Arm64
+        ) {
+            return Err(ContractError::UnsupportedValue("bottle.guest.architecture"));
+        }
+
+        validate_id("bottle.runtimePack.id", &self.runtime_pack.id)?;
+        validate_digest("bottle.runtimePack.digest", &self.runtime_pack.digest)?;
+
+        let mut recipe_ids = BTreeSet::new();
+        for recipe in &self.recipes {
+            validate_id("bottle.recipes.id", &recipe.id)?;
+            validate_digest("bottle.recipes.digest", &recipe.digest)?;
+            if !recipe_ids.insert(recipe.id.as_str()) {
+                return Err(ContractError::DuplicateValue("bottle.recipes.id"));
+            }
+        }
+
+        if self.storage.layout_version == 0 {
+            return Err(ContractError::UnsupportedValue("bottle.storage.layoutVersion"));
+        }
+        match self.storage.state {
+            BottleState::Ready
+            | BottleState::Preparing
+            | BottleState::Migrating
+            | BottleState::Repairing
+            | BottleState::Failed => {}
+        }
+
+        validate_rfc3339("bottle.createdAt", &self.created_at)?;
+        validate_rfc3339("bottle.updatedAt", &self.updated_at)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BottleGuest {
@@ -1072,6 +1115,117 @@ pub fn validate_digest(field: &'static str, value: &str) -> Result<(), ContractE
         .and_then(|digest| validate_sha256(field, digest))
 }
 
+pub fn validate_rfc3339(field: &'static str, value: &str) -> Result<(), ContractError> {
+    if is_rfc3339(value.as_bytes()) {
+        Ok(())
+    } else {
+        Err(ContractError::UnsupportedValue(field))
+    }
+}
+
+fn is_rfc3339(value: &[u8]) -> bool {
+    if value.len() < 20
+        || value.get(4) != Some(&b'-')
+        || value.get(7) != Some(&b'-')
+        || !matches!(value.get(10), Some(b'T' | b't'))
+        || value.get(13) != Some(&b':')
+        || value.get(16) != Some(&b':')
+    {
+        return false;
+    }
+
+    let Some(year) = decimal(value, 0, 4) else {
+        return false;
+    };
+    let Some(month) = decimal(value, 5, 7) else {
+        return false;
+    };
+    let Some(day) = decimal(value, 8, 10) else {
+        return false;
+    };
+    let Some(hour) = decimal(value, 11, 13) else {
+        return false;
+    };
+    let Some(minute) = decimal(value, 14, 16) else {
+        return false;
+    };
+    let Some(second) = decimal(value, 17, 19) else {
+        return false;
+    };
+
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > days_in_month || hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
+
+    let timezone_start = if value[19] == b'.' {
+        let Some(position) = value[20..]
+            .iter()
+            .position(|byte| matches!(byte, b'Z' | b'z' | b'+' | b'-'))
+        else {
+            return false;
+        };
+        let timezone_start = position + 20;
+        if timezone_start == 20 || !value[20..timezone_start].iter().all(u8::is_ascii_digit) {
+            return false;
+        }
+        timezone_start
+    } else {
+        19
+    };
+
+    let timezone_offset_minutes = match value.get(timezone_start) {
+        Some(b'Z' | b'z') if timezone_start + 1 == value.len() => 0,
+        Some(b'+' | b'-') => {
+            if timezone_start + 6 != value.len() || value.get(timezone_start + 3) != Some(&b':') {
+                return false;
+            }
+            let Some(offset_hour) = decimal(value, timezone_start + 1, timezone_start + 3) else {
+                return false;
+            };
+            let Some(offset_minute) = decimal(value, timezone_start + 4, timezone_start + 6) else {
+                return false;
+            };
+            if offset_hour > 23 || offset_minute > 59 {
+                return false;
+            }
+            let offset = (offset_hour * 60 + offset_minute) as i32;
+            if value[timezone_start] == b'-' {
+                -offset
+            } else {
+                offset
+            }
+        }
+        _ => return false,
+    };
+
+    if second < 60 {
+        return true;
+    }
+
+    let local_minutes = (hour * 60 + minute) as i32;
+    let utc_minutes = local_minutes - timezone_offset_minutes;
+    let utc_day_delta = utc_minutes.div_euclid(24 * 60);
+    utc_minutes.rem_euclid(24 * 60) == 23 * 60 + 59
+        && matches!(
+            (utc_day_delta, month, day),
+            (0, 6, 30) | (0, 12, 31) | (-1, 7, 1) | (-1, 1, 1)
+        )
+}
+
+fn decimal(value: &[u8], start: usize, end: usize) -> Option<u32> {
+    value.get(start..end)?.iter().try_fold(0, |result, byte| {
+        byte.is_ascii_digit().then_some(result * 10 + u32::from(byte - b'0'))
+    })
+}
+
 pub fn validate_portable_relative_path(field: &'static str, value: &str) -> Result<(), ContractError> {
     let valid = !value.is_empty()
         && !value.starts_with('/')
@@ -1123,6 +1277,135 @@ mod tests {
         let bottle: BottleManifest =
             serde_json::from_str(include_str!("../../../examples/bottles/7zip-default.json")).unwrap();
         assert_eq!(bottle.storage.state, BottleState::Ready);
+    }
+
+    fn valid_bottle_manifest() -> BottleManifest {
+        serde_json::from_str(include_str!("../../../examples/bottles/7zip-default.json")).unwrap()
+    }
+
+    #[test]
+    fn bottle_manifest_rejects_unknown_versions_and_unpinned_runtime() {
+        let mut manifest = valid_bottle_manifest();
+        manifest.schema_version = "2".into();
+        assert_eq!(manifest.validate(), Err(ContractError::UnsupportedSchemaVersion));
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.runtime_pack.digest = "sha256:0000".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::InvalidDigest("bottle.runtimePack.digest"))
+        );
+    }
+
+    #[test]
+    fn bottle_manifest_validates_ids_names_and_timestamps() {
+        let mut manifest = valid_bottle_manifest();
+        manifest.id = "../escape".into();
+        assert_eq!(manifest.validate(), Err(ContractError::InvalidIdentifier("bottle.id")));
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.name.clear();
+        assert_eq!(manifest.validate(), Err(ContractError::MissingField("bottle.name")));
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.runtime_pack.id = "INVALID".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::InvalidIdentifier("bottle.runtimePack.id"))
+        );
+
+        for field in ["createdAt", "updatedAt"] {
+            let mut manifest = valid_bottle_manifest();
+            if field == "createdAt" {
+                manifest.created_at = "2026-02-30T00:00:00Z".into();
+            } else {
+                manifest.updated_at = "not-a-timestamp".into();
+            }
+            assert_eq!(
+                manifest.validate(),
+                Err(ContractError::UnsupportedValue(if field == "createdAt" {
+                    "bottle.createdAt"
+                } else {
+                    "bottle.updatedAt"
+                }))
+            );
+        }
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.created_at = "2026-08-08T00:00:60Z".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::UnsupportedValue("bottle.createdAt"))
+        );
+
+        for timestamp in ["2016-12-31T23:59:60Z", "2017-01-01T00:59:60+01:00"] {
+            let mut manifest = valid_bottle_manifest();
+            manifest.created_at = timestamp.into();
+            manifest.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn bottle_manifest_validates_guest_and_storage_schema() {
+        let mut manifest = valid_bottle_manifest();
+        manifest.guest.architecture = CpuArchitecture::Unknown;
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::UnsupportedValue("bottle.guest.architecture"))
+        );
+
+        for windows_version in [WindowsVersion::Win7, WindowsVersion::Win10, WindowsVersion::Win11] {
+            for architecture in [CpuArchitecture::I386, CpuArchitecture::X86_64, CpuArchitecture::Arm64] {
+                let mut manifest = valid_bottle_manifest();
+                manifest.guest.windows_version = windows_version;
+                manifest.guest.architecture = architecture;
+                manifest.validate().unwrap();
+            }
+        }
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.storage.layout_version = 0;
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::UnsupportedValue("bottle.storage.layoutVersion"))
+        );
+
+        for invalid_layout in [serde_json::json!(false), serde_json::json!(1.0)] {
+            let mut value = serde_json::to_value(valid_bottle_manifest()).unwrap();
+            value["storage"]["layoutVersion"] = invalid_layout;
+            assert!(serde_json::from_value::<BottleManifest>(value).is_err());
+        }
+        let mut value = serde_json::to_value(valid_bottle_manifest()).unwrap();
+        value["storage"]["state"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<BottleManifest>(value).is_err());
+    }
+
+    #[test]
+    fn bottle_manifest_rejects_duplicate_recipes_and_invalid_recipe_fields() {
+        let mut manifest = valid_bottle_manifest();
+        manifest.recipes.push(manifest.recipes[0].clone());
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::DuplicateValue("bottle.recipes.id"))
+        );
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.recipes[0].id = "INVALID".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::InvalidIdentifier("bottle.recipes.id"))
+        );
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.recipes[0].digest = "latest".into();
+        assert_eq!(
+            manifest.validate(),
+            Err(ContractError::InvalidDigest("bottle.recipes.digest"))
+        );
+
+        let mut manifest = valid_bottle_manifest();
+        manifest.recipes[0].version.clear();
+        manifest.validate().unwrap();
     }
 
     #[test]

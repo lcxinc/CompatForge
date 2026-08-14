@@ -18,6 +18,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "compatforge-bottle"
+version = "0.10.0"
+dependencies = [
+ "compatforge-domain",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "compatforge-capability"
 version = "0.10.0"
 dependencies = [
