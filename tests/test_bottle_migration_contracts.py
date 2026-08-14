@@ -1,6 +1,7 @@
 import ast
 import copy
 import json
+import math
 import re
 import unicodedata
 import unittest
@@ -22,7 +23,12 @@ MAX_DOCUMENT_SCALAR_CHARACTERS = 4096
 MAX_DOCUMENT_COLLECTION_ITEMS = 100000
 MAX_DOCUMENT_NODES = 1000000
 MAX_DOCUMENT_DEPTH = 128
+MAX_JSON_SAFE_INTEGER = (1 << 53) - 1
+MAX_JSON_NUMBER_TEXT_CHARACTERS = 64
 DOCUMENT_STRUCTURE_ERROR = "Bottle migration document exceeds structural limits"
+DOCUMENT_MODEL_ERROR = "Bottle migration document is not exact JSON"
+DOCUMENT_NUMBER_ERROR = "Bottle migration document contains an unsafe number"
+DOCUMENT_GRAPH_ERROR = "Bottle migration document is not a JSON tree"
 DOCUMENT_UNICODE_ERRORS = {
     "bottle-snapshot.schema.json": "snapshot manifest contains invalid Unicode",
     "bottle-runtime-map.schema.json": "runtime map contains invalid Unicode",
@@ -432,11 +438,15 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             MAX_DOCUMENT_COLLECTION_ITEMS + 1
         )
 
-        wide_item = {f"field-{index}": "x" for index in range(10)}
-        oversized_graph = copy.deepcopy(instances[runtime_name])
-        oversized_graph["mappings"] = [wide_item] * MAX_DOCUMENT_COLLECTION_ITEMS
-
         active_name = "bottle-active-ref.schema.json"
+        oversized_graph = copy.deepcopy(instances[active_name])
+        wide_nested: object = None
+        for _ in range(11):
+            wide_nested = ([None] * (MAX_DOCUMENT_COLLECTION_ITEMS - 1)) + [
+                wide_nested
+            ]
+        oversized_graph["nodes"] = wide_nested
+
         excessive_depth = copy.deepcopy(instances[active_name])
         nested: object = None
         for _ in range(MAX_DOCUMENT_DEPTH + 1):
@@ -445,7 +455,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
         for label, name, value in (
             ("collection", runtime_name, oversized_collection),
-            ("nodes", runtime_name, oversized_graph),
+            ("nodes", active_name, oversized_graph),
             ("depth", active_name, excessive_depth),
         ):
             with self.subTest(case=label), mock.patch.object(
@@ -457,6 +467,202 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 f"^{re.escape(DOCUMENT_STRUCTURE_ERROR)}$",
             ):
                 self._assert_document_valid(name, value, self._schema(name))
+
+    def test_preflight_rejects_json_subclasses_without_calling_their_hooks(self) -> None:
+        class LyingString(str):
+            def __len__(self):
+                raise AssertionError("lying string length was called")
+
+            def encode(self, *args, **kwargs):
+                raise AssertionError("lying string encode was called")
+
+        class LyingList(list):
+            def __len__(self):
+                raise AssertionError("lying list length was called")
+
+        class IteratorBombList(list):
+            def __iter__(self):
+                raise AssertionError("lying list iterator was called")
+
+        class LyingDict(dict):
+            def __len__(self):
+                raise AssertionError("lying dict length was called")
+
+        class IteratorBombDict(dict):
+            def items(self):
+                raise AssertionError("lying dict iterator was called")
+
+        name = "bottle-active-ref.schema.json"
+        cases = []
+
+        string_value = self._instances()[name]
+        string_value["activePlanDigest"] = LyingString(DIGEST_A)
+        cases.append(("string-value", string_value))
+
+        string_key = self._instances()[name]
+        string_key[LyingString("secret-key")] = None
+        cases.append(("string-key", string_key))
+
+        list_value = self._instances()[name]
+        list_value["history"] = LyingList([])
+        cases.append(("list", list_value))
+
+        iterator_list = self._instances()[name]
+        iterator_list["history"] = IteratorBombList([])
+        cases.append(("list-iterator", iterator_list))
+
+        dict_value = LyingDict(self._instances()[name])
+        cases.append(("dict", dict_value))
+
+        iterator_dict = IteratorBombDict(self._instances()[name])
+        cases.append(("dict-iterator", iterator_dict))
+
+        for label, value in cases:
+            with self.subTest(case=label):
+                with self.assertRaises(AssertionError) as caught:
+                    self._assert_document_valid(name, value, self._schema(name))
+                error = caught.exception
+                self.assertIs(type(error), AssertionError)
+                self.assertEqual(str(error), DOCUMENT_MODEL_ERROR)
+                self.assertNotIn("lying", str(error))
+                self.assertIsNone(error.__cause__)
+                self.assertTrue(error.__suppress_context__)
+
+    def test_preflight_rejects_non_json_values_before_encoder_or_regex(self) -> None:
+        name = "bottle-active-ref.schema.json"
+        for label, hostile in (
+            ("object", object()),
+            ("bytes", b"secret"),
+            ("tuple", ("secret",)),
+            ("set", {"secret"}),
+        ):
+            value = self._instances()[name]
+            value["hostile"] = hostile
+            with self.subTest(case=label), mock.patch.object(
+                re,
+                "search",
+                side_effect=AssertionError("regular expression was called"),
+            ), mock.patch.object(
+                type(self),
+                "_canonical_json_chunks",
+                side_effect=AssertionError("JSONEncoder was called"),
+            ):
+                with self.assertRaises(AssertionError) as caught:
+                    self._assert_document_valid(name, value, self._schema(name))
+                error = caught.exception
+                self.assertIs(type(error), AssertionError)
+                self.assertEqual(str(error), DOCUMENT_MODEL_ERROR)
+                self.assertNotIn("secret", str(error))
+                self.assertIsNone(error.__cause__)
+                self.assertTrue(error.__suppress_context__)
+
+    def test_preflight_bounds_exact_json_numbers_before_heavy_operations(self) -> None:
+        name = "bottle-snapshot.schema.json"
+        schema = self._schema(name)
+        for label, hostile in (
+            ("nan", float("nan")),
+            ("positive-infinity", float("inf")),
+            ("negative-infinity", float("-inf")),
+            ("huge-integer", 1 << 1000000),
+        ):
+            value = self._instances()[name]
+            value["entryCount"] = hostile
+            with self.subTest(case=label), mock.patch.object(
+                re,
+                "search",
+                side_effect=AssertionError("regular expression was called"),
+            ), mock.patch.object(
+                type(self),
+                "_canonical_json_chunks",
+                side_effect=AssertionError("JSONEncoder was called"),
+            ):
+                with self.assertRaises(AssertionError) as caught:
+                    self._assert_document_valid(name, value, schema)
+                error = caught.exception
+                self.assertIs(type(error), AssertionError)
+                self.assertEqual(str(error), DOCUMENT_NUMBER_ERROR)
+                self.assertIsNone(error.__cause__)
+                self.assertTrue(error.__suppress_context__)
+
+        self._assert_document_preflight(name, {"number": 1.5})
+        self._assert_document_preflight(name, {"number": MAX_JSON_SAFE_INTEGER})
+        self.assertFalse(self._matches_type(True, "integer"))
+        self.assertFalse(self._matches_type(1, "boolean"))
+
+    def test_preflight_rejects_cycles_and_shared_containers(self) -> None:
+        name = "bottle-active-ref.schema.json"
+
+        cycle = []
+        cycle.append(cycle)
+        cyclic_document = self._instances()[name]
+        cyclic_document["cycle"] = cycle
+
+        shared = []
+        shared_document = self._instances()[name]
+        shared_document["left"] = shared
+        shared_document["right"] = shared
+
+        for label, value in (
+            ("cycle", cyclic_document),
+            ("shared", shared_document),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaises(AssertionError) as caught:
+                    self._assert_document_valid(name, value, self._schema(name))
+                error = caught.exception
+                self.assertIs(type(error), AssertionError)
+                self.assertEqual(str(error), DOCUMENT_GRAPH_ERROR)
+                self.assertIsNone(error.__cause__)
+                self.assertTrue(error.__suppress_context__)
+
+    def test_preflight_checks_scheduled_budget_before_descending_width(self) -> None:
+        name = "bottle-active-ref.schema.json"
+        nested: object = "must-not-be-inspected"
+        for _ in range(11):
+            nested = ([None] * (MAX_DOCUMENT_COLLECTION_ITEMS - 1)) + [nested]
+        value = self._instances()[name]
+        value["nested"] = nested
+
+        def reject_leaf_after_overflow(text: str) -> bool:
+            if text == "must-not-be-inspected":
+                raise AssertionError("a scalar was inspected after budget overflow")
+            return False
+
+        with mock.patch.object(
+            type(self),
+            "_contains_surrogate",
+            side_effect=reject_leaf_after_overflow,
+        ), self.assertRaisesRegex(
+            AssertionError,
+            f"^{re.escape(DOCUMENT_STRUCTURE_ERROR)}$",
+        ):
+            self._assert_document_valid(name, value, self._schema(name))
+
+    def test_snapshot_encoder_chunks_are_utf8_counted_in_fixed_slices(self) -> None:
+        class EncodeBomb(str):
+            def encode(self, *args, **kwargs):
+                raise AssertionError("the complete encoder chunk was encoded")
+
+        observed_sizes = []
+
+        def bounded_utf8_size(chunk: str) -> int:
+            observed_sizes.append(len(chunk))
+            if len(chunk) > 256:
+                raise AssertionError("an oversized UTF-8 chunk was encoded")
+            return len(str(chunk).encode("utf-8"))
+
+        with mock.patch.object(
+            type(self),
+            "_canonical_json_chunks",
+            return_value=[EncodeBomb("é" * 1024)],
+        ), mock.patch.object(
+            type(self),
+            "_utf8_chunk_size",
+            side_effect=bounded_utf8_size,
+        ):
+            self._assert_snapshot_manifest_size({})
+
+        self.assertEqual(observed_sizes, [256, 256, 256, 256])
 
     def test_portable_path_length_precedes_utf8_encoding(self) -> None:
         class EncodeBomb(str):
@@ -743,49 +949,82 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
     @classmethod
     def _iter_document_strings(cls, value: object):
-        stack = [value]
-        while stack:
-            current = stack.pop()
-            if isinstance(current, str):
-                yield current
-            elif isinstance(current, dict):
-                for key, item in current.items():
-                    if isinstance(key, str):
-                        yield key
-                    stack.append(item)
-            elif isinstance(current, list):
-                stack.extend(current)
+        value_type = type(value)
+        if value_type is str:
+            yield value
+        elif value_type is dict:
+            for key, item in value.items():
+                yield key
+                yield from cls._iter_document_strings(item)
+        elif value_type is list:
+            for index in range(len(value)):
+                yield from cls._iter_document_strings(value[index])
 
     @classmethod
     def _assert_document_preflight(cls, name: str, value: object) -> None:
-        stack = [(value, 0)]
-        node_count = 0
-        while stack:
-            current, depth = stack.pop()
-            node_count += 1
-            if depth > MAX_DOCUMENT_DEPTH or node_count > MAX_DOCUMENT_NODES:
-                raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+        allowed_types = {dict, list, str, int, float, bool, type(None)}
+        value_type = type(value)
+        if value_type not in allowed_types:
+            raise AssertionError(DOCUMENT_MODEL_ERROR) from None
 
-            if isinstance(current, str):
+        scheduled_nodes = 1
+        seen_containers = set()
+        if value_type in (dict, list):
+            seen_containers.add(id(value))
+
+        def visit(current: object, depth: int) -> None:
+            nonlocal scheduled_nodes
+            current_type = type(current)
+            if current_type is str:
                 if len(current) > MAX_DOCUMENT_SCALAR_CHARACTERS:
                     raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
                 if cls._contains_surrogate(current):
                     raise AssertionError(DOCUMENT_UNICODE_ERRORS[name]) from None
-            elif isinstance(current, dict):
+            elif current_type is int:
+                if current.bit_length() > 53 or not (
+                    -MAX_JSON_SAFE_INTEGER <= current <= MAX_JSON_SAFE_INTEGER
+                ):
+                    raise AssertionError(DOCUMENT_NUMBER_ERROR) from None
+            elif current_type is float:
+                if (
+                    not math.isfinite(current)
+                    or abs(current) > MAX_JSON_SAFE_INTEGER
+                    or len(repr(current)) > MAX_JSON_NUMBER_TEXT_CHARACTERS
+                ):
+                    raise AssertionError(DOCUMENT_NUMBER_ERROR) from None
+            elif current_type is dict:
                 if len(current) > MAX_DOCUMENT_COLLECTION_ITEMS:
                     raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
                 for key, item in current.items():
-                    if not isinstance(key, str):
-                        raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                    if type(key) is not str:
+                        raise AssertionError(DOCUMENT_MODEL_ERROR) from None
                     if len(key) > MAX_DOCUMENT_SCALAR_CHARACTERS:
                         raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
                     if cls._contains_surrogate(key):
                         raise AssertionError(DOCUMENT_UNICODE_ERRORS[name]) from None
-                    stack.append((item, depth + 1))
-            elif isinstance(current, list):
+                    schedule_and_visit(item, depth + 1)
+            elif current_type is list:
                 if len(current) > MAX_DOCUMENT_COLLECTION_ITEMS:
                     raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
-                stack.extend((item, depth + 1) for item in current)
+                for index in range(len(current)):
+                    schedule_and_visit(current[index], depth + 1)
+
+        def schedule_and_visit(child: object, depth: int) -> None:
+            nonlocal scheduled_nodes
+            child_type = type(child)
+            if child_type not in allowed_types:
+                raise AssertionError(DOCUMENT_MODEL_ERROR) from None
+            if depth > MAX_DOCUMENT_DEPTH or scheduled_nodes >= MAX_DOCUMENT_NODES:
+                raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+            if child_type in (dict, list):
+                identity = id(child)
+                if identity in seen_containers:
+                    raise AssertionError(DOCUMENT_GRAPH_ERROR) from None
+                seen_containers.add(identity)
+            scheduled_nodes += 1
+            visit(child, depth)
+
+        visit(value, 0)
 
         try:
             for text in cls._iter_document_strings(value):
@@ -798,7 +1037,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         canonical_size = 1  # The canonical trailing LF.
         try:
             for chunk in cls._canonical_json_chunks(value):
-                canonical_size += len(chunk.encode("utf-8"))
+                canonical_size += cls._utf8_text_size(chunk)
                 if canonical_size > MAX_SNAPSHOT_MANIFEST_BYTES:
                     raise AssertionError(
                         "snapshot manifest exceeds "
@@ -811,11 +1050,11 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
     @classmethod
     def _walk(cls, value: object, location: str = "$"):
-        if isinstance(value, dict):
+        if type(value) is dict:
             yield location, value
             for key, item in value.items():
                 yield from cls._walk(item, f"{location}/{key}")
-        elif isinstance(value, list):
+        elif type(value) is list:
             for index, item in enumerate(value):
                 yield from cls._walk(item, f"{location}/{index}")
 
@@ -1023,7 +1262,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         if schema is root.get("$defs", {}).get("rfc3339"):
             cls._assert_rfc3339(value)
 
-        if isinstance(value, str):
+        if type(value) is str:
             if len(value) < schema.get("minLength", 0):
                 raise AssertionError("string too short")
             if len(value) > schema.get("maxLength", len(value)):
@@ -1035,7 +1274,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 raise AssertionError("integer too small")
             if value > schema.get("maximum", value):
                 raise AssertionError("integer too large")
-        elif isinstance(value, list):
+        elif type(value) is list:
             if len(value) < schema.get("minItems", 0):
                 raise AssertionError("array too short")
             if len(value) > schema.get("maxItems", len(value)):
@@ -1047,7 +1286,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 rendered = [json.dumps(item, sort_keys=True) for item in value]
                 if len(rendered) != len(set(rendered)):
                     raise AssertionError("array items are not unique")
-        elif isinstance(value, dict):
+        elif type(value) is dict:
             required = schema.get("required", [])
             if any(key not in value for key in required):
                 raise AssertionError("required property missing")
@@ -1072,9 +1311,9 @@ class BottleMigrationSchemaTests(unittest.TestCase):
     @staticmethod
     def _matches_type(value: object, declared: object) -> bool:
         return {
-            "object": isinstance(value, dict),
-            "array": isinstance(value, list),
-            "string": isinstance(value, str),
+            "object": type(value) is dict,
+            "array": type(value) is list,
+            "string": type(value) is str,
             "integer": type(value) is int,
             "boolean": type(value) is bool,
             "null": value is None,
