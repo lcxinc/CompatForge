@@ -41,6 +41,7 @@ struct SnapshotTestHook {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SnapshotTestStage {
+    AfterRootBind,
     AfterSourcePreflight,
     AfterFileCopy,
     BeforeSourceRevalidation,
@@ -226,8 +227,20 @@ impl BottleStore {
             return Err(unsafe_entry());
         }
 
-        let source_root = fs::canonicalize(source).map_err(|_| unsafe_entry())?;
+        let source_name = source.file_name().ok_or_else(unsafe_entry)?;
+        let source_parent = source
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let (selected_parent_handle, _) = platform::bind_directory(source_parent).map_err(|_| unsafe_entry())?;
+        let (_selected_root_handle, selected_root_identity) =
+            platform::bind_directory_at(&selected_parent_handle, source_name, source).map_err(|_| unsafe_entry())?;
+        run_snapshot_test_hook(SnapshotTestStage::AfterRootBind, "");
+        let source_root = fs::canonicalize(source).map_err(|_| source_changed())?;
         let (root_handle, root_identity) = platform::bind_directory(&source_root).map_err(|_| unsafe_entry())?;
+        if root_identity != selected_root_identity {
+            return Err(source_changed());
+        }
         let store_root = resolve_store_root_without_writing(&self.root)?;
         if store_root == source_root || store_root.starts_with(&source_root) || source_root.starts_with(&store_root) {
             return Err(unsafe_entry());
@@ -1445,6 +1458,10 @@ mod tests {
     fn snapshot_security_rejects_collisions_ambiguous_components_and_unsafe_link_graphs() {
         let cases = [
             vec![security_file("Data"), security_file("data")],
+            vec![
+                security_file("Data/file"),
+                SnapshotEntry::Directory { path: "data".into() },
+            ],
             vec![security_file("strasse"), security_file("straße")],
             vec![security_file("Σ"), security_file("ς")],
             vec![security_file("leaf"), security_file("leaf/child")],
@@ -1636,6 +1653,25 @@ mod tests {
             target: "payload.txt".into(),
         }));
         assert_eq!(snapshot.total_file_bytes, 239, "link target bytes are not copied twice");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_source_root_replacement_before_canonicalization() {
+        let temporary = TemporaryDirectory::new("snapshot-root-race");
+        let source = create_regular_source(temporary.path());
+        let original = source.clone();
+        let moved = temporary.path().join("moved-source");
+        set_snapshot_hook(super::SnapshotTestStage::AfterRootBind, "", move || {
+            fs::rename(&original, moved).unwrap();
+            fs::create_dir(&original).unwrap();
+        });
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store.exists());
     }
 
     #[cfg(unix)]

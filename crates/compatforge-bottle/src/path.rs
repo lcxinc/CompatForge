@@ -76,6 +76,16 @@ pub(crate) fn validate_graph<'a>(
         }
     }
 
+    for path in exact.keys() {
+        let mut parent = *path;
+        while let Some((candidate, _)) = parent.rsplit_once('/') {
+            if !matches!(exact.get(candidate), Some(EntryKind::Directory)) {
+                return Err(InvalidPath);
+            }
+            parent = candidate;
+        }
+    }
+
     for (path, kind) in &exact {
         let EntryKind::Link(mut target) = kind else {
             continue;
