@@ -5,6 +5,7 @@ import re
 import unicodedata
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ SCHEMA_NAMES = (
 )
 DIGEST_A = "sha256:" + ("a" * 64)
 DIGEST_B = "sha256:" + ("b" * 64)
+MAX_SNAPSHOT_MANIFEST_BYTES = 64 * 1024 * 1024
 WINDOWS_SUPERSCRIPT_DEVICE_PATHS = (
     "COM¹",
     "COM².txt",
@@ -323,6 +325,51 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             with self.subTest(case=label), self.assertRaises(AssertionError):
                 self._assert_document_valid(name, mutant, schema)
 
+    def test_snapshot_manifest_canonical_utf8_size_has_exact_64_mib_bound(self) -> None:
+        name = "bottle-snapshot.schema.json"
+        value = self._instances()[name]
+        schema = self._schema(name)
+        one_mib = "x" * (1024 * 1024)
+
+        def controlled_chunks(canonical_size: int):
+            payload_size = canonical_size - 1  # The canonical trailing LF.
+            full_chunks, remainder = divmod(payload_size, len(one_mib))
+            yield from (one_mib for _ in range(full_chunks))
+            if remainder:
+                yield "x" * remainder
+
+        with mock.patch.object(
+            type(self),
+            "_canonical_json_chunks",
+            return_value=controlled_chunks(MAX_SNAPSHOT_MANIFEST_BYTES),
+            create=True,
+        ):
+            self._assert_document_valid(name, value, schema)
+
+        with mock.patch.object(
+            type(self),
+            "_canonical_json_chunks",
+            return_value=controlled_chunks(MAX_SNAPSHOT_MANIFEST_BYTES + 1),
+            create=True,
+        ), mock.patch.object(
+            json,
+            "dumps",
+            side_effect=AssertionError("canonical output was materialized"),
+        ), self.assertRaisesRegex(
+            AssertionError,
+            f"^snapshot manifest exceeds {MAX_SNAPSHOT_MANIFEST_BYTES} UTF-8 bytes$",
+        ):
+            self._assert_document_valid(name, value, schema)
+
+    def test_snapshot_manifest_size_uses_canonical_pretty_lf_bytes(self) -> None:
+        value = self._instances()["bottle-snapshot.schema.json"]
+        value["entries"][0]["path"] = "drive_c/应用"
+        expected = (
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        actual = "".join(self._canonical_json_chunks(value)).encode("utf-8") + b"\n"
+        self.assertEqual(actual, expected)
+
     def test_records_are_sorted_and_unique(self) -> None:
         instances = self._instances()
         cases = []
@@ -365,11 +412,83 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 self._assert_document_valid(plan_name, plan, self._schema(plan_name))
 
+    def test_active_plan_digest_is_disjoint_from_prior_history(self) -> None:
+        name = "bottle-active-ref.schema.json"
+        active = copy.deepcopy(self._instances()[name])
+        active["history"].append(active["activePlanDigest"])
+        with self.assertRaisesRegex(
+            AssertionError,
+            "^active plan digest must not appear in history$",
+        ):
+            self._assert_document_valid(name, active, self._schema(name))
+
+    def test_rfc3339_schema_admits_domain_leap_second_syntax(self) -> None:
+        schema = self._schema("bottle-migration-plan.schema.json")
+        pattern = schema["$defs"]["rfc3339"]["pattern"]
+        for timestamp in (
+            "2016-12-31T23:59:60Z",
+            "2017-01-01T00:59:60+01:00",
+        ):
+            with self.subTest(timestamp=timestamp):
+                self.assertIsNotNone(re.search(pattern, timestamp))
+
+    def test_rfc3339_oracle_accepts_domain_valid_boundaries(self) -> None:
+        schema = self._schema("bottle-migration-plan.schema.json")
+        contract = schema["$defs"]["rfc3339"]
+        for timestamp in (
+            "2000-02-29T23:59:59Z",
+            "2024-02-29t12:34:56.123z",
+            "2026-08-08T00:00:00.1234567890Z",
+            "2026-08-08T00:00:00+23:59",
+            "2016-12-31T23:59:60Z",
+            "2017-01-01T00:59:60+01:00",
+        ):
+            with self.subTest(timestamp=timestamp):
+                self._assert_valid(timestamp, contract, schema)
+
+    def test_rfc3339_oracle_rejects_invalid_dates_and_leap_positions(self) -> None:
+        schema = self._schema("bottle-migration-plan.schema.json")
+        contract = schema["$defs"]["rfc3339"]
+        for timestamp in (
+            "2026-02-30T00:00:00Z",
+            "1900-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-08-08T00:00:00+24:00",
+            "2026-08-08T00:00:60Z",
+            "2016-12-30T23:59:60Z",
+            "2016-12-31T23:58:60Z",
+            "2016-12-31T23:59:60+01:00",
+            "2017-01-01T01:00:60+01:00",
+        ):
+            with self.subTest(timestamp=timestamp), self.assertRaisesRegex(
+                AssertionError, "^RFC 3339 timestamp is invalid$"
+            ):
+                self._assert_valid(timestamp, contract, schema)
+
     def test_launcher_bottle_id_must_match_embedded_bottle(self) -> None:
         name = "bottle-migration-plan.schema.json"
         plan = copy.deepcopy(self._instances()[name])
         plan["launchers"][0]["bottleId"] = "bottle-2"
         with self.assertRaises(AssertionError):
+            self._assert_document_valid(name, plan, self._schema(name))
+
+    def test_migration_plan_recipe_collection_is_fixed_empty(self) -> None:
+        schema = self._schema("bottle-migration-plan.schema.json")
+        recipes = schema["$defs"]["bottle"]["properties"]["recipes"]
+        self.assertEqual(recipes["maxItems"], 0)
+        self.assertIn("recipeReference", schema["$defs"])
+
+    def test_oracle_rejects_invented_migration_plan_recipe(self) -> None:
+        name = "bottle-migration-plan.schema.json"
+        plan = copy.deepcopy(self._instances()[name])
+        plan["bottle"]["recipes"] = [
+            {
+                "id": "invented-recipe",
+                "version": "1",
+                "digest": DIGEST_A,
+            }
+        ]
+        with self.assertRaisesRegex(AssertionError, "^array too long$"):
             self._assert_document_valid(name, plan, self._schema(name))
 
     def test_oracle_uses_only_the_python_standard_library(self) -> None:
@@ -393,6 +512,25 @@ class BottleMigrationSchemaTests(unittest.TestCase):
     def _schema(self, name: str) -> dict[str, object]:
         return json.loads((ROOT / "schemas" / name).read_bytes())
 
+    @staticmethod
+    def _canonical_json_chunks(value: object):
+        return json.JSONEncoder(
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).iterencode(value)
+
+    @classmethod
+    def _assert_snapshot_manifest_size(cls, value: object) -> None:
+        canonical_size = 1  # The canonical trailing LF.
+        for chunk in cls._canonical_json_chunks(value):
+            canonical_size += len(chunk.encode("utf-8"))
+            if canonical_size > MAX_SNAPSHOT_MANIFEST_BYTES:
+                raise AssertionError(
+                    "snapshot manifest exceeds "
+                    f"{MAX_SNAPSHOT_MANIFEST_BYTES} UTF-8 bytes"
+                )
+
     @classmethod
     def _walk(cls, value: object, location: str = "$"):
         if isinstance(value, dict):
@@ -407,6 +545,8 @@ class BottleMigrationSchemaTests(unittest.TestCase):
     def _assert_document_valid(
         cls, name: str, value: object, schema: dict[str, object]
     ) -> None:
+        if name == "bottle-snapshot.schema.json":
+            cls._assert_snapshot_manifest_size(value)
         cls._assert_valid(value, schema, schema)
         if name == "bottle-snapshot.schema.json":
             entries = value["entries"]
@@ -430,6 +570,11 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 if launcher["bottleId"] != value["bottle"]["id"]:
                     raise AssertionError("launcher Bottle binding mismatch")
                 cls._assert_sorted_unique(launcher["environment"], "name")
+        elif name == "bottle-active-ref.schema.json":
+            if value["activePlanDigest"] in value["history"]:
+                raise AssertionError(
+                    "active plan digest must not appear in history"
+                )
 
     @staticmethod
     def _assert_sorted_unique(records: list[object], key: str) -> None:
@@ -490,6 +635,73 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             if device_stem in reserved:
                 raise AssertionError("path component is a reserved device name")
 
+    @staticmethod
+    def _assert_rfc3339(value: str) -> None:
+        match = re.fullmatch(
+            r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+            r"[Tt](?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+            r"(?:\.[0-9]+)?(?P<timezone>[Zz]|[+-][0-9]{2}:[0-9]{2})",
+            value,
+        )
+        if match is None or not 20 <= len(value) <= 4096:
+            raise AssertionError("RFC 3339 timestamp is invalid")
+
+        year, month, day, hour, minute, second = (
+            int(match[name])
+            for name in ("year", "month", "day", "hour", "minute", "second")
+        )
+        leap_year = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        days_in_month = {
+            1: 31,
+            2: 29 if leap_year else 28,
+            3: 31,
+            4: 30,
+            5: 31,
+            6: 30,
+            7: 31,
+            8: 31,
+            9: 30,
+            10: 31,
+            11: 30,
+            12: 31,
+        }.get(month)
+        if (
+            days_in_month is None
+            or not 1 <= day <= days_in_month
+            or hour > 23
+            or minute > 59
+            or second > 60
+        ):
+            raise AssertionError("RFC 3339 timestamp is invalid")
+
+        timezone = match["timezone"]
+        timezone_offset = 0
+        if timezone not in ("Z", "z"):
+            offset_hour = int(timezone[1:3])
+            offset_minute = int(timezone[4:6])
+            if offset_hour > 23 or offset_minute > 59:
+                raise AssertionError("RFC 3339 timestamp is invalid")
+            timezone_offset = offset_hour * 60 + offset_minute
+            if timezone[0] == "-":
+                timezone_offset = -timezone_offset
+
+        if second < 60:
+            return
+        utc_day_delta, utc_minute = divmod(
+            hour * 60 + minute - timezone_offset, 24 * 60
+        )
+        if utc_minute != 23 * 60 + 59 or (
+            utc_day_delta,
+            month,
+            day,
+        ) not in {
+            (0, 6, 30),
+            (0, 12, 31),
+            (-1, 7, 1),
+            (-1, 1, 1),
+        }:
+            raise AssertionError("RFC 3339 timestamp is invalid")
+
     @classmethod
     def _assert_valid(
         cls,
@@ -525,6 +737,8 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
         if schema is root.get("$defs", {}).get("relativePath"):
             cls._assert_portable_path(value)
+        if schema is root.get("$defs", {}).get("rfc3339"):
+            cls._assert_rfc3339(value)
 
         if isinstance(value, str):
             if len(value) < schema.get("minLength", 0):
