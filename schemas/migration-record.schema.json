@@ -47,9 +47,9 @@
     },
     "httpsLocator": {
       "type": "string",
-      "minLength": 9,
+      "minLength": 12,
       "maxLength": 2048,
-      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*)?(?![\\s\\S])"
+      "pattern": "^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@+-]+)+/?)?(?![\\s\\S])"
     },
     "evidenceText": {
       "type": "string",
@@ -209,6 +209,39 @@
         "unproven": { "type": "integer", "minimum": 0, "maximum": 128 }
       }
     },
+    "retainedBaseEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matched", "mismatched", "added", "unproven"],
+      "properties": {
+        "matched": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "mismatched": { "const": 0 },
+        "added": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "unproven": { "const": 0 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "matched": { "type": "integer", "minimum": 1, "maximum": 128 }
+          }
+        },
+        {
+          "properties": {
+            "matched": { "const": 0 },
+            "added": { "type": "integer", "minimum": 1, "maximum": 128 }
+          }
+        }
+      ]
+    },
+    "retainedEvidenceDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "const": "patch-license" },
+        "value": { "$ref": "#/$defs/httpsLocator" }
+      }
+    },
     "affectedApplications": {
       "type": "array",
       "minItems": 1,
@@ -365,7 +398,41 @@
             "properties": {
               "status": { "const": "quarantined" },
               "regressionProbeIds": { "maxItems": 0 }
-            }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "reason": { "const": "missing-license" },
+                  "releaseCondition": {
+                    "const": "Record patch-specific license evidence and repeat review."
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "reason": { "const": "unverified-base" },
+                  "releaseCondition": {
+                    "const": "Bind every patch preimage to one exact upstream commit."
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "reason": { "const": "conflict" },
+                  "releaseCondition": {
+                    "const": "Resolve patch conflicts and close every dependency."
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "reason": { "const": "upstreamed-or-obsolete" },
+                  "releaseCondition": {
+                    "const": "Confirm removal or replacement in the reviewed source set."
+                  }
+                }
+              }
+            ]
           }
         },
         {
@@ -379,6 +446,7 @@
               "releaseCondition": { "const": null },
               "upstreamStatus": { "const": "local-only" },
               "regressionProbeIds": { "minItems": 1 },
+              "baseEvidence": { "$ref": "#/$defs/retainedBaseEvidence" },
               "patchLicense": {
                 "type": "object",
                 "additionalProperties": false,
@@ -387,48 +455,13 @@
                   "status": { "const": "reviewed" },
                   "spdxExpression": { "$ref": "#/$defs/spdx" }
                 }
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "reason": { "const": "missing-license" } } },
-          "then": {
-            "properties": {
-              "releaseCondition": {
-                "const": "Record patch-specific license evidence and repeat review."
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "reason": { "const": "unverified-base" } } },
-          "then": {
-            "properties": {
-              "releaseCondition": {
-                "const": "Bind every patch preimage to one exact upstream commit."
-              }
-            }
-          }
-        },
-        {
-          "if": { "properties": { "reason": { "const": "conflict" } } },
-          "then": {
-            "properties": {
-              "releaseCondition": {
-                "const": "Resolve patch conflicts and close every dependency."
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": { "reason": { "const": "upstreamed-or-obsolete" } }
-          },
-          "then": {
-            "properties": {
-              "releaseCondition": {
-                "const": "Confirm removal or replacement in the reviewed source set."
+              },
+              "evidenceAndDependencies": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/retainedEvidenceDependency" }
               }
             }
           }

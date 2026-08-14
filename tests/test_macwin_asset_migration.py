@@ -462,6 +462,36 @@ class MigrationSchemaTests(unittest.TestCase):
             ):
                 self.assertIsNone(pattern.fullmatch(value), (name, value))
 
+    def test_migration_record_https_locator_matches_review_contract(self) -> None:
+        schema = self._schema("migration-record.schema.json")
+        locator = schema["$defs"]["httpsLocator"]
+        review_schema = self._schema("macwin-patch-review.schema.json")
+        self.assertEqual(locator, review_schema["$defs"]["httpsEvidence"])
+        for value in (
+            "https://a.co",
+            "https://example.com",
+            "https://sub.example.com/licenses/MIT",
+            "https://example.com/a_b+c:@-",
+        ):
+            with self.subTest(case="valid", value=value):
+                self._assert_schema_instance_valid(value, locator, schema)
+
+        for value in (
+            "https://example..com/%ZZ",
+            "https://a",
+            "https://example.com/%",
+            "https://user@example.com/license",
+            "https://example.com\\license",
+            "https://example.com/license?query",
+            "https://example.com/license#fragment",
+            "https://example.com/li\x00cense",
+            "https://example.com/li\u202ecense",
+        ):
+            with self.subTest(case="invalid", value=value), self.assertRaises(
+                AssertionError
+            ):
+                self._assert_schema_instance_valid(value, locator, schema)
+
     def test_schema_patterns_use_absolute_end_and_reject_hostile_tail(self) -> None:
         for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
             schema = self._schema(name)
@@ -2799,6 +2829,136 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
         wrong_applications = copy.deepcopy(patch_document)
         wrong_applications["affectedApplications"].reverse()
         mutants["application-order"] = wrong_applications
+        for name, mutant in mutants.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [mutant]}, schema, schema
+                )
+
+    def test_migration_record_schema_closes_patch_quarantine_pairs(self) -> None:
+        converter = self.converter
+        result = converter.build_conversion(ROOT)
+        schema = self._strict_json(
+            PurePosixPath("schemas/migration-record.schema.json")
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        reviews = {
+            record.source_path: record for record in result.patch_review.records
+        }
+        patch_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        patch_document = converter._reviewed_patch_document(
+            records[patch_path], assets[patch_path], reviews[patch_path]
+        )
+
+        approved_pairs = {
+            "missing-license": (
+                "Record patch-specific license evidence and repeat review."
+            ),
+            "unverified-base": (
+                "Bind every patch preimage to one exact upstream commit."
+            ),
+            "conflict": "Resolve patch conflicts and close every dependency.",
+            "upstreamed-or-obsolete": (
+                "Confirm removal or replacement in the reviewed source set."
+            ),
+        }
+        for reason, release_condition in approved_pairs.items():
+            quarantined = copy.deepcopy(patch_document)
+            quarantined["reason"] = reason
+            quarantined["releaseCondition"] = release_condition
+            with self.subTest(case=f"valid-{reason}"):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [quarantined]},
+                    schema,
+                    schema,
+                )
+
+        mutants: dict[str, object] = {}
+        null_pair = copy.deepcopy(patch_document)
+        null_pair["reason"] = None
+        null_pair["releaseCondition"] = None
+        mutants["null-pair"] = null_pair
+        wrong_pair = copy.deepcopy(patch_document)
+        wrong_pair["releaseCondition"] = approved_pairs["conflict"]
+        mutants["wrong-pair"] = wrong_pair
+        for name, mutant in mutants.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [mutant]}, schema, schema
+                )
+
+    def test_migration_record_schema_closes_retained_patch_policy(self) -> None:
+        converter = self.converter
+        result = converter.build_conversion(ROOT)
+        schema = self._strict_json(
+            PurePosixPath("schemas/migration-record.schema.json")
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        reviews = {
+            record.source_path: record for record in result.patch_review.records
+        }
+        patch_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        retained = converter._reviewed_patch_document(
+            records[patch_path], assets[patch_path], reviews[patch_path]
+        )
+        retained.update(
+            {
+                "status": "deferred",
+                "baseEvidence": {
+                    "matched": 1,
+                    "mismatched": 0,
+                    "added": 0,
+                    "unproven": 0,
+                },
+                "patchLicense": {
+                    "status": "reviewed",
+                    "spdxExpression": "MIT",
+                },
+                "evidenceAndDependencies": [
+                    {
+                        "kind": "patch-license",
+                        "value": "https://example.com/licenses/MIT",
+                    }
+                ],
+                "upstreamStatus": "local-only",
+                "reviewDisposition": "retained",
+                "reason": None,
+                "releaseCondition": None,
+                "regressionProbeIds": ["reviewed-patch-probe"],
+            }
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(
+            {"schemaVersion": "1", "records": [retained]}, schema, schema
+        )
+        only_added = copy.deepcopy(retained)
+        only_added["baseEvidence"]["matched"] = 0
+        only_added["baseEvidence"]["added"] = 1
+        MigrationSchemaTests._assert_schema_instance_valid(
+            {"schemaVersion": "1", "records": [only_added]}, schema, schema
+        )
+
+        mutants: dict[str, object] = {}
+        for field in ("mismatched", "unproven"):
+            mutant = copy.deepcopy(retained)
+            mutant["baseEvidence"][field] = 2
+            mutants[f"base-{field}"] = mutant
+        no_proven_base = copy.deepcopy(retained)
+        no_proven_base["baseEvidence"]["matched"] = 0
+        mutants["no-proven-base"] = no_proven_base
+        missing_license_evidence = copy.deepcopy(retained)
+        missing_license_evidence["evidenceAndDependencies"] = []
+        mutants["missing-license-evidence"] = missing_license_evidence
+        for kind, value in (
+            ("external-dependency", "https://example.com/dependency"),
+            ("development-dependency", "local-build-tool"),
+        ):
+            conflicting_dependency = copy.deepcopy(retained)
+            conflicting_dependency["evidenceAndDependencies"].append(
+                {"kind": kind, "value": value}
+            )
+            mutants[kind] = conflicting_dependency
         for name, mutant in mutants.items():
             with self.subTest(case=name), self.assertRaises(AssertionError):
                 MigrationSchemaTests._assert_schema_instance_valid(
