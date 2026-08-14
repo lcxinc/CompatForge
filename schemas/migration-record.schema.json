@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://compatforge.dev/schemas/migration-record.schema.json",
-  "title": "CompatForge Deferred Mac-Win Migration Records",
+  "title": "CompatForge Reviewed Mac-Win Migration Records",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "records"],
@@ -33,6 +33,30 @@
       "maxLength": 64,
       "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}(?![\\s\\S])"
+    },
+    "spdx": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+() -]{0,255}(?![\\s\\S])"
+    },
+    "httpsLocator": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]*)?(?![\\s\\S])"
+    },
+    "evidenceText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[\\x20-\\x7E]+(?![\\s\\S])"
+    },
     "reviewStatus": {
       "type": "object",
       "additionalProperties": false,
@@ -41,7 +65,168 @@
         "status": { "const": "unresolved" }
       }
     },
-    "record": {
+    "patchLicense": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "unresolved" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "spdxExpression"],
+          "properties": {
+            "status": { "const": "reviewed" },
+            "spdxExpression": { "$ref": "#/$defs/spdx" }
+          }
+        }
+      ]
+    },
+    "patchAuthor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["reviewed", "unresolved"] },
+        "displayName": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "email": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 254
+        },
+        "evidence": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "projectLicense": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdxExpression", "evidenceLocator", "contextOnly"],
+      "properties": {
+        "spdxExpression": { "$ref": "#/$defs/spdx" },
+        "evidenceLocator": { "$ref": "#/$defs/httpsLocator" },
+        "contextOnly": { "const": true }
+      }
+    },
+    "evidenceDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "development-dependency",
+            "external-dependency",
+            "patch-license"
+          ]
+        },
+        "value": { "$ref": "#/$defs/evidenceText" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["patch-license", "external-dependency"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": { "$ref": "#/$defs/httpsLocator" }
+            }
+          }
+        }
+      ]
+    },
+    "upstream": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "referenceKind",
+            "reference",
+            "tagObject",
+            "commit"
+          ],
+          "properties": {
+            "repository": {
+              "const": "https://github.com/jasp-stats/jasp-desktop"
+            },
+            "referenceKind": { "const": "tag" },
+            "reference": { "const": "v0.97.1" },
+            "tagObject": { "const": null },
+            "commit": {
+              "const": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "referenceKind",
+            "reference",
+            "tagObject",
+            "commit"
+          ],
+          "properties": {
+            "repository": {
+              "const": "https://gitlab.winehq.org/wine/wine/"
+            },
+            "referenceKind": { "const": "annotated-tag" },
+            "reference": { "const": "wine-11.11" },
+            "tagObject": {
+              "const": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+            },
+            "commit": {
+              "const": "f6c044e1890e84a4aa5e77e76ba7276a615630e1"
+            }
+          }
+        }
+      ]
+    },
+    "baseEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matched", "mismatched", "added", "unproven"],
+      "properties": {
+        "matched": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "mismatched": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "added": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "unproven": { "type": "integer", "minimum": 0, "maximum": 128 }
+      }
+    },
+    "affectedApplications": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/identifier" },
+      "enum": [
+        ["jasp-build", "jasp-desktop"],
+        ["jasp-desktop"],
+        ["macos-driver", "wine"],
+        ["shell32", "wine"],
+        ["windows-data-json", "wine"],
+        ["windows-graphics-imaging", "wine"],
+        ["windowscodecs", "wine"],
+        ["wine", "winui"]
+      ]
+    },
+    "bottleRecord": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -65,27 +250,195 @@
         "gitBlobOid": { "$ref": "#/$defs/commit" },
         "gitMode": { "enum": ["100644", "100755"] },
         "sourceSha256": { "$ref": "#/$defs/sha256" },
-        "category": { "enum": ["patches", "bottle-schema"] },
+        "category": { "const": "bottle-schema" },
         "status": { "const": "deferred" },
-        "targetIssue": { "enum": ["MW-ASSET-002", "MW-ASSET-003"] },
-        "intendedOwner": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^compatforge/[a-z0-9][a-z0-9._-]*(?![\\s\\S])"
-        },
+        "targetIssue": { "const": "MW-ASSET-003" },
+        "intendedOwner": { "const": "compatforge/bottle-schema" },
         "license": { "$ref": "#/$defs/reviewStatus" },
         "provenance": { "$ref": "#/$defs/reviewStatus" }
+      }
+    },
+    "patchRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceRepository",
+        "sourcePath",
+        "sourceCommit",
+        "gitBlobOid",
+        "gitMode",
+        "sourceSha256",
+        "category",
+        "status",
+        "targetIssue",
+        "intendedOwner",
+        "license",
+        "provenance",
+        "purpose",
+        "affectedApplications",
+        "upstream",
+        "baseEvidence",
+        "patchAuthor",
+        "projectLicense",
+        "patchLicense",
+        "evidenceAndDependencies",
+        "upstreamStatus",
+        "reviewDisposition",
+        "reason",
+        "releaseCondition",
+        "regressionProbeIds"
+      ],
+      "properties": {
+        "sourceRepository": { "const": "a1112/Mac-Win" },
+        "sourcePath": { "$ref": "#/$defs/relativePath" },
+        "sourceCommit": { "$ref": "#/$defs/commit" },
+        "gitBlobOid": { "$ref": "#/$defs/commit" },
+        "gitMode": { "enum": ["100644", "100755"] },
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "category": { "const": "patches" },
+        "status": { "enum": ["deferred", "quarantined"] },
+        "targetIssue": { "const": "MW-ASSET-002" },
+        "intendedOwner": { "const": "compatforge/patches" },
+        "license": { "$ref": "#/$defs/reviewStatus" },
+        "provenance": { "$ref": "#/$defs/reviewStatus" },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[\\x20-\\x7E]+(?![\\s\\S])"
+        },
+        "affectedApplications": { "$ref": "#/$defs/affectedApplications" },
+        "upstream": { "$ref": "#/$defs/upstream" },
+        "baseEvidence": { "$ref": "#/$defs/baseEvidence" },
+        "patchAuthor": { "$ref": "#/$defs/patchAuthor" },
+        "projectLicense": { "$ref": "#/$defs/projectLicense" },
+        "patchLicense": { "$ref": "#/$defs/patchLicense" },
+        "evidenceAndDependencies": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evidenceDependency" }
+        },
+        "upstreamStatus": {
+          "enum": [
+            "local-only",
+            "upstreamed",
+            "superseded",
+            "conflicting",
+            "unresolved"
+          ]
+        },
+        "reviewDisposition": { "enum": ["retained", "quarantined"] },
+        "reason": {
+          "enum": [
+            null,
+            "missing-license",
+            "unverified-base",
+            "conflict",
+            "upstreamed-or-obsolete"
+          ]
+        },
+        "releaseCondition": {
+          "enum": [
+            null,
+            "Record patch-specific license evidence and repeat review.",
+            "Bind every patch preimage to one exact upstream commit.",
+            "Resolve patch conflicts and close every dependency.",
+            "Confirm removal or replacement in the reviewed source set."
+          ]
+        },
+        "regressionProbeIds": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "category": { "const": "patches" } } },
-          "then": { "properties": { "targetIssue": { "const": "MW-ASSET-002" } } }
+          "if": {
+            "properties": { "reviewDisposition": { "const": "quarantined" } }
+          },
+          "then": {
+            "properties": {
+              "status": { "const": "quarantined" },
+              "regressionProbeIds": { "maxItems": 0 }
+            }
+          }
         },
         {
-          "if": { "properties": { "category": { "const": "bottle-schema" } } },
-          "then": { "properties": { "targetIssue": { "const": "MW-ASSET-003" } } }
+          "if": {
+            "properties": { "reviewDisposition": { "const": "retained" } }
+          },
+          "then": {
+            "properties": {
+              "status": { "const": "deferred" },
+              "reason": { "const": null },
+              "releaseCondition": { "const": null },
+              "upstreamStatus": { "const": "local-only" },
+              "regressionProbeIds": { "minItems": 1 },
+              "patchLicense": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["status", "spdxExpression"],
+                "properties": {
+                  "status": { "const": "reviewed" },
+                  "spdxExpression": { "$ref": "#/$defs/spdx" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "missing-license" } } },
+          "then": {
+            "properties": {
+              "releaseCondition": {
+                "const": "Record patch-specific license evidence and repeat review."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "unverified-base" } } },
+          "then": {
+            "properties": {
+              "releaseCondition": {
+                "const": "Bind every patch preimage to one exact upstream commit."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "reason": { "const": "conflict" } } },
+          "then": {
+            "properties": {
+              "releaseCondition": {
+                "const": "Resolve patch conflicts and close every dependency."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "reason": { "const": "upstreamed-or-obsolete" } }
+          },
+          "then": {
+            "properties": {
+              "releaseCondition": {
+                "const": "Confirm removal or replacement in the reviewed source set."
+              }
+            }
+          }
         }
+      ]
+    },
+    "record": {
+      "oneOf": [
+        { "$ref": "#/$defs/bottleRecord" },
+        { "$ref": "#/$defs/patchRecord" }
       ]
     }
   }

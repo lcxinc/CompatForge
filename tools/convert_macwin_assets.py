@@ -99,16 +99,28 @@ CATALOG_RECIPE_PREFIX = f"{CATALOG_ROOT}/recipes/"
 QUARANTINE_REASONS = frozenset(
     {
         "absolute-path",
+        "conflict",
         "missing-digest",
         "missing-license",
         "missing-provenance",
         "mutable-local-installation",
+        "unverified-base",
         "unresolved-environment-path",
         "unresolved-external-reference",
+        "upstreamed-or-obsolete",
         "unsupported-behavior",
         "unsupported-schema",
     }
 )
+PATCH_RELEASE_CONDITIONS = {
+    "missing-license": "Record patch-specific license evidence and repeat review.",
+    "unverified-base": "Bind every patch preimage to one exact upstream commit.",
+    "conflict": "Resolve patch conflicts and close every dependency.",
+    "upstreamed-or-obsolete": (
+        "Confirm removal or replacement in the reviewed source set."
+    ),
+}
+PATCH_REGRESSION_PROBES = types.MappingProxyType({})
 MAX_EVIDENCE_LOCATORS = 512
 APPROVED_PORTABLE_ASSET_TABLE_SHA256 = (
     "9db4bac2e7ddb3f542e655f5f9be1aed9d265ecd6dfa44cd563ef2b1c7eddf54"
@@ -483,6 +495,15 @@ class PatchReviewLedger:
     source: PatchReviewSourceIdentity
     record_count: int
     records: tuple[PatchReviewRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PatchDecision:
+    status: str
+    action: str
+    reason: str | None
+    evidence_locators: tuple[str, ...]
+    release_condition: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1760,8 +1781,14 @@ def classify_source_pack(
     _validate_patch_review_model(patch_review, source_pack)
     _validate_portable_contract_tables(source_pack)
     recipe_paths = _validate_catalog_boundary(source_pack)
+    review_by_path = {
+        record.source_path: record for record in patch_review.records
+    }
+    if len(review_by_path) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
     records = tuple(
-        _classify_asset(source_pack, asset, recipe_paths) for asset in source_pack.assets
+        _classify_asset(source_pack, asset, recipe_paths, review_by_path)
+        for asset in source_pack.assets
     )
     result = ConversionResult(
         source_pack=source_pack,
@@ -1861,16 +1888,38 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
             _fail("portable asset cannot be rendered")
         documents[content_path] = asset.raw
 
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
+    patch_records = tuple(
+        record for record in result.records if record.category == "patches"
+    )
+    quarantine_records.extend(
+        _quarantine_document(record)
+        for record in patch_records
+        if record.status == "quarantined"
+    )
+    quarantine_records.sort(key=lambda item: item["sourcePath"].encode("ascii"))
     mapping_documents: dict[str, dict[str, object]] = {}
     for category, output_name in (
         ("patches", "patches.json"),
         ("bottle-schema", "bottle-schemas.json"),
     ):
-        mapping_records = [
-            _deferred_document(record, assets[record.source_path])
-            for record in result.records
-            if record.category == category
-        ]
+        if category == "patches":
+            mapping_records = [
+                _reviewed_patch_document(
+                    record,
+                    assets[record.source_path],
+                    review_by_path[record.source_path],
+                )
+                for record in patch_records
+            ]
+        else:
+            mapping_records = [
+                _deferred_document(record, assets[record.source_path])
+                for record in result.records
+                if record.category == category
+            ]
         mapping_documents[
             f"migration/macwin/generated/mappings/{output_name}"
         ] = {"schemaVersion": "1", "records": mapping_records}
@@ -2476,7 +2525,9 @@ def _deferred_document(
 ) -> dict[str, object]:
     if (
         record.status != "deferred"
-        or record.category not in {"patches", "bottle-schema"}
+        or record.category != "bottle-schema"
+        or record.output_kind != "bottle-schema-mapping"
+        or record.target_issue != "MW-ASSET-003"
         or record.source_path != asset.source_path
         or record.source_sha256 != asset.sha256
     ):
@@ -2494,6 +2545,89 @@ def _deferred_document(
         "intendedOwner": record.intended_owner,
         "license": {"status": asset.license_status},
         "provenance": {"status": asset.provenance_status},
+    }
+
+
+def _reviewed_patch_document(
+    record: ConversionRecord,
+    asset: SourceAsset,
+    review: PatchReviewRecord,
+) -> dict[str, object]:
+    decision = _derive_patch_decision(review, PATCH_REGRESSION_PROBES)
+    if (
+        record.category != "patches"
+        or record.output_kind != "patch-mapping"
+        or record.target_issue != "MW-ASSET-002"
+        or record.source_path != asset.source_path
+        or record.source_sha256 != asset.sha256
+        or record.source_commit != asset.source_commit
+        or record.source_repository != APPROVED_REPOSITORY
+        or record.intended_owner != asset.intended_owner
+        or review.source_path != asset.source_path
+        or review.source_sha256 != asset.sha256
+        or review.git_blob_oid != asset.git_blob_oid
+        or review.git_mode != asset.git_mode
+        or review.byte_size != asset.byte_size
+        or record.status != decision.status
+        or record.action != decision.action
+        or record.reason != decision.reason
+        or record.evidence_locators != decision.evidence_locators
+        or record.release_condition != decision.release_condition
+    ):
+        _fail("reviewed patch migration evidence is incomplete")
+    author: dict[str, object] = {"status": review.patch_author.status}
+    if review.patch_author.display_name is not None:
+        author["displayName"] = review.patch_author.display_name
+    if review.patch_author.email is not None:
+        author["email"] = review.patch_author.email
+    if review.patch_author.evidence is not None:
+        author["evidence"] = review.patch_author.evidence
+    patch_license: dict[str, object] = {"status": review.patch_license.status}
+    if review.patch_license.spdx_expression is not None:
+        patch_license["spdxExpression"] = review.patch_license.spdx_expression
+    base_counts = {
+        result: sum(item.result == result for item in review.preimages)
+        for result in ("matched", "mismatched", "added", "unproven")
+    }
+    return {
+        "sourceRepository": record.source_repository,
+        "sourcePath": record.source_path,
+        "sourceCommit": record.source_commit,
+        "gitBlobOid": asset.git_blob_oid,
+        "gitMode": asset.git_mode,
+        "sourceSha256": record.source_sha256,
+        "category": "patches",
+        "status": record.status,
+        "targetIssue": "MW-ASSET-002",
+        "intendedOwner": record.intended_owner,
+        "license": {"status": asset.license_status},
+        "provenance": {"status": asset.provenance_status},
+        "purpose": review.purpose,
+        "affectedApplications": list(review.affected_applications),
+        "upstream": {
+            "repository": review.upstream.repository,
+            "referenceKind": review.upstream.reference_kind,
+            "reference": review.upstream.reference,
+            "tagObject": review.upstream.tag_object,
+            "commit": review.upstream.commit,
+        },
+        "baseEvidence": base_counts,
+        "patchAuthor": author,
+        "projectLicense": {
+            "spdxExpression": review.project_license.spdx_expression,
+            "evidenceLocator": review.project_license.evidence_locator,
+            "contextOnly": review.project_license.context_only,
+        },
+        "patchLicense": patch_license,
+        "evidenceAndDependencies": [
+            {"kind": item.kind, "value": item.value}
+            for item in review.evidence_and_dependencies
+        ],
+        "upstreamStatus": review.upstream_status,
+        "reviewDisposition": review.review_disposition,
+        "reason": decision.reason,
+        "releaseCondition": decision.release_condition,
+        "regressionProbeIds": list(review.regression_probe_ids),
     }
 
 
@@ -3405,10 +3539,108 @@ def _render_reviewed_recipe(
     return recipe
 
 
+def _derive_patch_decision(
+    review: PatchReviewRecord,
+    probe_registry: object,
+) -> PatchDecision:
+    """Derive one patch outcome without trusting its manual disposition."""
+
+    if type(review) is not PatchReviewRecord or not isinstance(
+        probe_registry, (dict, types.MappingProxyType)
+    ):
+        _fail("patch review evidence is invalid")
+    patch_license_evidence = tuple(
+        item.value
+        for item in review.evidence_and_dependencies
+        if type(item) is PatchEvidenceDependency
+        and item.kind == "patch-license"
+        and _review_https(item.value)
+    )
+    licensed = (
+        type(review.patch_license) is PatchLicense
+        and review.patch_license.status == "reviewed"
+        and type(review.patch_license.spdx_expression) is str
+        and _PATCH_REVIEW_SPDX.fullmatch(review.patch_license.spdx_expression)
+        is not None
+        and bool(patch_license_evidence)
+    )
+    if not licensed:
+        reason = "missing-license"
+    elif not review.preimages or any(
+        type(item) is not PatchPreimageEvidence
+        or item.result not in {"matched", "added"}
+        for item in review.preimages
+    ):
+        reason = "unverified-base"
+    elif review.upstream_status in {"conflicting", "unresolved"} or any(
+        type(item) is PatchEvidenceDependency
+        and item.kind in {"external-dependency", "development-dependency"}
+        for item in review.evidence_and_dependencies
+    ):
+        reason = "conflict"
+    elif review.upstream_status in {"upstreamed", "superseded"}:
+        reason = "upstreamed-or-obsolete"
+    elif review.upstream_status == "local-only":
+        reason = None
+    else:
+        _fail("patch review evidence is invalid")
+
+    evidence_locators = (f"{review.source_path}#patchLicense",)
+    if reason is not None:
+        release_condition = PATCH_RELEASE_CONDITIONS[reason]
+        if (
+            review.review_disposition != "quarantined"
+            or review.reason != reason
+            or review.release_condition != release_condition
+            or review.regression_probe_ids
+        ):
+            _fail("patch review evidence is invalid")
+        return PatchDecision(
+            status="quarantined",
+            action="quarantine",
+            reason=reason,
+            evidence_locators=evidence_locators,
+            release_condition=release_condition,
+        )
+
+    probe_ids = review.regression_probe_ids
+    if (
+        review.review_disposition != "retained"
+        or review.reason is not None
+        or review.release_condition is not None
+        or type(probe_ids) is not tuple
+        or not probe_ids
+        or len(set(probe_ids)) != len(probe_ids)
+        or probe_ids
+        != tuple(sorted(probe_ids, key=lambda value: value.encode("ascii")))
+    ):
+        _fail("patch review evidence is invalid")
+    for probe_id in probe_ids:
+        if type(probe_id) is not str or probe_id not in probe_registry:
+            _fail("patch review evidence is invalid")
+        probe = probe_registry[probe_id]
+        if not callable(probe):
+            _fail("patch review evidence is invalid")
+        try:
+            passed = probe(review)
+        except Exception:
+            _fail("patch review evidence is invalid")
+        if passed is not True:
+            _fail("patch review evidence is invalid")
+    return PatchDecision(
+        status="deferred",
+        action="retain-patch",
+        reason=None,
+        evidence_locators=evidence_locators,
+        release_condition=None,
+    )
+
+
 def _classify_asset(
     source_pack: SourcePack,
     asset: SourceAsset,
     recipe_paths: frozenset[str],
+    review_by_path: dict[str, PatchReviewRecord],
 ) -> ConversionRecord:
     base = {
         "source_repository": source_pack.repository,
@@ -3473,15 +3705,19 @@ def _classify_asset(
             base, asset, "portable-fixture", "export-portable-fixture"
         )
     if asset.category == "patches":
+        review = review_by_path.get(asset.source_path)
+        if type(review) is not PatchReviewRecord:
+            _fail("patch review evidence is invalid")
+        decision = _derive_patch_decision(review, PATCH_REGRESSION_PROBES)
         return ConversionRecord(
             **base,
             output_kind="patch-mapping",
-            status="deferred",
-            action="defer-patch",
+            status=decision.status,
+            action=decision.action,
             target_issue="MW-ASSET-002",
-            reason=None,
-            evidence_locators=(),
-            release_condition=None,
+            reason=decision.reason,
+            evidence_locators=decision.evidence_locators,
+            release_condition=decision.release_condition,
         )
     if asset.category == "bottle-schema":
         return ConversionRecord(
@@ -3891,6 +4127,51 @@ def _validate_patch_review_model(
         _fail("patch review evidence is invalid")
 
 
+def _source_pack_model_has_approved_index(source_pack: SourcePack) -> bool:
+    category_counts = {
+        "bottleSchema": dict(source_pack.category_counts)["bottle-schema"],
+        "catalog": dict(source_pack.category_counts)["catalog"],
+        "fixtures": dict(source_pack.category_counts)["fixtures"],
+        "patches": dict(source_pack.category_counts)["patches"],
+        "probes": dict(source_pack.category_counts)["probes"],
+    }
+    manifest = {
+        "schemaVersion": "1",
+        "repository": source_pack.repository,
+        "sourceTag": source_pack.source_tag,
+        "sourceTagObject": source_pack.source_tag_object,
+        "sourceCommit": source_pack.source_commit,
+        "inventoryCommit": source_pack.inventory_commit,
+        "digestAlgorithm": source_pack.digest_algorithm,
+        "assetCount": len(source_pack.assets),
+        "categoryCounts": category_counts,
+        "assets": [
+            {
+                "byteSize": asset.byte_size,
+                "category": asset.category,
+                "developmentDependencies": list(asset.development_dependencies),
+                "externalRefs": list(asset.external_refs),
+                "gitBlobOid": asset.git_blob_oid,
+                "gitMode": asset.git_mode,
+                "intendedOwner": asset.intended_owner,
+                "kind": asset.kind,
+                "license": {"status": asset.license_status},
+                "objectPath": asset.object_path,
+                "provenance": {"status": asset.provenance_status},
+                "sha256": asset.sha256,
+                "sourceCommit": asset.source_commit,
+                "sourcePath": asset.source_path,
+            }
+            for asset in source_pack.assets
+        ],
+    }
+    try:
+        raw = _COMMON.canonical_json_bytes(manifest)
+    except _COMMON.MigrationError:
+        _fail("source pack model fields are invalid")
+    return hashlib.sha256(raw).hexdigest() == APPROVED_SOURCE_INDEX_SHA256
+
+
 def _validate_conversion_result(result: ConversionResult) -> None:
     if (
         type(result) is not ConversionResult
@@ -3916,12 +4197,32 @@ def _validate_conversion_result(result: ConversionResult) -> None:
     ):
         _fail("conversion result identity set is invalid")
     recipe_paths = _validate_catalog_boundary(result.source_pack)
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
+    if len(review_by_path) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
     expected = tuple(
-        _classify_asset(result.source_pack, asset, recipe_paths)
+        _classify_asset(
+            result.source_pack,
+            asset,
+            recipe_paths,
+            review_by_path,
+        )
         for asset in result.source_pack.assets
     )
     if result.records != expected:
         _fail("conversion result record is invalid")
+    status_counts = {
+        status: sum(record.status == status for record in result.records)
+        for status in ("converted", "deferred", "quarantined")
+    }
+    if _source_pack_model_has_approved_index(result.source_pack) and status_counts != {
+        "converted": 2,
+        "deferred": 4,
+        "quarantined": 84,
+    }:
+        _fail("conversion result status counts are invalid")
     records_by_path = {record.source_path: record for record in result.records}
     paths_by_identifier = {
         entry[0]: path for path, entry in PORTABLE_ASSET_TABLE.items()
@@ -4152,6 +4453,9 @@ def _validate_task6_documents(
     if type(mappings) is not dict or set(mappings) != set(expected_paths):
         _fail("deferred mapping set is invalid")
     assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
     for relative, category in expected_paths.items():
         document = mappings[relative]
         if (
@@ -4161,11 +4465,23 @@ def _validate_task6_documents(
             or type(document["records"]) is not list
         ):
             _fail("deferred mapping contract is invalid")
-        expected = [
-            _deferred_document(record, assets[record.source_path])
-            for record in result.records
-            if record.category == category
+        category_records = [
+            record for record in result.records if record.category == category
         ]
+        if category == "patches":
+            expected = [
+                _reviewed_patch_document(
+                    record,
+                    assets[record.source_path],
+                    review_by_path[record.source_path],
+                )
+                for record in category_records
+            ]
+        else:
+            expected = [
+                _deferred_document(record, assets[record.source_path])
+                for record in category_records
+            ]
         if document["records"] != expected:
             _fail("deferred mapping coverage is invalid")
 
