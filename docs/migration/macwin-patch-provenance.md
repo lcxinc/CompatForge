@@ -85,7 +85,7 @@ probe, fixture, or sixth generated leaf is emitted.
 Run these commands serially from the repository root:
 
 ```text
-python -S -B -m unittest tests.test_macwin_asset_migration.MacWinPatchProvenanceTests tests.test_macwin_asset_migration.MacWinMigrationDocumentationTests tests.test_macwin_asset_migration.MacWinMigrationSideEffectTests
+python -S -B -m unittest tests.test_macwin_asset_migration.MacWinPatchProvenanceTests tests.test_macwin_asset_migration.MacWinMigrationDocumentationTests tests.test_macwin_asset_migration.MacWinMigrationSideEffectTests tests.test_macwin_asset_migration.MacWinMigrationCliTests
 python -B tools/convert_macwin_assets.py
 python -B tools/convert_macwin_assets.py --check
 python -B tools/convert_macwin_assets.py --write

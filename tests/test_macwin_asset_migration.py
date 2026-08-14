@@ -7814,6 +7814,13 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
 
 
 class MacWinMigrationCliTests(unittest.TestCase):
+    INDEPENDENT_SOURCE_INDEX_SHA256 = (
+        "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3"
+    )
+    INDEPENDENT_PATCH_REVIEW_SHA256 = (
+        "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+    )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.converter = _load_macwin_asset_converter()
@@ -7890,49 +7897,34 @@ class MacWinMigrationCliTests(unittest.TestCase):
 
     def test_every_reviewed_patch_has_a_canonical_bounded_quarantine_explanation(self) -> None:
         common = _load_macwin_asset_common()
-        paths = tuple(record.source_path for record in self.result.patch_review.records)
-        assets = {
-            asset.source_path: asset
-            for asset in self.result.source_pack.assets
-            if asset.category == "patches"
-        }
+        evidence = self._independent_patch_explain_evidence(common)
+        paths = tuple(evidence)
         self.assertEqual(len(paths), 11)
         for source_path in paths:
             with self.subTest(source_path=source_path):
                 self._assert_reviewed_patch_explanation(
-                    common, source_path, assets[source_path]
+                    common, source_path, evidence[source_path]
                 )
 
     def _assert_reviewed_patch_explanation(
-        self, common, source_path: str, asset
+        self, common, source_path: str, evidence: dict[str, object]
     ) -> None:
-        expected = {
-            "action": "quarantine",
-            "category": "patches",
-            "evidenceLocators": [f"{source_path}#patchLicense"],
-            "intendedOwner": asset.intended_owner,
-            "outputKind": "patch-mapping",
-            "reason": "missing-license",
-            "releaseCondition": "Record patch-specific license evidence and repeat review.",
-            "schemaVersion": "1",
-            "sourceCommit": asset.source_commit,
-            "sourceKind": asset.kind,
-            "sourcePath": source_path,
-            "sourceRepository": self.result.source_pack.repository,
-            "sourceSha256": asset.sha256,
-            "status": "quarantined",
-            "targetIssue": "MW-ASSET-002",
-        }
+        expected = evidence["expected"]
+        patch_raw = evidence["patchRaw"]
+        self.assertIs(type(expected), dict)
+        self.assertIs(type(patch_raw), bytes)
         first = self._run_cli("--explain", source_path)
         second = self._run_cli("--explain", source_path)
         self.assertEqual((first.returncode, first.stderr), (0, b""))
+        self.assertEqual((second.returncode, second.stderr), (0, b""))
         self.assertEqual(second.stdout, first.stdout)
         self.assertLessEqual(len(first.stdout), 1024 * 1024)
+        self.assertLessEqual(len(second.stdout), 1024 * 1024)
         explanation = common.parse_json_bytes(
             first.stdout, label="patch explanation"
         )
         self.assertEqual(first.stdout, common.canonical_json_bytes(explanation))
-        content_lines = self._meaningful_patch_content_lines(asset.raw)
+        content_lines = self._meaningful_patch_content_lines(patch_raw)
         self.assertTrue(content_lines)
         for value in self._json_string_values(explanation):
             for line, content in content_lines:
@@ -7977,14 +7969,12 @@ class MacWinMigrationCliTests(unittest.TestCase):
 
     def test_patch_explanation_contract_rejects_decoded_content_reflection_mutants(self) -> None:
         common = _load_macwin_asset_common()
-        assets = {
-            asset.source_path: asset
-            for asset in self.result.source_pack.assets
-            if asset.category == "patches"
-        }
+        evidence = self._independent_patch_explain_evidence(common)
         cases: dict[str, tuple[str, str]] = {}
-        for source_path, asset in assets.items():
-            for line in asset.raw.decode("utf-8", "strict").splitlines():
+        for source_path, item in evidence.items():
+            patch_raw = item["patchRaw"]
+            self.assertIs(type(patch_raw), bytes)
+            for line in patch_raw.decode("utf-8", "strict").splitlines():
                 if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
                     continue
                 content = line[1:]
@@ -8039,7 +8029,7 @@ class MacWinMigrationCliTests(unittest.TestCase):
             ):
                 try:
                     self._assert_reviewed_patch_explanation(
-                        common, source_path, assets[source_path]
+                        common, source_path, evidence[source_path]
                     )
                 except AssertionError as error:
                     caught = error
@@ -8055,6 +8045,184 @@ class MacWinMigrationCliTests(unittest.TestCase):
                     "patch explanation reflects authenticated patch content",
                     str(caught),
                 )
+
+    def test_patch_explanation_contract_rejects_synchronized_model_and_dto_forge(self) -> None:
+        common = _load_macwin_asset_common()
+        evidence = self._independent_patch_explain_evidence(common)
+        asset = next(
+            asset for asset in self.result.source_pack.assets
+            if asset.category == "patches"
+        )
+        forged_asset = dataclasses.replace(
+            asset,
+            intended_owner="forged/owner",
+            source_commit="1" * 40,
+            sha256="2" * 64,
+            kind="forged-patch-kind",
+        )
+        explanation = common.parse_json_bytes(
+            self.converter.explain_conversion(self.result, asset.source_path),
+            label="patch explanation",
+        )
+        explanation.update(
+            {
+                "intendedOwner": forged_asset.intended_owner,
+                "sourceCommit": forged_asset.source_commit,
+                "sourceSha256": forged_asset.sha256,
+                "sourceKind": forged_asset.kind,
+            }
+        )
+        forged = common.canonical_json_bytes(explanation)
+        decoded = common.parse_json_bytes(forged, label="patch explanation")
+        self.assertEqual(decoded["intendedOwner"], "forged/owner")
+        self.assertEqual(decoded["sourceCommit"], "1" * 40)
+        injected_calls = []
+
+        def inject(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+            injected_calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, forged, b"")
+
+        with mock.patch.object(self, "_run_cli", side_effect=inject), self.assertRaises(
+            AssertionError
+        ):
+            self._assert_reviewed_patch_explanation(
+                common, asset.source_path, evidence[asset.source_path]
+            )
+        self.assertEqual(
+            injected_calls,
+            [
+                ("--explain", asset.source_path),
+                ("--explain", asset.source_path),
+            ],
+        )
+
+    def _independent_patch_explain_evidence(
+        self, common
+    ) -> dict[str, dict[str, object]]:
+        source_path = ROOT / "migration/macwin/source/index.json"
+        review_path = ROOT / "migration/macwin/reviewed/patches.json"
+        source_raw = source_path.read_bytes()
+        review_raw = review_path.read_bytes()
+        self.assertEqual(len(source_raw), 101199)
+        self.assertEqual(
+            hashlib.sha256(source_raw).hexdigest(),
+            self.INDEPENDENT_SOURCE_INDEX_SHA256,
+        )
+        self.assertEqual(len(review_raw), 35368)
+        self.assertEqual(
+            hashlib.sha256(review_raw).hexdigest(),
+            self.INDEPENDENT_PATCH_REVIEW_SHA256,
+        )
+        source = common.parse_json_bytes(source_raw, label="sealed source index")
+        review = common.parse_json_bytes(review_raw, label="sealed patch review")
+        self.assertEqual(source_raw, common.canonical_json_bytes(source))
+        self.assertEqual(review_raw, common.canonical_json_bytes(review))
+        self.assertEqual(
+            {
+                key: source[key]
+                for key in (
+                    "repository",
+                    "sourceTag",
+                    "sourceTagObject",
+                    "sourceCommit",
+                    "inventoryCommit",
+                    "digestAlgorithm",
+                )
+            },
+            {
+                "repository": "a1112/Mac-Win",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "digestAlgorithm": "sha256",
+            },
+        )
+        self.assertEqual(
+            review["source"],
+            {
+                "digestAlgorithm": "sha256",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "repository": "a1112/Mac-Win",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "sourceIndexSha256": self.INDEPENDENT_SOURCE_INDEX_SHA256,
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+            },
+        )
+        source_records = tuple(
+            asset for asset in source["assets"]
+            if asset["category"] == "patches"
+        )
+        review_records = tuple(review["records"])
+        self.assertEqual((len(source_records), len(review_records)), (11, 11))
+        source_paths = tuple(asset["sourcePath"] for asset in source_records)
+        self.assertEqual(
+            source_paths,
+            tuple(sorted(source_paths, key=lambda value: value.encode("ascii"))),
+        )
+        self.assertEqual(len({value.casefold() for value in source_paths}), 11)
+        self.assertEqual(
+            tuple(record["sourcePath"] for record in review_records), source_paths
+        )
+
+        evidence: dict[str, dict[str, object]] = {}
+        release = "Record patch-specific license evidence and repeat review."
+        for asset, record in zip(source_records, review_records, strict=True):
+            self.assertEqual(
+                {
+                    "sourcePath": record["sourcePath"],
+                    "sourceSha256": record["sourceSha256"],
+                    "gitBlobOid": record["gitBlobOid"],
+                    "gitMode": record["gitMode"],
+                    "byteSize": record["byteSize"],
+                },
+                {
+                    "sourcePath": asset["sourcePath"],
+                    "sourceSha256": asset["sha256"],
+                    "gitBlobOid": asset["gitBlobOid"],
+                    "gitMode": asset["gitMode"],
+                    "byteSize": asset["byteSize"],
+                },
+            )
+            self.assertEqual(record["patchLicense"], {"status": "unresolved"})
+            self.assertEqual(record["reviewDisposition"], "quarantined")
+            self.assertEqual(record["reason"], "missing-license")
+            self.assertEqual(record["releaseCondition"], release)
+            self.assertEqual(record["regressionProbeIds"], [])
+            object_relative = PurePosixPath(asset["objectPath"])
+            self.assertFalse(object_relative.is_absolute())
+            self.assertNotIn("..", object_relative.parts)
+            self.assertEqual(
+                object_relative.as_posix(),
+                f'objects/sha256/{asset["sha256"][:2]}/{asset["sha256"][2:]}',
+            )
+            patch_raw = (ROOT / "migration/macwin/source" / object_relative).read_bytes()
+            self.assertEqual(len(patch_raw), asset["byteSize"])
+            self.assertEqual(hashlib.sha256(patch_raw).hexdigest(), asset["sha256"])
+            evidence[asset["sourcePath"]] = {
+                "patchRaw": patch_raw,
+                "expected": {
+                    "action": "quarantine",
+                    "category": "patches",
+                    "evidenceLocators": [
+                        f'{asset["sourcePath"]}#patchLicense'
+                    ],
+                    "intendedOwner": asset["intendedOwner"],
+                    "outputKind": "patch-mapping",
+                    "reason": "missing-license",
+                    "releaseCondition": release,
+                    "schemaVersion": "1",
+                    "sourceCommit": asset["sourceCommit"],
+                    "sourceKind": asset["kind"],
+                    "sourcePath": asset["sourcePath"],
+                    "sourceRepository": "a1112/Mac-Win",
+                    "sourceSha256": asset["sha256"],
+                    "status": "quarantined",
+                    "targetIssue": "MW-ASSET-002",
+                },
+            }
+        return evidence
 
     def test_explain_accepts_an_exact_unique_output_path_alias(self) -> None:
         helper = MacWinRecipeConversionTests(methodName="runTest")
@@ -13886,8 +14054,60 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
     DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
     PROVENANCE_DOCUMENT = ROOT / "docs/migration/macwin-patch-provenance.md"
     DOCUMENT_SHA256 = "e2bc9fc159e67e6e5a00d7a1b7a49bf24989d798fa541623f89952e49f049f3b"
-    PROVENANCE_DOCUMENT_SHA256 = "7c223ab23d98e1008b8fa13e9a9bc47caabe22aca54c6af8186761edf801ea71"
+    PROVENANCE_DOCUMENT_SHA256 = "0a1387c3d03aa96c9caec9a43b2a5a2c151304f262e65c851fbcee4b26a0dd3d"
     MAX_DOCUMENT_BYTES = 1024 * 1024
+    PROVENANCE_SEALS = (
+        (
+            "migration/macwin/source/index.json",
+            101199,
+            "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+        ),
+        (
+            "migration/macwin/reviewed/patches.json",
+            35368,
+            "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783",
+        ),
+        (
+            "migration/macwin/generated/catalog.json",
+            7603,
+            "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
+        ),
+        (
+            "migration/macwin/generated/index.json",
+            34845,
+            "2c6a0447b4a27c8c0baf0da9dd45cad355db75a6a880e9b90434bc7b93cdf080",
+        ),
+        (
+            "migration/macwin/generated/mappings/bottle-schemas.json",
+            2637,
+            "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb",
+        ),
+        (
+            "migration/macwin/generated/mappings/patches.json",
+            21032,
+            "202c56f99c7f332a7b5c6b93b87baef66d1445ae3981954c23f2b6c7ea64edd1",
+        ),
+        (
+            "migration/macwin/generated/quarantine.json",
+            89656,
+            "ca0132b78ac4bae8ed00446194cd7e9712b37ebc2aea4087ebad695248e2b2e9",
+        ),
+    )
+    PROVENANCE_COMMANDS = (
+        "python -S -B -m unittest tests.test_macwin_asset_migration.MacWinPatchProvenanceTests tests.test_macwin_asset_migration.MacWinMigrationDocumentationTests tests.test_macwin_asset_migration.MacWinMigrationSideEffectTests tests.test_macwin_asset_migration.MacWinMigrationCliTests",
+        "python -B tools/convert_macwin_assets.py",
+        "python -B tools/convert_macwin_assets.py --check",
+        "python -B tools/convert_macwin_assets.py --write",
+        "python -B tools/convert_macwin_assets.py --write",
+        "python -B tools/convert_macwin_assets.py --explain patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+        "python -B scripts/validate_repository.py",
+        "git diff --check",
+        "python -S -B -m unittest tests.test_macwin_asset_migration",
+        "cargo fmt --all -- --check",
+        "cargo check --workspace --all-targets --locked",
+        "cargo test --workspace --all-targets --locked",
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    )
     REQUIRED_FACTS = (
         "repository: `a1112/Mac-Win`",
         "source tag: `mw-migration-baseline-db12d5e`",
@@ -13920,22 +14140,43 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
     def test_patch_provenance_document_binds_exact_committed_evidence(self) -> None:
         raw = self.PROVENANCE_DOCUMENT.read_bytes()
         text = self._validate_provenance_document(raw)
-        source_path = "migration/macwin/source/index.json"
-        review_path = "migration/macwin/reviewed/patches.json"
-        source_raw = (ROOT / source_path).read_bytes()
-        review_raw = (ROOT / review_path).read_bytes()
-        self.assertIn(
-            f"| `{source_path}` | {len(source_raw):,} | "
-            f"`{hashlib.sha256(source_raw).hexdigest()}` |",
-            text,
-        )
-        self.assertIn(
-            f"| `{review_path}` | {len(review_raw):,} | "
-            f"`{hashlib.sha256(review_raw).hexdigest()}` |",
-            text,
-        )
-        self.assertEqual(self._parse_output_rows(text), self._generated_rows())
+        self.assertEqual(self._parse_provenance_seal_rows(text), self.PROVENANCE_SEALS)
         self.assertEqual(self._parse_patch_review_rows(text), self._review_rows())
+        for path, byte_size, digest in self.PROVENANCE_SEALS:
+            committed = (ROOT / PurePosixPath(path)).read_bytes()
+            self.assertEqual((len(committed), hashlib.sha256(committed).hexdigest()), (byte_size, digest))
+
+    def test_provenance_semantics_reject_resealed_status_and_duplicate_row_forge(self) -> None:
+        raw = self.PROVENANCE_DOCUMENT.read_bytes()
+        patch_row = next(
+            line for line in raw.splitlines(keepends=True)
+            if line.startswith(b"| `patches/")
+        )
+        seal_row = next(
+            line for line in raw.splitlines(keepends=True)
+            if line.startswith(b"| `migration/macwin/generated/catalog.json`")
+        )
+        mutants = {
+            "numeric-status": raw + b"The current result is 3 converted + 5 deferred + 82 quarantined.\n",
+            "word-status": raw + b"There are three converted records.\n",
+            "table-status": raw + b"| converted | 3 |\n",
+            "duplicate-patch-row": raw + patch_row,
+            "duplicate-seal-row": raw + seal_row,
+            "extra-seal-row": raw + b"| `migration/macwin/generated/extra.json` | 1 | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |\n",
+            "extra-malformed-table-row": raw + b"| extra | invalid |\n",
+            "missing-command": raw.replace(
+                b"cargo fmt --all -- --check\n", b"", 1
+            ),
+            "closed-open-owner": raw.replace(
+                b"`MW-ARCH-001` remains open", b"`MW-ARCH-001` is closed", 1
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), self.assertRaises(ValueError):
+                self._validate_provenance_document(
+                    mutant,
+                    expected_sha256=hashlib.sha256(mutant).hexdigest(),
+                )
 
     def test_current_documents_have_one_status_and_visible_entry_points(self) -> None:
         paths = (
@@ -13978,7 +14219,9 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(line, attributes)
 
-    def _validate_provenance_document(self, raw: bytes) -> str:
+    def _validate_provenance_document(
+        self, raw: bytes, *, expected_sha256: str | None = None
+    ) -> str:
         if len(raw) > self.MAX_DOCUMENT_BYTES or b"\r" in raw:
             raise ValueError("patch provenance document transport is invalid")
         try:
@@ -13987,8 +14230,13 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             raise ValueError("patch provenance document is not UTF-8") from error
         if not text.endswith("\n") or text.startswith("\ufeff"):
             raise ValueError("patch provenance document framing is invalid")
-        if hashlib.sha256(raw).hexdigest() != self.PROVENANCE_DOCUMENT_SHA256:
+        seal = self.PROVENANCE_DOCUMENT_SHA256 if expected_sha256 is None else expected_sha256
+        if hashlib.sha256(raw).hexdigest() != seal:
             raise ValueError("patch provenance document whole-file seal changed")
+        self._validate_provenance_semantics(text)
+        return text
+
+    def _validate_provenance_semantics(self, text: str) -> None:
         required = (
             "11 patches -> 0 retained / 11 quarantined",
             "2 converted + 4 deferred + 84 quarantined",
@@ -14014,14 +14262,222 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         )
         if any(fact not in text for fact in required):
             raise ValueError("patch provenance facts are incomplete")
-        if self._parse_output_rows(text) != self._generated_rows():
-            raise ValueError("patch provenance generated seals are incomplete")
-        if self._parse_patch_review_rows(text) != self._review_rows():
+        unique_facts = (
+            "repository `a1112/Mac-Win`",
+            "source tag\n`mw-migration-baseline-db12d5e`",
+            "JASP tag `v0.97.1`",
+            "Wine annotated tag `wine-11.11`",
+            "Project license context is not patch-specific license evidence.",
+            "No patch was applied or executed.",
+            "missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained",
+            "Record patch-specific license evidence and repeat review.",
+        )
+        if any(text.count(fact) != 1 for fact in unique_facts):
+            raise ValueError("patch provenance identity facts are contradictory")
+        expected_oids = (
+            "9f10d003382ce7ffbb269376c03477e17516302f",
+            "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+            "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+            "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+            "b08651f36865a3e1d9300d792df322d2ee8a807e",
+            "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        )
+        actual_oids = tuple(
+            re.findall(r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])", text)
+        )
+        if actual_oids != expected_oids:
+            raise ValueError("patch provenance frozen identities are contradictory")
+        parsed_seals = self._parse_provenance_seal_rows(text)
+        parsed_review_rows = self._parse_patch_review_rows(text)
+        expected_review_rows = self._review_rows()
+        if parsed_seals != self.PROVENANCE_SEALS:
+            raise ValueError("patch provenance evidence seals are incomplete")
+        if parsed_review_rows != expected_review_rows:
             raise ValueError("patch provenance review rows are incomplete")
-        return text
+        table_lines = tuple(line for line in text.splitlines() if line.startswith("|"))
+        if table_lines != self._expected_provenance_table_lines(expected_review_rows):
+            raise ValueError("patch provenance tables are not closed")
+
+        global_claims = tuple(
+            tuple(map(int, match))
+            for match in re.findall(
+                r"\b(\d+) converted\s*\+\s*(\d+) deferred\s*\+\s*(\d+) quarantined\b",
+                text,
+            )
+        )
+        patch_claims = tuple(
+            tuple(map(int, match))
+            for match in re.findall(
+                r"\b(\d+) patches -> (\d+) retained / (\d+) quarantined\b",
+                text,
+            )
+        )
+        if global_claims != ((2, 4, 84),) or patch_claims != ((11, 0, 11),):
+            raise ValueError("patch provenance status summary is contradictory")
+        allowed = {
+            "converted": {2},
+            "deferred": {4},
+            "quarantined": {11, 84},
+            "retained": {0},
+        }
+        for value, status in re.findall(
+            r"\b(\d+)\s+(converted|deferred|quarantined|retained)\b", text
+        ):
+            if int(value) not in allowed[status]:
+                raise ValueError("patch provenance numeric status is contradictory")
+        for status, value in re.findall(
+            r"\b(converted|deferred|quarantined|retained)(?: records?)?\s*(?:[:=]|\|)\s*(\d+)\b",
+            text,
+        ):
+            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
+            if int(value) != expected[status]:
+                raise ValueError("patch provenance table status is contradictory")
+        for value, status in re.findall(
+            r"\b(\d+)\s*(?:\|)\s*(converted|deferred|quarantined|retained)\b",
+            text,
+        ):
+            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
+            if int(value) != expected[status]:
+                raise ValueError("patch provenance reverse table status is contradictory")
+        english = self._english_number_words()
+        number_words = "|".join(
+            re.escape(word).replace(r"\-", "[- ]")
+            for word in sorted(english, key=len, reverse=True)
+        )
+        for word, status in re.findall(
+            rf"\b({number_words})\s+(converted|deferred|quarantined|retained)\b",
+            text.casefold(),
+        ):
+            normalized = word.replace(" ", "-")
+            if normalized in english and english[normalized] not in allowed[status]:
+                raise ValueError("patch provenance word status is contradictory")
+        for status, word in re.findall(
+            rf"\b(converted|deferred|quarantined|retained)(?: records?)?\s*(?:is|are|[:=]|\|)\s*({number_words})\b",
+            text.casefold(),
+        ):
+            normalized = word.replace(" ", "-")
+            expected = {"converted": 2, "deferred": 4, "quarantined": 84, "retained": 0}
+            if normalized in english and english[normalized] != expected[status]:
+                raise ValueError("patch provenance reverse word status is contradictory")
+
+        fenced = re.findall(r"^```text\n(?P<body>.*?)^```$", text, flags=re.MULTILINE | re.DOTALL)
+        if len(fenced) != 1 or tuple(fenced[0].splitlines()) != self.PROVENANCE_COMMANDS:
+            raise ValueError("patch provenance verification commands are incomplete")
+        links = tuple(re.findall(r"\[[^\]]+\]\(([^)]+)\)", text))
+        if links != ("../../README.md", "../testing.md"):
+            raise ValueError("patch provenance entry links are incomplete")
+        issue_counts = {
+            issue: text.count(f"`{issue}`")
+            for issue in ("MW-ASSET-002", "MW-ASSET-003", "MW-ARCH-001")
+        }
+        if issue_counts != {"MW-ASSET-002": 2, "MW-ASSET-003": 2, "MW-ARCH-001": 1}:
+            raise ValueError("patch provenance issue ownership is contradictory")
+        for statement in (
+            "`MW-ASSET-002` owns this evidence result.",
+            "`MW-ASSET-003` remains open",
+            "`MW-ARCH-001` remains open",
+        ):
+            if text.count(statement) != 1:
+                raise ValueError("patch provenance open ownership is contradictory")
 
     @staticmethod
-    def _parse_patch_review_rows(text: str) -> dict[str, tuple[str, int, int, int, int, str, str]]:
+    def _english_number_words() -> dict[str, int]:
+        units = {
+            "zero": 0,
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+            "eleven": 11,
+            "twelve": 12,
+            "thirteen": 13,
+            "fourteen": 14,
+            "fifteen": 15,
+            "sixteen": 16,
+            "seventeen": 17,
+            "eighteen": 18,
+            "nineteen": 19,
+        }
+        tens = {
+            "twenty": 20,
+            "thirty": 30,
+            "forty": 40,
+            "fifty": 50,
+            "sixty": 60,
+            "seventy": 70,
+            "eighty": 80,
+            "ninety": 90,
+        }
+        words = {**units, **tens}
+        words.update(
+            {
+                f"{prefix}-{suffix}": base + value
+                for prefix, base in tens.items()
+                for suffix, value in units.items()
+                if 0 < value < 10
+            }
+        )
+        return words
+
+    @classmethod
+    def _expected_provenance_table_lines(
+        cls,
+        review_rows: tuple[tuple[str, str, int, int, int, int, str, str], ...],
+    ) -> tuple[str, ...]:
+        seal_lines = tuple(
+            f"| `{path}` | {byte_size:,} | `{digest}` |"
+            for path, byte_size, digest in cls.PROVENANCE_SEALS
+        )
+        review_lines = tuple(
+            f"| `{path}` | {purpose} | matched={matched}, mismatched={mismatched}, "
+            f"added={added}, unproven={unproven} | `{license_status}` | `{decision}` |"
+            for (
+                path,
+                purpose,
+                matched,
+                mismatched,
+                added,
+                unproven,
+                license_status,
+                decision,
+            ) in review_rows
+        )
+        return (
+            "| Evidence path | Bytes | SHA-256 |",
+            "| --- | ---: | --- |",
+            *seal_lines[:2],
+            "| Source path | Purpose | Base result | Patch license | Disposition |",
+            "| --- | --- | --- | --- | --- |",
+            *review_lines,
+            "| Path | Bytes | SHA-256 |",
+            "| --- | ---: | --- |",
+            *seal_lines[2:],
+        )
+
+    @staticmethod
+    def _parse_provenance_seal_rows(text: str) -> tuple[tuple[str, int, str], ...]:
+        matches = re.findall(
+            r"^\| `(?P<path>[^`]+)` \| (?P<size>[0-9][0-9,]*) "
+            r"\| `(?P<digest>[0-9a-f]{64})` \|$",
+            text,
+            flags=re.MULTILINE,
+        )
+        paths = tuple(path for path, _size, _digest in matches)
+        if len(paths) != len(set(paths)):
+            raise ValueError("patch provenance evidence row is duplicated")
+        return tuple(
+            (path, int(size.replace(",", "")), digest)
+            for path, size, digest in matches
+        )
+
+    @staticmethod
+    def _parse_patch_review_rows(text: str) -> tuple[tuple[str, str, int, int, int, int, str, str], ...]:
         matches = re.findall(
             r"^\| `(?P<path>patches/[^`]+\.patch)` \| (?P<purpose>[^|]+?) \| "
             r"matched=(?P<matched>\d+), mismatched=(?P<mismatched>\d+), "
@@ -14030,8 +14486,12 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             text,
             flags=re.MULTILINE,
         )
-        return {
-            path: (
+        paths = tuple(path for path, *_rest in matches)
+        if len(paths) != len(set(paths)) or len(paths) != len({path.casefold() for path in paths}):
+            raise ValueError("patch provenance review row is duplicated")
+        return tuple(
+            (
+                path,
                 purpose,
                 int(matched),
                 int(mismatched),
@@ -14041,24 +14501,75 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
                 decision,
             )
             for path, purpose, matched, mismatched, added, unproven, license_status, decision in matches
-        }
+        )
 
-    @staticmethod
-    def _review_rows() -> dict[str, tuple[str, int, int, int, int, str, str]]:
-        review = json.loads((ROOT / "migration/macwin/reviewed/patches.json").read_bytes())
-        rows = {}
-        for record in review["records"]:
+    @classmethod
+    def _review_rows(cls) -> tuple[tuple[str, str, int, int, int, int, str, str], ...]:
+        common = _load_macwin_asset_common()
+        source_raw = (ROOT / "migration/macwin/source/index.json").read_bytes()
+        review_raw = (ROOT / "migration/macwin/reviewed/patches.json").read_bytes()
+        if (
+            len(source_raw) != cls.PROVENANCE_SEALS[0][1]
+            or hashlib.sha256(source_raw).hexdigest() != cls.PROVENANCE_SEALS[0][2]
+            or len(review_raw) != cls.PROVENANCE_SEALS[1][1]
+            or hashlib.sha256(review_raw).hexdigest() != cls.PROVENANCE_SEALS[1][2]
+        ):
+            raise ValueError("patch provenance source evidence seal changed")
+        source = common.parse_json_bytes(source_raw, label="sealed source index")
+        review = common.parse_json_bytes(review_raw, label="sealed patch review")
+        if source_raw != common.canonical_json_bytes(source) or review_raw != common.canonical_json_bytes(review):
+            raise ValueError("patch provenance source evidence is noncanonical")
+        source_records = tuple(
+            asset for asset in source["assets"] if asset["category"] == "patches"
+        )
+        review_records = tuple(review["records"])
+        source_paths = tuple(asset["sourcePath"] for asset in source_records)
+        if (
+            len(source_records) != 11
+            or len(review_records) != 11
+            or source_paths != tuple(sorted(source_paths, key=lambda value: value.encode("ascii")))
+            or len({path.casefold() for path in source_paths}) != 11
+            or tuple(record["sourcePath"] for record in review_records) != source_paths
+        ):
+            raise ValueError("patch provenance source review order is invalid")
+        rows = []
+        for asset, record in zip(source_records, review_records, strict=True):
+            if (
+                record["sourceSha256"] != asset["sha256"]
+                or record["gitBlobOid"] != asset["gitBlobOid"]
+                or record["gitMode"] != asset["gitMode"]
+                or record["byteSize"] != asset["byteSize"]
+            ):
+                raise ValueError("patch provenance source review identity changed")
             counts = collections.Counter(item["result"] for item in record["preimages"])
-            rows[record["sourcePath"]] = (
+            if record["patchLicense"]["status"] != "reviewed":
+                derived = "quarantined / missing-license"
+            elif not record["preimages"] or any(
+                item["result"] != "matched" for item in record["preimages"]
+            ):
+                derived = "quarantined / unverified-base"
+            elif record["upstreamStatus"] in {"conflicting", "unresolved"} or any(
+                item["kind"] in {"external-dependency", "development-dependency"}
+                for item in record["evidenceAndDependencies"]
+            ):
+                derived = "quarantined / conflict"
+            elif record["upstreamStatus"] in {"upstreamed", "superseded"}:
+                derived = "quarantined / upstreamed-or-obsolete"
+            else:
+                derived = "retained / retained"
+            if f'{record["reviewDisposition"]} / {record["reason"]}' != derived:
+                raise ValueError("patch provenance derived disposition changed")
+            rows.append((
+                record["sourcePath"],
                 record["purpose"],
                 counts["matched"],
                 counts["mismatched"],
                 counts["added"],
                 counts["unproven"],
                 record["patchLicense"]["status"],
-                f'{record["reviewDisposition"]} / {record["reason"]}',
-            )
-        return rows
+                derived,
+            ))
+        return tuple(rows)
 
     def test_raw_document_seal_rejects_transport_and_semantic_decoys(self) -> None:
         raw = self.DOCUMENT.read_bytes()
