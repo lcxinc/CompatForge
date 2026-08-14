@@ -2976,7 +2976,8 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             binding, errors = validator._validated_patch_review_binding()
             self.assertEqual(errors, [])
             self.assertIsNotNone(binding)
-            binding.revalidate()
+            with binding:
+                binding.revalidate()
 
     def test_patch_review_binding_rejects_a_canonical_digest_mutation(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -3681,13 +3682,90 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             binding, errors = validator._validated_patch_review_binding()
             self.assertEqual(errors, [])
             self.assertIsNotNone(binding)
-            path = temporary_root / self.REVIEW_RELATIVE
-            raw = path.read_bytes()
-            metadata = path.stat()
-            path.write_bytes(raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:])
-            os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-            with self.assertRaises(ValueError):
-                binding.revalidate()
+            with binding:
+                path = temporary_root / self.REVIEW_RELATIVE
+                raw = path.read_bytes()
+                metadata = path.stat()
+                try:
+                    path.write_bytes(
+                        raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:]
+                    )
+                    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+                except OSError:
+                    pass
+                if path.read_bytes() == raw:
+                    binding.revalidate()
+                else:
+                    with self.assertRaises(ValueError):
+                        binding.revalidate()
+
+    def test_patch_review_binding_rejects_reviewed_root_substitution_window(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-root-race-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            binding, errors = validator._validated_patch_review_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(binding)
+            with binding:
+                reviewed = temporary_root / "migration/macwin/reviewed"
+                saved = reviewed.with_name("reviewed-saved")
+                leaf_name = "patches.json"
+                original_verify = binding.verify_path
+                blocked = False
+                exercised = False
+
+                def substitute_root(path: Path) -> bytes:
+                    nonlocal blocked, exercised
+                    root_moved = False
+                    forged_created = False
+                    leaf_moved = False
+
+                    def restore() -> None:
+                        nonlocal forged_created, leaf_moved, root_moved
+                        if leaf_moved:
+                            (reviewed / leaf_name).replace(saved / leaf_name)
+                            leaf_moved = False
+                        if forged_created:
+                            reviewed.rmdir()
+                            forged_created = False
+                        if root_moved:
+                            saved.replace(reviewed)
+                            root_moved = False
+
+                    try:
+                        reviewed.replace(saved)
+                        root_moved = True
+                        reviewed.mkdir()
+                        forged_created = True
+                        (saved / leaf_name).replace(reviewed / leaf_name)
+                        leaf_moved = True
+                        exercised = True
+                    except OSError:
+                        blocked = True
+                        restore()
+                        return original_verify(path)
+                    try:
+                        return original_verify(path)
+                    finally:
+                        restore()
+
+                rejected = False
+                with mock.patch.object(
+                    binding, "verify_path", side_effect=substitute_root
+                ):
+                    try:
+                        binding.revalidate()
+                    except (OSError, ValueError):
+                        rejected = True
+                self.assertTrue(blocked or rejected)
+                self.assertTrue(blocked or exercised)
+
 
     def test_independent_patch_oracle_rejects_mapping_and_quarantine_mutants(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -3842,26 +3920,183 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
             validator.ROOT = temporary_root
             review_path = temporary_root / self.REVIEW_RELATIVE
+            original_raw = review_path.read_bytes()
             original_scan = validator._scan_developer_paths
             mutated = False
+            attempted = False
+            blocked = False
 
             def mutate_after_scan(*arguments, **options):
-                nonlocal mutated
+                nonlocal attempted, blocked, mutated
                 result = original_scan(*arguments, **options)
-                if not mutated:
-                    raw = review_path.read_bytes()
-                    review_path.write_bytes(raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:])
-                    mutated = True
+                if not attempted:
+                    attempted = True
+                    try:
+                        review_path.write_bytes(
+                            original_raw[:-2]
+                            + bytes([original_raw[-2] ^ 1])
+                            + original_raw[-1:]
+                        )
+                        mutated = True
+                    except OSError:
+                        blocked = True
                 return result
 
             with mock.patch.object(
                 validator, "_scan_developer_paths", side_effect=mutate_after_scan
             ):
                 errors = validator.validate_no_developer_paths()
-            self.assertTrue(mutated)
-            self.assertIn(
-                "Mac-Win patch review evidence validation failed", errors
-            )
+            self.assertTrue(attempted)
+            if blocked:
+                self.assertFalse(mutated)
+                self.assertEqual(review_path.read_bytes(), original_raw)
+                self.assertEqual(errors, [])
+            else:
+                self.assertTrue(mutated)
+                self.assertIn(
+                    "Mac-Win patch review evidence validation failed", errors
+                )
+
+    def test_repository_scan_revalidates_review_after_final_ordinary_scan(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-post-ordinary-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            review_path = temporary_root / self.REVIEW_RELATIVE
+            original_raw = review_path.read_bytes()
+            original_scan = validator._scan_developer_paths
+            calls = 0
+            attempted = False
+            blocked = False
+
+            class PostOrdinaryMutation:
+                def __init__(self, binding) -> None:
+                    self.binding = binding
+
+                def revalidate(self) -> None:
+                    nonlocal calls, attempted, blocked
+                    self.binding.revalidate()
+                    calls += 1
+                    if calls == 2:
+                        attempted = True
+                        try:
+                            review_path.write_bytes(b"{}\n")
+                        except OSError:
+                            blocked = True
+
+            def wrap_ordinary_binding(*arguments, **options):
+                errors, binding = original_scan(*arguments, **options)
+                return errors, PostOrdinaryMutation(binding)
+
+            with mock.patch.object(
+                validator,
+                "_scan_developer_paths",
+                side_effect=wrap_ordinary_binding,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertEqual(calls, 2)
+            self.assertTrue(attempted)
+            if blocked:
+                self.assertEqual(review_path.read_bytes(), original_raw)
+                self.assertEqual(errors, [])
+            else:
+                self.assertEqual(review_path.read_bytes(), b"{}\n")
+                self.assertIn(
+                    "Mac-Win patch review evidence validation failed", errors
+                )
+
+    def test_repository_scan_closes_review_handles_on_success_and_failure(
+        self,
+    ) -> None:
+        for case in ("success", "scan-failure"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-patch-review-close-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+                validator = MigrationLayoutTests._load_repository_validator()
+                validator.ROOT = temporary_root
+                original_binding = validator._validated_patch_review_binding
+                captured = []
+
+                def capture_binding():
+                    binding, errors = original_binding()
+                    if binding is not None:
+                        captured.append(binding)
+                    return binding, errors
+
+                with mock.patch.object(
+                    validator,
+                    "_validated_patch_review_binding",
+                    side_effect=capture_binding,
+                ):
+                    if case == "scan-failure":
+                        scan_context = mock.patch.object(
+                            validator,
+                            "_scan_developer_paths",
+                            side_effect=validator._DeveloperPathScanError(),
+                        )
+                    else:
+                        scan_context = contextlib.nullcontext()
+                    with scan_context:
+                        errors = validator.validate_no_developer_paths()
+                self.assertEqual(len(captured), 1)
+                binding = captured[0]
+                self.assertIsNone(binding.parent_descriptor)
+                self.assertIsNone(binding.root_descriptor)
+                self.assertIsNone(binding.leaf_descriptor)
+                with self.assertRaises(ValueError):
+                    binding.revalidate()
+                if case == "success":
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertEqual(
+                        errors, [validator.DEVELOPER_PATH_VALIDATION_ERROR]
+                    )
+                reviewed = temporary_root / "migration/macwin/reviewed"
+                moved = reviewed.with_name("reviewed-moved")
+                reviewed.replace(moved)
+                moved.replace(reviewed)
+
+    def test_patch_review_binding_construction_closes_handles_on_interrupt(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        validator.ROOT = ROOT
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        with mock.patch.object(
+            validator,
+            "_bind_patch_review_directory",
+            side_effect=[("parent-handle", (1, 1)), ("root-handle", (2, 2))],
+        ), mock.patch.object(
+            validator, "_read_held_patch_review_directory"
+        ), mock.patch.object(
+            validator,
+            "_open_patch_review_leaf",
+            return_value=(123, (3, 3, len(raw), 1, 4)),
+        ), mock.patch.object(
+            validator, "_read_held_patch_review_leaf", return_value=raw
+        ), mock.patch.object(
+            validator,
+            "_canonical_patch_review_json",
+            side_effect=KeyboardInterrupt("injected review interrupt"),
+        ), mock.patch.object(
+            validator, "_close_validator_directory"
+        ) as close_directory, mock.patch.object(
+            validator.os, "close"
+        ) as close_leaf:
+            with self.assertRaises(KeyboardInterrupt):
+                validator._validated_patch_review_binding()
+        close_leaf.assert_called_once_with(123)
+        self.assertEqual(
+            close_directory.call_args_list,
+            [mock.call("root-handle"), mock.call("parent-handle")],
+        )
 
 
 class MacWinConversionModelTests(unittest.TestCase):

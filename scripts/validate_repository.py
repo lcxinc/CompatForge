@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 
 if os.name == "nt":
     import ctypes
+    import msvcrt
     from ctypes import wintypes
 
     _VALIDATOR_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -468,6 +469,13 @@ def _filesystem_identity(
     )
 
 
+def _held_patch_review_leaf_identity(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    identity = _filesystem_identity(metadata)
+    return identity[:5]
+
+
 def _validate_bound_path_chain(path: Path) -> None:
     absolute = path.absolute()
     current = Path(absolute.anchor)
@@ -692,76 +700,368 @@ def _revalidate_exact_generated_tree(
             raise ValueError("generated evidence tree changed")
 
 
+def _bind_patch_review_directory(
+    path: Path,
+    *,
+    parent_descriptor: object | None = None,
+    name: str | None = None,
+) -> tuple[object, tuple[int, int]]:
+    before = path.lstat()
+    if _ordinary_entry_kind(before) != "directory":
+        raise ValueError("patch review evidence tree is invalid")
+    identity = _directory_identity(before)
+    if os.name == "nt" or parent_descriptor is None:
+        descriptor, _opened_identity = _bind_validator_directory(path)
+    else:
+        if type(name) is not str or not name:
+            raise ValueError("patch review evidence tree is invalid")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _directory_identity(opened) != identity
+        ):
+            _close_validator_directory(descriptor)
+            raise ValueError("patch review evidence tree identity changed")
+    after = path.lstat()
+    if _ordinary_entry_kind(after) != "directory" or _directory_identity(
+        after
+    ) != identity:
+        _close_validator_directory(descriptor)
+        raise ValueError("patch review evidence tree identity changed")
+    return descriptor, identity
+
+
+def _open_patch_review_leaf(
+    root: Path,
+    root_descriptor: object,
+    name: str,
+) -> tuple[int, tuple[int, int, int, int, int]]:
+    path = root / name
+    before = path.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_reparse_tag", 0)
+        or before.st_nlink != 1
+        or before.st_size > MAX_PATCH_REVIEW_BYTES
+    ):
+        raise ValueError("patch review evidence leaf is invalid")
+    descriptor: int | None = None
+    handle: object | None = None
+    try:
+        if os.name == "nt":
+            handle = _VALIDATOR_CREATE_FILE(
+                str(path),
+                0x80000000 | 0x0080,
+                0x00000001,
+                None,
+                3,
+                0x00200000 | 0x08000000,
+                None,
+            )
+            if handle == _VALIDATOR_INVALID_HANDLE:
+                raise ValueError("patch review evidence leaf could not be bound")
+            descriptor = msvcrt.open_osfhandle(
+                int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+            handle = None
+        else:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_descriptor,
+            )
+        opened = os.fstat(descriptor)
+        identity = _held_patch_review_leaf_identity(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(opened.st_mode)
+            or getattr(opened, "st_reparse_tag", 0)
+            or opened.st_nlink != 1
+            or opened.st_size > MAX_PATCH_REVIEW_BYTES
+            or identity != _held_patch_review_leaf_identity(before)
+        ):
+            raise ValueError("patch review evidence leaf identity changed")
+        after = path.lstat()
+        if _held_patch_review_leaf_identity(after) != identity:
+            raise ValueError("patch review evidence leaf identity changed")
+        return descriptor, identity
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        elif handle is not None and handle != _VALIDATOR_INVALID_HANDLE:
+            _VALIDATOR_CLOSE_HANDLE(handle)
+        raise
+
+
+def _read_held_patch_review_leaf(
+    descriptor: int,
+    expected_identity: tuple[int, int, int, int, int],
+) -> bytes:
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_reparse_tag", 0)
+        or before.st_nlink != 1
+        or before.st_size > MAX_PATCH_REVIEW_BYTES
+        or _held_patch_review_leaf_identity(before) != expected_identity
+    ):
+        raise ValueError("patch review evidence leaf changed")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(
+            descriptor,
+            min(64 * 1024, MAX_PATCH_REVIEW_BYTES + 1 - total),
+        )
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_PATCH_REVIEW_BYTES:
+            raise ValueError("patch review evidence exceeds the byte limit")
+        chunks.append(chunk)
+    after = os.fstat(descriptor)
+    if _held_patch_review_leaf_identity(after) != expected_identity:
+        raise ValueError("patch review evidence leaf changed")
+    return b"".join(chunks)
+
+
+def _read_held_patch_review_directory(
+    path: Path,
+    descriptor: object,
+    expected_identity: tuple[int, int],
+    expected_children: tuple[tuple[str, str], ...],
+) -> None:
+    if os.name != "nt":
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _directory_identity(opened) != expected_identity
+        ):
+            raise ValueError("patch review evidence tree changed")
+        scan_target: object = descriptor
+    else:
+        scan_target = path
+    entries: list[tuple[str, str]] = []
+    with os.scandir(scan_target) as iterator:
+        for entry in iterator:
+            if len(entries) >= len(expected_children):
+                raise ValueError("patch review evidence tree changed")
+            entries.append(
+                (
+                    entry.name,
+                    _ordinary_entry_kind(entry.stat(follow_symlinks=False)),
+                )
+            )
+    actual = tuple(sorted(entries, key=lambda item: item[0].encode("utf-8")))
+    current = path.lstat()
+    if (
+        actual != expected_children
+        or _ordinary_entry_kind(current) != "directory"
+        or _directory_identity(current) != expected_identity
+    ):
+        raise ValueError("patch review evidence tree changed")
+    if os.name != "nt":
+        final = os.fstat(descriptor)
+        if _directory_identity(final) != expected_identity:
+            raise ValueError("patch review evidence tree changed")
+
+
 class _PatchReviewBinding:
-    """Bind the one-leaf reviewed tree through every later repository scan."""
+    """Hold the exact reviewed root and leaf through every repository scan."""
 
     def __init__(
         self,
+        parent: Path,
+        parent_descriptor: object,
+        parent_identity: tuple[int, int],
         root: Path,
+        root_descriptor: object,
         root_identity: tuple[int, int],
         expected_children: tuple[tuple[str, str], ...],
         leaf: Path,
+        leaf_descriptor: int,
         raw: bytes,
-        leaf_identity: tuple[int, int, int, int, int, int],
+        leaf_identity: tuple[int, int, int, int, int],
     ) -> None:
+        self.parent = parent
+        self.parent_descriptor: object | None = parent_descriptor
+        self.parent_identity = parent_identity
         self.root = root
+        self.root_descriptor: object | None = root_descriptor
         self.root_identity = root_identity
         self.expected_children = expected_children
         self.leaf = leaf
+        self.leaf_descriptor: int | None = leaf_descriptor
         self.raw = raw
         self.leaf_identity = leaf_identity
+
+    def close(self) -> None:
+        leaf_descriptor = self.leaf_descriptor
+        root_descriptor = self.root_descriptor
+        parent_descriptor = self.parent_descriptor
+        self.leaf_descriptor = None
+        self.root_descriptor = None
+        self.parent_descriptor = None
+        for descriptor, close in (
+            (parent_descriptor, _close_validator_directory),
+            (root_descriptor, _close_validator_directory),
+            (leaf_descriptor, os.close),
+        ):
+            if descriptor is not None:
+                try:
+                    close(descriptor)
+                except OSError:
+                    pass
+
+    def __enter__(self) -> _PatchReviewBinding:
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.close()
 
     def contains(self, path: Path) -> bool:
         return path.absolute() == self.leaf
 
+    def _require_open(self) -> tuple[object, int]:
+        if self.root_descriptor is None or self.leaf_descriptor is None:
+            raise ValueError("patch review evidence binding is closed")
+        return self.root_descriptor, self.leaf_descriptor
+
     def verify_path(self, path: Path) -> bytes:
         if path.absolute() != self.leaf:
             raise ValueError("patch review evidence path is not authenticated")
-        raw, identity = _read_bound_regular_file(path, MAX_PATCH_REVIEW_BYTES)
-        if raw != self.raw or identity != self.leaf_identity:
+        root_descriptor, leaf_descriptor = self._require_open()
+        raw = _read_held_patch_review_leaf(leaf_descriptor, self.leaf_identity)
+        if raw != self.raw:
             raise ValueError("patch review evidence changed")
+        if os.name == "nt":
+            metadata = self.leaf.lstat()
+        else:
+            metadata = os.stat(
+                self.leaf.name,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_reparse_tag", 0)
+            or _held_patch_review_leaf_identity(metadata) != self.leaf_identity
+        ):
+            raise ValueError("patch review evidence path changed")
         return raw
 
     def revalidate(self) -> None:
-        if (
-            _read_exact_generated_directory(self.root, self.expected_children)
-            != self.root_identity
-        ):
-            raise ValueError("patch review evidence tree changed")
+        root_descriptor, _leaf_descriptor = self._require_open()
+        _read_held_patch_review_directory(
+            self.root,
+            root_descriptor,
+            self.root_identity,
+            self.expected_children,
+        )
         self.verify_path(self.leaf)
+        _read_held_patch_review_directory(
+            self.root,
+            root_descriptor,
+            self.root_identity,
+            self.expected_children,
+        )
+        parent = self.parent.lstat()
         if (
-            _read_exact_generated_directory(self.root, self.expected_children)
-            != self.root_identity
+            _ordinary_entry_kind(parent) != "directory"
+            or _directory_identity(parent) != self.parent_identity
         ):
-            raise ValueError("patch review evidence tree changed")
+            raise ValueError("patch review evidence parent changed")
+        if os.name != "nt" and self.parent_descriptor is not None:
+            opened_parent = os.fstat(self.parent_descriptor)
+            if _directory_identity(opened_parent) != self.parent_identity:
+                raise ValueError("patch review evidence parent changed")
 
 
 def _validated_patch_review_binding() -> tuple[_PatchReviewBinding | None, list[str]]:
-    """Authenticate the exact canonical reviewed policy independently."""
+    """Authenticate and hold the exact canonical reviewed policy independently."""
 
+    parent_descriptor: object | None = None
+    root_descriptor: object | None = None
+    leaf_descriptor: int | None = None
+    binding: _PatchReviewBinding | None = None
     try:
-        root = (ROOT / "migration" / "macwin" / "reviewed").absolute()
+        parent = (ROOT / "migration" / "macwin").absolute()
+        _validate_bound_path_chain(parent)
+        parent_descriptor, parent_identity = _bind_patch_review_directory(parent)
+        root = parent / "reviewed"
+        root_descriptor, root_identity = _bind_patch_review_directory(
+            root,
+            parent_descriptor=parent_descriptor,
+            name="reviewed",
+        )
         expected_children = tuple(
             sorted(PATCH_REVIEW_TREE.items(), key=lambda item: item[0].encode("ascii"))
         )
-        root_identity = _read_exact_generated_directory(root, expected_children)
-        leaf = (ROOT / PurePosixPath(PATCH_REVIEW_PATH)).absolute()
-        raw, leaf_identity = _read_bound_regular_file(
-            leaf, MAX_PATCH_REVIEW_BYTES
+        _read_held_patch_review_directory(
+            root,
+            root_descriptor,
+            root_identity,
+            expected_children,
         )
+        review_relative = PurePosixPath(PATCH_REVIEW_PATH)
+        if review_relative.parts != (
+            "migration",
+            "macwin",
+            "reviewed",
+            "patches.json",
+        ):
+            raise ValueError("patch review evidence path is invalid")
+        leaf = (ROOT / review_relative).absolute()
+        if leaf.parent != root:
+            raise ValueError("patch review evidence path is invalid")
+        leaf_descriptor, leaf_identity = _open_patch_review_leaf(
+            root, root_descriptor, leaf.name
+        )
+        raw = _read_held_patch_review_leaf(leaf_descriptor, leaf_identity)
         if hashlib.sha256(raw).hexdigest() != PATCH_REVIEW_DOCUMENT_SHA256:
             raise ValueError("patch review evidence digest is invalid")
         _canonical_patch_review_json(raw)
         binding = _PatchReviewBinding(
+            parent,
+            parent_descriptor,
+            parent_identity,
             root,
+            root_descriptor,
             root_identity,
             expected_children,
             leaf,
+            leaf_descriptor,
             raw,
             leaf_identity,
         )
+        parent_descriptor = None
+        root_descriptor = None
+        leaf_descriptor = None
         binding.revalidate()
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except BaseException as error:
+        if binding is not None:
+            binding.close()
+        if leaf_descriptor is not None:
+            os.close(leaf_descriptor)
+        if root_descriptor is not None:
+            _close_validator_directory(root_descriptor)
+        if parent_descriptor is not None:
+            _close_validator_directory(parent_descriptor)
+        if not isinstance(error, (OSError, RuntimeError, TypeError, ValueError)):
+            raise
         return None, ["Mac-Win patch review evidence validation failed"]
     return binding, []
 
@@ -2117,22 +2417,10 @@ def _unbound_developer_path_scan() -> list[str]:
     return errors
 
 
-def validate_no_developer_paths() -> list[str]:
-    source_binding, errors = _validated_macwin_source_pack_binding()
-    if source_binding is None:
-        return [*errors, *_unbound_developer_path_scan()]
-    patch_review_binding, patch_review_errors = _validated_patch_review_binding()
-    if patch_review_binding is None:
-        try:
-            scanned_errors, ordinary_binding = _scan_developer_paths(
-                source_binding, None, None
-            )
-            source_binding.revalidate()
-            ordinary_binding.revalidate()
-            source_binding.revalidate()
-        except (_DeveloperPathScanError, OSError, RuntimeError, TypeError, ValueError):
-            return [*patch_review_errors, DEVELOPER_PATH_VALIDATION_ERROR]
-        return [*patch_review_errors, *scanned_errors]
+def _validate_with_patch_review_binding(
+    source_binding: object,
+    patch_review_binding: _PatchReviewBinding,
+) -> list[str]:
     generated_binding, generated_errors = (
         _validated_macwin_generated_evidence_binding(
             source_binding, patch_review_binding
@@ -2144,10 +2432,9 @@ def validate_no_developer_paths() -> list[str]:
                 source_binding, None, patch_review_binding
             )
             source_binding.revalidate()
-            patch_review_binding.revalidate()
             ordinary_binding.revalidate()
-            patch_review_binding.revalidate()
             source_binding.revalidate()
+            patch_review_binding.revalidate()
         except _DeveloperPathScanError:
             return [*generated_errors, DEVELOPER_PATH_VALIDATION_ERROR]
         except (OSError, RuntimeError, TypeError, ValueError):
@@ -2209,17 +2496,41 @@ def validate_no_developer_paths() -> list[str]:
             *_unbound_developer_path_scan(),
         ]
     try:
+        ordinary_binding.revalidate()
+    except _DeveloperPathScanError:
+        return [DEVELOPER_PATH_VALIDATION_ERROR]
+    try:
         patch_review_binding.revalidate()
     except (OSError, RuntimeError, TypeError, ValueError):
         return [
             "Mac-Win patch review evidence validation failed",
             *_unbound_developer_path_scan(),
         ]
-    try:
-        ordinary_binding.revalidate()
-    except _DeveloperPathScanError:
-        return [DEVELOPER_PATH_VALIDATION_ERROR]
     return scanned_errors
+
+
+def validate_no_developer_paths() -> list[str]:
+    source_binding, errors = _validated_macwin_source_pack_binding()
+    if source_binding is None:
+        return [*errors, *_unbound_developer_path_scan()]
+    patch_review_binding, patch_review_errors = _validated_patch_review_binding()
+    if patch_review_binding is None:
+        try:
+            scanned_errors, ordinary_binding = _scan_developer_paths(
+                source_binding, None, None
+            )
+            source_binding.revalidate()
+            ordinary_binding.revalidate()
+            source_binding.revalidate()
+        except (_DeveloperPathScanError, OSError, RuntimeError, TypeError, ValueError):
+            return [*patch_review_errors, DEVELOPER_PATH_VALIDATION_ERROR]
+        return [*patch_review_errors, *scanned_errors]
+    try:
+        return _validate_with_patch_review_binding(
+            source_binding, patch_review_binding
+        )
+    finally:
+        patch_review_binding.close()
 
 
 def validate_pe_inspection_fixture() -> list[str]:
