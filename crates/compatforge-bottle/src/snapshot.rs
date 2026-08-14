@@ -1,11 +1,11 @@
 use crate::contract::{LegacyBottleManifest, MAX_MANIFEST_BYTES};
-use crate::digest::{copy_and_digest, digest_reader, sha256_bytes};
+use crate::digest::{canonical_compact_json, canonical_pretty_json_lf, copy_and_digest, digest_reader, sha256_bytes};
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_id;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAX_PATH_BYTES: usize = 4096;
@@ -94,9 +94,11 @@ impl BottleStore {
         }
 
         let source_root = fs::canonicalize(source).map_err(|_| unsafe_entry())?;
-        if self.root.is_absolute() && self.root.starts_with(&source_root) {
+        let store_root = resolve_store_root_without_writing(&self.root)?;
+        if store_root == source_root || store_root.starts_with(&source_root) || source_root.starts_with(&store_root) {
             return Err(unsafe_entry());
         }
+        let store = Self { root: store_root };
 
         let mut source_entries = Vec::new();
         let mut total_file_bytes = 0_u64;
@@ -124,7 +126,7 @@ impl BottleStore {
             match source_entry {
                 SourceEntry::Directory(path) => snapshot_entries.push(SnapshotEntry::Directory { path }),
                 SourceEntry::File(file) => {
-                    let digest = self.publish_object(&file)?;
+                    let digest = store.publish_object(&file)?;
                     snapshot_entries.push(SnapshotEntry::File {
                         path: file.relative_path,
                         size: file.size,
@@ -143,18 +145,18 @@ impl BottleStore {
             total_file_bytes,
         };
         snapshot.validate().map_err(|_| unsafe_entry())?;
-        self.verify_legacy_manifest_object(&snapshot)
+        store
+            .verify_legacy_manifest_object(&snapshot)
             .map_err(|_| source_changed())?;
 
-        let compact = serde_json::to_vec(&snapshot).map_err(|_| transaction_failed())?;
+        let compact = canonical_compact_json(&snapshot).map_err(|_| transaction_failed())?;
         let snapshot_digest = sha256_bytes(&compact);
-        let mut published = serde_json::to_vec_pretty(&snapshot).map_err(|_| transaction_failed())?;
-        published.push(b'\n');
+        let published = canonical_pretty_json_lf(&snapshot).map_err(|_| transaction_failed())?;
         if published.len() > MAX_SNAPSHOT_MANIFEST_BYTES {
             return Err(unsafe_entry());
         }
-        self.publish_snapshot(&snapshot_digest, &published)?;
-        self.verify_snapshot(&snapshot_digest)?;
+        store.publish_snapshot(&snapshot_digest, &published)?;
+        store.verify_snapshot(&snapshot_digest)?;
 
         Ok(SnapshotReceipt {
             bottle_id: snapshot.bottle_id,
@@ -182,12 +184,11 @@ impl BottleStore {
         let snapshot: BottleSnapshot = serde_json::from_slice(&bytes).map_err(|_| snapshot_corrupt())?;
         snapshot.validate()?;
 
-        let compact = serde_json::to_vec(&snapshot).map_err(|_| snapshot_corrupt())?;
+        let compact = canonical_compact_json(&snapshot).map_err(|_| snapshot_corrupt())?;
         if sha256_bytes(&compact) != digest {
             return Err(snapshot_corrupt());
         }
-        let mut canonical = serde_json::to_vec_pretty(&snapshot).map_err(|_| snapshot_corrupt())?;
-        canonical.push(b'\n');
+        let canonical = canonical_pretty_json_lf(&snapshot).map_err(|_| snapshot_corrupt())?;
         if bytes != canonical {
             return Err(snapshot_corrupt());
         }
@@ -384,6 +385,68 @@ fn collect_source_entries(
     Ok(())
 }
 
+fn resolve_store_root_without_writing(root: &Path) -> Result<PathBuf, BottleMigrationError> {
+    if root.as_os_str().is_empty() {
+        return Err(unsafe_entry());
+    }
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|_| unsafe_entry())?.join(root)
+    };
+    let normalized = normalize_absolute_path(&absolute)?;
+
+    let mut existing = normalized.clone();
+    let mut missing = Vec::new();
+    loop {
+        match fs::symlink_metadata(&existing) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() {
+                    return Err(unsafe_entry());
+                }
+                let mut resolved = fs::canonicalize(&existing).map_err(|_| unsafe_entry())?;
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let component = existing.file_name().ok_or_else(unsafe_entry)?.to_owned();
+                missing.push(component);
+                if !existing.pop() {
+                    return Err(unsafe_entry());
+                }
+            }
+            Err(_) => return Err(unsafe_entry()),
+        }
+    }
+}
+
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf, BottleMigrationError> {
+    if !path.is_absolute() {
+        return Err(unsafe_entry());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(unsafe_entry());
+                }
+            }
+        }
+    }
+    if normalized.is_absolute() {
+        Ok(normalized)
+    } else {
+        Err(unsafe_entry())
+    }
+}
+
 fn checked_regular_file_size(size: u64, total: &mut u64) -> Result<(), BottleMigrationError> {
     if size > MAX_FILE_BYTES {
         return Err(unsafe_entry());
@@ -521,7 +584,39 @@ mod tests {
     const PAYLOAD: &[u8] = b"public fixture\n";
     const MANIFEST_DIGEST: &str = "sha256:fded28721427e68a8055a2f21a3de49f18f6f40eef790ddd0e8aeae7679b64bd";
     const PAYLOAD_DIGEST: &str = "sha256:d3b26e1f1ce13bde26578063b679fab4dbba401f23bc8ed938f8f4d5713f5048";
-    const SNAPSHOT_DIGEST: &str = "sha256:533f0d5b4c28c3249d58cdc38d93baa5a5393e76b456824479ac005c9ba12faf";
+    const SNAPSHOT_DIGEST: &str = "sha256:8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37";
+    const SORTED_PUBLISHED_SNAPSHOT: &[u8] = br#"{
+  "bottleId": "bottle-1",
+  "entries": [
+    {
+      "kind": "directory",
+      "path": "empty"
+    },
+    {
+      "digest": "sha256:fded28721427e68a8055a2f21a3de49f18f6f40eef790ddd0e8aeae7679b64bd",
+      "kind": "file",
+      "path": "manifest.json",
+      "size": 209
+    },
+    {
+      "digest": "sha256:d3b26e1f1ce13bde26578063b679fab4dbba401f23bc8ed938f8f4d5713f5048",
+      "kind": "file",
+      "path": "payload-copy.txt",
+      "size": 15
+    },
+    {
+      "digest": "sha256:d3b26e1f1ce13bde26578063b679fab4dbba401f23bc8ed938f8f4d5713f5048",
+      "kind": "file",
+      "path": "payload.txt",
+      "size": 15
+    }
+  ],
+  "entryCount": 4,
+  "legacyFormat": "macwin-bottle-v1",
+  "schemaVersion": "1",
+  "totalFileBytes": 239
+}
+"#;
 
     static TEMPORARY_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -532,6 +627,13 @@ mod tests {
             let counter = TEMPORARY_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path =
                 std::env::temp_dir().join(format!("compatforge-bottle-{label}-{}-{counter}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn new_in(parent: &Path, label: &str) -> Self {
+            let counter = TEMPORARY_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".compatforge-bottle-{label}-{}-{counter}", std::process::id()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -662,21 +764,17 @@ mod tests {
 
         assert_eq!(serde_json::to_vec(&second).unwrap(), first_bytes);
         assert_eq!(object_count(&store), 2);
-        let snapshot = bottle_store.verify_snapshot(SNAPSHOT_DIGEST).unwrap();
+        assert_eq!(
+            bottle_store.verify_snapshot(SNAPSHOT_DIGEST).unwrap().bottle_id,
+            "bottle-1"
+        );
 
         let published = fs::read(
-            store.join("snapshots/sha256/533f0d5b4c28c3249d58cdc38d93baa5a5393e76b456824479ac005c9ba12faf.json"),
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json"),
         )
         .unwrap();
         assert!(published.ends_with(b"\n"));
-        assert_eq!(
-            published,
-            serde_json::to_vec_pretty(&snapshot)
-                .unwrap()
-                .into_iter()
-                .chain([b'\n'])
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(published, SORTED_PUBLISHED_SNAPSHOT);
     }
 
     #[test]
@@ -715,6 +813,36 @@ mod tests {
         let error = BottleStore::new(&second_store).snapshot(&source).unwrap_err();
         assert_eq!(error.code(), DiagnosticCode::InvalidManifest);
         assert!(!second_store.exists());
+    }
+
+    #[test]
+    fn snapshot_rejects_relative_overlapping_roots_before_writing() {
+        let current_before = std::env::current_dir().unwrap();
+        let temporary = TemporaryDirectory::new_in(&current_before, "snapshot-overlap");
+
+        for (case, store_relative) in [
+            ("descendant", PathBuf::from("source/./nested/../store")),
+            ("equal", PathBuf::from("source/.")),
+            ("ancestor", PathBuf::from("source/../.")),
+        ] {
+            let case_root = temporary.path().join(case);
+            fs::create_dir(&case_root).unwrap();
+            let source = create_regular_source(&case_root);
+            let relative_case_root = case_root.strip_prefix(&current_before).unwrap();
+            let store = relative_case_root.join(store_relative);
+            let source_before = source_inventory(&source);
+
+            let error = BottleStore::new(store).snapshot(&source).unwrap_err();
+
+            assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+            assert_eq!(source_inventory(&source), source_before);
+            assert_eq!(std::env::current_dir().unwrap(), current_before);
+            assert!(!case_root.join("objects").exists());
+            assert!(!case_root.join("snapshots").exists());
+            assert!(!source.join("objects").exists());
+            assert!(!source.join("snapshots").exists());
+            assert!(!source.join("store").exists());
+        }
     }
 
     #[test]
