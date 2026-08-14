@@ -1,0 +1,795 @@
+{
+  "$defs": {
+    "affectedApplications": {
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "evidenceAndDependencies": {
+      "items": {
+        "$ref": "#/$defs/evidenceOrDependency"
+      },
+      "maxItems": 128,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "evidenceOrDependency": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "patch-license",
+                  "external-dependency"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/httpsEvidence"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "patch-license",
+            "external-dependency",
+            "development-dependency"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/evidenceText"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "evidenceText": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^[\\x20-\\x7e]{1,2048}(?![\\s\\S])",
+      "type": "string"
+    },
+    "gitObjectPrefix": {
+      "maxLength": 40,
+      "minLength": 7,
+      "pattern": "^(?!0{7,40}(?![\\s\\S]))[0-9a-f]{7,40}(?![\\s\\S])",
+      "type": "string"
+    },
+    "gitOid": {
+      "maxLength": 40,
+      "minLength": 40,
+      "pattern": "^(?!0{40}(?![\\s\\S]))[0-9a-f]{40}(?![\\s\\S])",
+      "type": "string"
+    },
+    "httpsEvidence": {
+      "maxLength": 2048,
+      "minLength": 12,
+      "pattern": "^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@+-]+)+/?)?(?![\\s\\S])",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}(?![\\s\\S])",
+      "type": "string"
+    },
+    "narrative": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^[\\x20-\\x7e]{1,2048}(?![\\s\\S])",
+      "type": "string"
+    },
+    "patchAuthor": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "reviewed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "displayName": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "email": {
+                "maxLength": 254,
+                "minLength": 3,
+                "type": "string"
+              },
+              "evidence": {
+                "const": "frozen-patch-mail-header"
+              }
+            },
+            "required": [
+              "displayName",
+              "email",
+              "evidence"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unresolved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "displayName": {
+                "const": null
+              },
+              "email": {
+                "const": null
+              },
+              "evidence": {
+                "const": null
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "displayName": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email": {
+          "maxLength": 254,
+          "minLength": 3,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            null,
+            "frozen-patch-mail-header"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "reviewed",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "patchLicense": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "reviewed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "spdxExpression": {
+                "$ref": "#/$defs/spdxExpression"
+              }
+            },
+            "required": [
+              "spdxExpression"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unresolved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "spdxExpression": {
+                "const": null
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "spdxExpression": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+() -]{0,255}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "reviewed",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "preimage": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "enum": [
+                  "matched",
+                  "mismatched"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "patchOldBlob": {
+                "$ref": "#/$defs/gitObjectPrefix"
+              },
+              "upstreamBlobOid": {
+                "$ref": "#/$defs/gitOid"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "const": "added"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "patchOldBlob": {
+                "$ref": "#/$defs/zeroGitObjectPrefix"
+              },
+              "upstreamBlobOid": {
+                "const": null
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "patchOldBlob": {
+          "maxLength": 40,
+          "minLength": 7,
+          "pattern": "^[0-9a-f]{7,40}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "result": {
+          "enum": [
+            "matched",
+            "mismatched",
+            "added",
+            "unproven"
+          ]
+        },
+        "upstreamBlobOid": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^(?!0{40}(?![\\s\\S]))[0-9a-f]{40}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "patchOldBlob",
+        "upstreamBlobOid",
+        "result"
+      ],
+      "type": "object"
+    },
+    "preimages": {
+      "items": {
+        "$ref": "#/$defs/preimage"
+      },
+      "maxItems": 128,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "projectLicense": {
+      "additionalProperties": false,
+      "properties": {
+        "contextOnly": {
+          "const": true
+        },
+        "evidenceLocator": {
+          "$ref": "#/$defs/httpsEvidence"
+        },
+        "spdxExpression": {
+          "$ref": "#/$defs/spdxExpression"
+        }
+      },
+      "required": [
+        "spdxExpression",
+        "evidenceLocator",
+        "contextOnly"
+      ],
+      "type": "object"
+    },
+    "record": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "reviewDisposition": {
+                "const": "retained"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "patchLicense": {
+                "properties": {
+                  "status": {
+                    "const": "reviewed"
+                  }
+                }
+              },
+              "preimages": {
+                "items": {
+                  "properties": {
+                    "result": {
+                      "enum": [
+                        "matched",
+                        "added"
+                      ]
+                    }
+                  }
+                },
+                "minItems": 1
+              },
+              "reason": {
+                "const": null
+              },
+              "regressionProbeIds": {
+                "minItems": 1
+              },
+              "releaseCondition": {
+                "const": null
+              },
+              "upstreamStatus": {
+                "const": "local-only"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "reviewDisposition": {
+                "const": "quarantined"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "missing-license",
+                  "unverified-base",
+                  "conflict",
+                  "upstreamed-or-obsolete"
+                ]
+              },
+              "regressionProbeIds": {
+                "maxItems": 0
+              },
+              "releaseCondition": {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "patchLicense": {
+                "properties": {
+                  "status": {
+                    "const": "reviewed"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidenceAndDependencies": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "patch-license"
+                    }
+                  }
+                },
+                "minContains": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "patchLicense": {
+                "properties": {
+                  "status": {
+                    "const": "unresolved"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidenceAndDependencies": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "patch-license"
+                    }
+                  }
+                },
+                "maxContains": 0,
+                "minContains": 0
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "affectedApplications": {
+          "$ref": "#/$defs/affectedApplications"
+        },
+        "byteSize": {
+          "maximum": 1048576,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "evidenceAndDependencies": {
+          "$ref": "#/$defs/evidenceAndDependencies"
+        },
+        "gitBlobOid": {
+          "$ref": "#/$defs/gitOid"
+        },
+        "gitMode": {
+          "enum": [
+            "100644",
+            "100755"
+          ]
+        },
+        "patchAuthor": {
+          "$ref": "#/$defs/patchAuthor"
+        },
+        "patchLicense": {
+          "$ref": "#/$defs/patchLicense"
+        },
+        "preimages": {
+          "$ref": "#/$defs/preimages"
+        },
+        "projectLicense": {
+          "$ref": "#/$defs/projectLicense"
+        },
+        "purpose": {
+          "$ref": "#/$defs/narrative"
+        },
+        "reason": {
+          "enum": [
+            null,
+            "missing-license",
+            "unverified-base",
+            "conflict",
+            "upstreamed-or-obsolete"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regressionProbeIds": {
+          "$ref": "#/$defs/regressionProbeIds"
+        },
+        "releaseCondition": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[\\x20-\\x7e]{1,512}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewDisposition": {
+          "enum": [
+            "retained",
+            "quarantined"
+          ]
+        },
+        "sourcePath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "sourceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "subject": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[\\x20-\\x7e]{1,256}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "$ref": "#/$defs/upstreamIdentity"
+        },
+        "upstreamStatus": {
+          "enum": [
+            "local-only",
+            "upstreamed",
+            "superseded",
+            "conflicting",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "sourcePath",
+        "sourceSha256",
+        "gitBlobOid",
+        "gitMode",
+        "byteSize",
+        "subject",
+        "purpose",
+        "affectedApplications",
+        "upstream",
+        "preimages",
+        "patchAuthor",
+        "projectLicense",
+        "patchLicense",
+        "evidenceAndDependencies",
+        "upstreamStatus",
+        "reviewDisposition",
+        "reason",
+        "releaseCondition",
+        "regressionProbeIds"
+      ],
+      "type": "object"
+    },
+    "regressionProbeIds": {
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "maxItems": 32,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "relativePath": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^(?=.{1,1024}(?![\\s\\S]))(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+)*(?![\\s\\S])",
+      "type": "string"
+    },
+    "sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "sourceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "digestAlgorithm": {
+          "const": "sha256"
+        },
+        "inventoryCommit": {
+          "$ref": "#/$defs/gitOid"
+        },
+        "repository": {
+          "const": "a1112/Mac-Win"
+        },
+        "sourceCommit": {
+          "$ref": "#/$defs/gitOid"
+        },
+        "sourceIndexSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sourceTag": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?![\\s\\S])",
+          "type": "string"
+        },
+        "sourceTagObject": {
+          "$ref": "#/$defs/gitOid"
+        }
+      },
+      "required": [
+        "repository",
+        "sourceTag",
+        "sourceTagObject",
+        "sourceCommit",
+        "inventoryCommit",
+        "sourceIndexSha256",
+        "digestAlgorithm"
+      ],
+      "type": "object"
+    },
+    "spdxExpression": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+() -]{0,255}(?![\\s\\S])",
+      "type": "string"
+    },
+    "upstreamIdentity": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "referenceKind": {
+                "const": "annotated-tag"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tagObject": {
+                "$ref": "#/$defs/gitOid"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "referenceKind": {
+                "const": "tag"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tagObject": {
+                "const": null
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "commit": {
+          "$ref": "#/$defs/gitOid"
+        },
+        "reference": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[\\x20-\\x7e]{1,256}(?![\\s\\S])",
+          "type": "string"
+        },
+        "referenceKind": {
+          "enum": [
+            "tag",
+            "annotated-tag"
+          ]
+        },
+        "repository": {
+          "$ref": "#/$defs/httpsEvidence"
+        },
+        "tagObject": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^(?!0{40}(?![\\s\\S]))[0-9a-f]{40}(?![\\s\\S])",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "referenceKind",
+        "reference",
+        "tagObject",
+        "commit"
+      ],
+      "type": "object"
+    },
+    "zeroGitObjectPrefix": {
+      "maxLength": 40,
+      "minLength": 7,
+      "pattern": "^0{7,40}(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/macwin-patch-review.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "recordCount": {
+      "const": 11
+    },
+    "records": {
+      "items": {
+        "$ref": "#/$defs/record"
+      },
+      "maxItems": 11,
+      "minItems": 11,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "source": {
+      "$ref": "#/$defs/sourceIdentity"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "source",
+    "recordCount",
+    "records"
+  ],
+  "title": "CompatForge Mac-Win Patch Provenance Review",
+  "type": "object"
+}

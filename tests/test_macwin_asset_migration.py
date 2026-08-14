@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import collections
 import concurrent.futures
 import contextlib
 import copy
@@ -390,6 +391,7 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
 class MigrationSchemaTests(unittest.TestCase):
     SCHEMA_NAMES = (
         "macwin-source-pack.schema.json",
+        "macwin-patch-review.schema.json",
         "migration-record.schema.json",
         "quarantine.schema.json",
         "portable-probe.schema.json",
@@ -460,6 +462,36 @@ class MigrationSchemaTests(unittest.TestCase):
             ):
                 self.assertIsNone(pattern.fullmatch(value), (name, value))
 
+    def test_migration_record_https_locator_matches_review_contract(self) -> None:
+        schema = self._schema("migration-record.schema.json")
+        locator = schema["$defs"]["httpsLocator"]
+        review_schema = self._schema("macwin-patch-review.schema.json")
+        self.assertEqual(locator, review_schema["$defs"]["httpsEvidence"])
+        for value in (
+            "https://a.co",
+            "https://example.com",
+            "https://sub.example.com/licenses/MIT",
+            "https://example.com/a_b+c:@-",
+        ):
+            with self.subTest(case="valid", value=value):
+                self._assert_schema_instance_valid(value, locator, schema)
+
+        for value in (
+            "https://example..com/%ZZ",
+            "https://a",
+            "https://example.com/%",
+            "https://user@example.com/license",
+            "https://example.com\\license",
+            "https://example.com/license?query",
+            "https://example.com/license#fragment",
+            "https://example.com/li\x00cense",
+            "https://example.com/li\u202ecense",
+        ):
+            with self.subTest(case="invalid", value=value), self.assertRaises(
+                AssertionError
+            ):
+                self._assert_schema_instance_valid(value, locator, schema)
+
     def test_schema_patterns_use_absolute_end_and_reject_hostile_tail(self) -> None:
         for name in (*self.SCHEMA_NAMES, "recipe.schema.json"):
             schema = self._schema(name)
@@ -482,6 +514,11 @@ class MigrationSchemaTests(unittest.TestCase):
         mutations = {
             "macwin-source-pack.schema.json": lambda value: value.__setitem__(
                 "sourceTag", value["sourceTag"] + "\n"
+            ),
+            "macwin-patch-review.schema.json": lambda value: value["records"][
+                0
+            ]["upstream"].__setitem__(
+                "repository", value["records"][0]["upstream"]["repository"] + "\n"
             ),
             "migration-record.schema.json": lambda value: value["records"][0].__setitem__(
                 "sourcePath", value["records"][0]["sourcePath"] + "\n"
@@ -687,21 +724,32 @@ class MigrationSchemaTests(unittest.TestCase):
             with self.subTest(gitMode=unknown):
                 self.assertNotIn(unknown, allowed_modes)
 
-    def test_migration_records_are_closed_and_deferred_to_fixed_issues(self) -> None:
+    def test_migration_records_are_closed_to_bottle_and_reviewed_patch_branches(self) -> None:
         schema = self._schema("migration-record.schema.json")
         record = schema["$defs"]["record"]
-        self.assertEqual(record["properties"]["status"], {"const": "deferred"})
         self.assertEqual(
-            set(record["properties"]["targetIssue"]["enum"]),
-            {"MW-ASSET-002", "MW-ASSET-003"},
+            record["oneOf"],
+            [
+                {"$ref": "#/$defs/bottleRecord"},
+                {"$ref": "#/$defs/patchRecord"},
+            ],
         )
+        bottle = schema["$defs"]["bottleRecord"]
+        patch = schema["$defs"]["patchRecord"]
+        self.assertEqual(bottle["properties"]["status"], {"const": "deferred"})
+        self.assertEqual(bottle["properties"]["targetIssue"], {"const": "MW-ASSET-003"})
         self.assertEqual(
-            set(record["properties"]["category"]["enum"]),
-            {"patches", "bottle-schema"},
+            patch["properties"]["status"],
+            {"enum": ["deferred", "quarantined"]},
         )
-        self.assertTrue(
-            {"sourceRepository", "gitBlobOid", "gitMode"}.issubset(record["required"])
-        )
+        self.assertEqual(patch["properties"]["targetIssue"], {"const": "MW-ASSET-002"})
+        for branch in (bottle, patch):
+            self.assertFalse(branch["additionalProperties"])
+            self.assertTrue(
+                {"sourceRepository", "gitBlobOid", "gitMode"}.issubset(
+                    branch["required"]
+                )
+            )
 
     def test_quarantine_has_fixed_reasons_and_release_evidence(self) -> None:
         schema = self._schema("quarantine.schema.json")
@@ -717,6 +765,9 @@ class MigrationSchemaTests(unittest.TestCase):
                 "unresolved-environment-path",
                 "missing-license",
                 "missing-provenance",
+                "unverified-base",
+                "conflict",
+                "upstreamed-or-obsolete",
                 "unsupported-schema",
                 "unsupported-behavior",
             },
@@ -853,9 +904,26 @@ class MigrationSchemaTests(unittest.TestCase):
             cls._assert_schema_instance_valid(value, target, root)
             return
 
-        if "const" in schema and value != schema["const"]:
+        one_of = schema.get("oneOf")
+        if one_of is not None:
+            if (
+                not isinstance(one_of, list)
+                or not one_of
+                or any(not isinstance(candidate, dict) for candidate in one_of)
+            ):
+                raise AssertionError("oneOf contract is malformed")
+            match_count = sum(
+                cls._schema_matches(value, candidate, root)
+                for candidate in one_of
+            )
+            if match_count != 1:
+                raise AssertionError("oneOf match count is invalid")
+
+        if "const" in schema and not cls._json_values_equal(value, schema["const"]):
             raise AssertionError("const mismatch")
-        if "enum" in schema and value not in schema["enum"]:
+        if "enum" in schema and not any(
+            cls._json_values_equal(value, candidate) for candidate in schema["enum"]
+        ):
             raise AssertionError("enum mismatch")
 
         declared_type = schema.get("type")
@@ -890,6 +958,21 @@ class MigrationSchemaTests(unittest.TestCase):
             if isinstance(item_schema, dict):
                 for item in value:
                     cls._assert_schema_instance_valid(item, item_schema, root)
+            contains_schema = schema.get("contains")
+            if isinstance(contains_schema, dict):
+                match_count = sum(
+                    cls._schema_matches(item, contains_schema, root) for item in value
+                )
+                minimum = schema.get("minContains", 1)
+                maximum = schema.get("maxContains")
+                if type(minimum) is not int or minimum < 0:
+                    raise AssertionError("minContains contract is malformed")
+                if maximum is not None and (type(maximum) is not int or maximum < 0):
+                    raise AssertionError("maxContains contract is malformed")
+                if match_count < minimum or (
+                    maximum is not None and match_count > maximum
+                ):
+                    raise AssertionError("array contains count is invalid")
         elif isinstance(value, dict):
             required = schema.get("required", [])
             if any(field not in value for field in required):
@@ -932,6 +1015,41 @@ class MigrationSchemaTests(unittest.TestCase):
             return False
         return True
 
+    @classmethod
+    def _json_values_equal(cls, left: object, right: object) -> bool:
+        if left is None or right is None:
+            return left is right
+        if type(left) is bool or type(right) is bool:
+            return type(left) is bool and type(right) is bool and left is right
+        if type(left) in (int, float) or type(right) in (int, float):
+            return (
+                type(left) in (int, float)
+                and type(right) in (int, float)
+                and left == right
+            )
+        if type(left) is str or type(right) is str:
+            return type(left) is str and type(right) is str and left == right
+        if type(left) is list or type(right) is list:
+            return (
+                type(left) is list
+                and type(right) is list
+                and len(left) == len(right)
+                and all(
+                    cls._json_values_equal(left_item, right_item)
+                    for left_item, right_item in zip(left, right, strict=True)
+                )
+            )
+        if type(left) is dict or type(right) is dict:
+            return (
+                type(left) is dict
+                and type(right) is dict
+                and left.keys() == right.keys()
+                and all(
+                    cls._json_values_equal(left[key], right[key]) for key in left
+                )
+            )
+        return False
+
     @staticmethod
     def _matches_json_type(value: object, declared: object) -> bool:
         return {
@@ -950,6 +1068,18 @@ class MigrationSchemaTests(unittest.TestCase):
             return "safe/path.txt"
         if location.endswith("/objectPath"):
             return "objects/sha256/aa/" + ("a" * 62)
+        if location.endswith("/gitOid"):
+            return "a" * 40
+        if location.endswith("/gitObjectPrefix"):
+            return "a" * 7
+        if location.endswith("/zeroGitObjectPrefix"):
+            return "0" * 7
+        if location.endswith("/patchOldBlob"):
+            return "a" * 7
+        if location.endswith(("/upstreamBlobOid", "/tagObject")):
+            return "a" * 40
+        if location.endswith("/httpsEvidence"):
+            return "https://example.invalid/evidence"
         if "sourceCommit" in location or location.endswith("/commit"):
             return "a" * 40
         if "Sha256" in location or location.endswith("/sha256"):
@@ -964,6 +1094,8 @@ class MigrationSchemaTests(unittest.TestCase):
             return "compatforge/probes"
         if "sourceTag" in location:
             return "migration-tag"
+        if location.endswith("/httpsLocator"):
+            return "https://example.invalid/evidence"
         candidate = "valid"
         if re.fullmatch(pattern, candidate):
             return candidate
@@ -998,15 +1130,15 @@ class MigrationSchemaTests(unittest.TestCase):
         }
         deferred = {
             "sourceRepository": "a1112/Mac-Win",
-            "sourcePath": "patches/example.patch",
+            "sourcePath": "MacWinManager/Sources/MacWinCore/Models.swift",
             "sourceCommit": "d" * 40,
             "gitBlobOid": "b" * 40,
             "gitMode": "100644",
             "sourceSha256": "a" * 64,
-            "category": "patches",
+            "category": "bottle-schema",
             "status": "deferred",
-            "targetIssue": "MW-ASSET-002",
-            "intendedOwner": "compatforge/patches",
+            "targetIssue": "MW-ASSET-003",
+            "intendedOwner": "compatforge/bottle-schema",
             "license": unresolved_review,
             "provenance": unresolved_review,
         }
@@ -1061,12 +1193,2910 @@ class MigrationSchemaTests(unittest.TestCase):
                 },
                 "assets": [copy.deepcopy(asset) for _ in range(90)],
             },
+            "macwin-patch-review.schema.json": json.loads(
+                (ROOT / "migration/macwin/reviewed/patches.json").read_bytes()
+            ),
             "migration-record.schema.json": {"schemaVersion": "1", "records": [deferred]},
             "quarantine.schema.json": {"schemaVersion": "1", "records": [quarantine]},
             "portable-probe.schema.json": portable,
             "portable-fixture.schema.json": {**copy.deepcopy(portable), "kind": "source"},
             "recipe.schema.json": recipe,
         }
+
+
+class MacWinPatchProvenanceTests(unittest.TestCase):
+    APPROVED_PATCH_REVIEW_SHA256 = (
+        "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+    )
+    REVIEW_RELATIVE = PurePosixPath("migration/macwin/reviewed/patches.json")
+    SCHEMA_RELATIVE = PurePosixPath("schemas/macwin-patch-review.schema.json")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.converter = _load_macwin_asset_converter()
+        cls.source_pack = cls.converter.load_source_pack(ROOT)
+
+    @contextlib.contextmanager
+    def _review_fixture(self):
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-test-", dir=ROOT
+        ) as directory:
+            repository_root = Path(directory)
+            review_path = repository_root / self.REVIEW_RELATIVE
+            review_path.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / self.REVIEW_RELATIVE, review_path)
+            yield repository_root, review_path
+
+    def _write_review_value(
+        self, review_path: Path, value: dict[str, object]
+    ) -> str:
+        common = _load_macwin_asset_common()
+        raw = common.canonical_json_bytes(value)
+        review_path.write_bytes(raw)
+        return hashlib.sha256(raw).hexdigest()
+
+    def _assert_invalid_review(self, repository_root: Path) -> None:
+        with self.assertRaisesRegex(
+            self.converter.ConversionError,
+            r"\Apatch review evidence is invalid\Z",
+        ):
+            self.converter.load_patch_review(repository_root, self.source_pack)
+
+    def test_loader_authenticates_exact_review_ledger(self) -> None:
+        converter = self.converter
+        source_pack = self.source_pack
+
+        review = converter.load_patch_review(ROOT, source_pack)
+
+        self.assertEqual(len(review.records), 11)
+        self.assertEqual(
+            tuple(record.source_path for record in review.records),
+            tuple(
+                asset.source_path
+                for asset in source_pack.assets
+                if asset.category == "patches"
+            ),
+        )
+        self.assertTrue(dataclasses.is_dataclass(review))
+        self.assertTrue(review.__dataclass_params__.frozen)
+        self.assertFalse(hasattr(review, "__dict__"))
+
+    def test_loader_returns_only_frozen_slotted_nested_models(self) -> None:
+        converter = self.converter
+        review = converter.load_patch_review(ROOT, self.source_pack)
+        expected_types = {
+            converter.PatchReviewLedger,
+            converter.PatchReviewSourceIdentity,
+            converter.PatchReviewRecord,
+            converter.PatchUpstream,
+            converter.PatchPreimageEvidence,
+            converter.PatchAuthor,
+            converter.PatchProjectLicense,
+            converter.PatchLicense,
+            converter.PatchEvidenceDependency,
+        }
+        seen: set[type[object]] = set()
+
+        def visit(value: object) -> None:
+            if dataclasses.is_dataclass(value) and not isinstance(value, type):
+                seen.add(type(value))
+                self.assertTrue(value.__dataclass_params__.frozen)
+                self.assertFalse(hasattr(value, "__dict__"))
+                for field in dataclasses.fields(value):
+                    visit(getattr(value, field.name))
+            elif type(value) is tuple:
+                for item in value:
+                    visit(item)
+            else:
+                self.assertNotIsInstance(value, (dict, list, set, bytearray))
+
+        visit(review)
+        self.assertEqual(seen, expected_types)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            review.record_count = 12
+
+    def test_classification_requires_and_carries_the_exact_review(self) -> None:
+        converter = self.converter
+        review = converter.load_patch_review(ROOT, self.source_pack)
+
+        result = converter.classify_source_pack(self.source_pack, review)
+
+        self.assertIs(result.patch_review, review)
+        with self.assertRaises(TypeError):
+            converter.classify_source_pack(self.source_pack)
+        self.assertTrue(
+            all(
+                record.status == "quarantined"
+                and record.reason == "missing-license"
+                for record in result.records
+                if record.category == "patches"
+            )
+        )
+
+    def test_loader_rejects_missing_hardlinked_and_nonregular_leaf(self) -> None:
+        for case in ("missing", "hardlink", "directory"):
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                if case == "missing":
+                    review_path.unlink()
+                elif case == "hardlink":
+                    outside = repository_root / "outside-review.json"
+                    review_path.replace(outside)
+                    try:
+                        os.link(outside, review_path)
+                    except (OSError, NotImplementedError) as error:
+                        self.skipTest(f"hardlink unavailable: {error}")
+                else:
+                    review_path.unlink()
+                    review_path.mkdir()
+                self._assert_invalid_review(repository_root)
+
+    def test_loader_rejects_symlinked_root_parent_and_leaf(self) -> None:
+        for case in ("repository-root", "review-root", "parent", "leaf"):
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                requested_root = repository_root
+                try:
+                    if case == "repository-root":
+                        requested_root = repository_root.with_name(
+                            repository_root.name + "-link"
+                        )
+                        os.symlink(
+                            repository_root,
+                            requested_root,
+                            target_is_directory=True,
+                        )
+                    elif case == "review-root":
+                        reviewed = review_path.parent
+                        saved = repository_root / "saved-reviewed"
+                        reviewed.rename(saved)
+                        os.symlink(saved, reviewed, target_is_directory=True)
+                    elif case == "parent":
+                        parent = review_path.parent.parent
+                        saved = repository_root / "saved-macwin"
+                        parent.rename(saved)
+                        os.symlink(saved, parent, target_is_directory=True)
+                    else:
+                        outside = repository_root / "outside-review.json"
+                        review_path.replace(outside)
+                        os.symlink(outside, review_path)
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest(f"symlink boundary unavailable: {error}")
+                try:
+                    self._assert_invalid_review(requested_root)
+                finally:
+                    if requested_root != repository_root:
+                        try:
+                            requested_root.unlink()
+                        except OSError:
+                            pass
+
+    def test_loader_rejects_oversize_before_json_parsing(self) -> None:
+        with self._review_fixture() as (repository_root, review_path):
+            review_path.write_bytes(
+                b"{" + b" " * self.converter.MAX_PATCH_REVIEW_BYTES
+            )
+            with mock.patch.object(
+                self.converter._COMMON,
+                "parse_json_bytes",
+                side_effect=AssertionError("oversized review was parsed"),
+            ) as parse:
+                self._assert_invalid_review(repository_root)
+            parse.assert_not_called()
+
+    def test_loader_strict_parser_rejects_duplicate_utf8_and_noncanonical_bytes(self) -> None:
+        cases = {
+            "duplicate-key": b'{"recordCount":11,"recordCount":11}\n',
+            "invalid-utf8": b'{"value":"\xff"}\n',
+            "too-deep": b"[" * 129 + b"0" + b"]" * 129,
+            "noncanonical": (ROOT / self.REVIEW_RELATIVE).read_bytes() + b" ",
+        }
+        for case, raw in cases.items():
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                review_path.write_bytes(raw)
+                with mock.patch.object(
+                    self.converter,
+                    "APPROVED_PATCH_REVIEW_SHA256",
+                    hashlib.sha256(raw).hexdigest(),
+                ):
+                    self._assert_invalid_review(repository_root)
+
+    def test_loader_rejects_wrong_source_identity_and_record_coverage(self) -> None:
+        mutations = {
+            "wrong-source-index": lambda value: value["source"].__setitem__(
+                "sourceIndexSha256", "f" * 64
+            ),
+            "missing": lambda value: value["records"].pop(),
+            "extra": lambda value: value["records"].append(
+                copy.deepcopy(value["records"][-1])
+            ),
+            "reordered": lambda value: value["records"].reverse(),
+            "casefold-duplicate": lambda value: value["records"][1].__setitem__(
+                "sourcePath", value["records"][0]["sourcePath"].upper()
+            ),
+            "wrong-source-sha": lambda value: value["records"][0].__setitem__(
+                "sourceSha256", "f" * 64
+            ),
+            "wrong-git-oid": lambda value: value["records"][0].__setitem__(
+                "gitBlobOid", "f" * 40
+            ),
+            "wrong-git-mode": lambda value: value["records"][0].__setitem__(
+                "gitMode", "100755"
+            ),
+            "wrong-byte-size": lambda value: value["records"][0].__setitem__(
+                "byteSize", value["records"][0]["byteSize"] + 1
+            ),
+        }
+        for case, mutate in mutations.items():
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                value = self._strict_json(self.REVIEW_RELATIVE)
+                mutate(value)
+                digest = self._write_review_value(review_path, value)
+                with mock.patch.object(
+                    self.converter, "APPROVED_PATCH_REVIEW_SHA256", digest
+                ):
+                    self._assert_invalid_review(repository_root)
+
+    def test_loader_rejects_nested_exact_type_and_unknown_field_mutants(self) -> None:
+        mutations = {
+            "bool-byte-size": lambda value: value["records"][0].__setitem__(
+                "byteSize", True
+            ),
+            "int-context-only": lambda value: value["records"][0][
+                "projectLicense"
+            ].__setitem__("contextOnly", 1),
+            "tuple-applications": lambda value: value["records"][0].__setitem__(
+                "affectedApplications", tuple(value["records"][0]["affectedApplications"])
+            ),
+            "unknown-nested": lambda value: value["records"][0][
+                "upstream"
+            ].__setitem__("unknown", "value"),
+        }
+        for case, mutate in mutations.items():
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                value = self._strict_json(self.REVIEW_RELATIVE)
+                mutate(value)
+                with mock.patch.object(
+                    self.converter._COMMON,
+                    "parse_json_bytes",
+                    return_value=value,
+                ), mock.patch.object(
+                    self.converter._COMMON,
+                    "canonical_json_bytes",
+                    return_value=review_path.read_bytes(),
+                ):
+                    self._assert_invalid_review(repository_root)
+
+    def test_loader_rejects_in_place_mutation_with_restored_mtime(self) -> None:
+        converter = self.converter
+        with self._review_fixture() as (repository_root, review_path):
+            original_parse = converter._parse_patch_review_bytes
+            original = review_path.read_bytes()
+            metadata = review_path.stat()
+            attempted = False
+            blocked = False
+
+            def mutate(raw: bytes):
+                nonlocal attempted, blocked
+                attempted = True
+                mutant = bytes([raw[0] ^ 1]) + raw[1:]
+                try:
+                    review_path.write_bytes(mutant)
+                    os.utime(
+                        review_path,
+                        ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                    )
+                except OSError:
+                    blocked = True
+                return original_parse(raw)
+
+            with mock.patch.object(
+                converter, "_parse_patch_review_bytes", side_effect=mutate
+            ):
+                rejected = False
+                try:
+                    converter.load_patch_review(repository_root, self.source_pack)
+                except converter.ConversionError as error:
+                    rejected = True
+                    self.assertEqual(str(error), "patch review evidence is invalid")
+            self.assertTrue(attempted)
+            self.assertTrue(blocked or rejected)
+            if blocked:
+                self.assertEqual(review_path.read_bytes(), original)
+
+    def test_loader_rejects_leaf_and_parent_replacement_after_read(self) -> None:
+        converter = self.converter
+        for case in ("leaf", "review-root", "parent"):
+            with self.subTest(case=case), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                original_read = converter._read_patch_review_leaf
+                attempted = False
+                blocked = False
+
+                def replace(*arguments, **options):
+                    nonlocal attempted, blocked
+                    held = original_read(*arguments, **options)
+                    attempted = True
+                    try:
+                        if case == "leaf":
+                            saved = repository_root / "saved-review.json"
+                            review_path.rename(saved)
+                            review_path.write_bytes(held.raw)
+                        else:
+                            target = (
+                                review_path.parent
+                                if case == "review-root"
+                                else review_path.parent.parent
+                            )
+                            saved = repository_root / f"saved-{case}"
+                            target.rename(saved)
+                            shutil.copytree(saved, target)
+                    except OSError:
+                        blocked = True
+                    return held
+
+                with mock.patch.object(
+                    converter, "_read_patch_review_leaf", side_effect=replace
+                ):
+                    rejected = False
+                    try:
+                        converter.load_patch_review(repository_root, self.source_pack)
+                    except converter.ConversionError as error:
+                        rejected = True
+                        self.assertEqual(str(error), "patch review evidence is invalid")
+                self.assertTrue(attempted)
+                self.assertTrue(blocked or rejected)
+
+    def test_loader_closes_every_held_leaf_and_directory_on_success_and_failure(self) -> None:
+        converter = self.converter
+        for outcome in ("success", "failure", "interrupt"):
+            with self.subTest(outcome=outcome), self._review_fixture() as (
+                repository_root,
+                review_path,
+            ):
+                if outcome == "failure":
+                    review_path.write_bytes(review_path.read_bytes() + b" ")
+                opened: list[object] = []
+                closed: list[object] = []
+                opened_leaves: list[int] = []
+                closed_leaves: list[int] = []
+                original_open = converter._open_patch_review_directory
+                original_close = converter._close_patch_review_directory
+                original_read_leaf = converter._read_patch_review_leaf
+                original_close_leaf = converter._close_patch_review_leaf
+
+                def observe_open(*arguments, **options):
+                    held = original_open(*arguments, **options)
+                    opened.append(held.handle)
+                    return held
+
+                def observe_close(held):
+                    closed.append(held.handle)
+                    return original_close(held)
+
+                def observe_read_leaf(*arguments, **options):
+                    held = original_read_leaf(*arguments, **options)
+                    opened_leaves.append(held.descriptor)
+                    return held
+
+                def observe_close_leaf(held):
+                    closed_leaves.append(held.descriptor)
+                    return original_close_leaf(held)
+
+                parse_context = (
+                    mock.patch.object(
+                        converter,
+                        "_parse_patch_review_bytes",
+                        side_effect=KeyboardInterrupt,
+                    )
+                    if outcome == "interrupt"
+                    else contextlib.nullcontext()
+                )
+                with mock.patch.object(
+                    converter,
+                    "_open_patch_review_directory",
+                    side_effect=observe_open,
+                ), mock.patch.object(
+                    converter,
+                    "_close_patch_review_directory",
+                    side_effect=observe_close,
+                ), mock.patch.object(
+                    converter,
+                    "_read_patch_review_leaf",
+                    side_effect=observe_read_leaf,
+                ), mock.patch.object(
+                    converter,
+                    "_close_patch_review_leaf",
+                    side_effect=observe_close_leaf,
+                ), parse_context:
+                    if outcome == "success":
+                        converter.load_patch_review(repository_root, self.source_pack)
+                    elif outcome == "interrupt":
+                        with self.assertRaises(KeyboardInterrupt):
+                            converter.load_patch_review(
+                                repository_root, self.source_pack
+                            )
+                    else:
+                        self._assert_invalid_review(repository_root)
+                self.assertGreaterEqual(len(opened), 4)
+                self.assertCountEqual(closed, opened)
+                self.assertEqual(len(opened_leaves), 1)
+                self.assertEqual(opened_leaves, closed_leaves)
+
+    def _strict_json(self, relative: PurePosixPath) -> object:
+        common = _load_macwin_asset_common()
+        return common.parse_json_bytes(
+            (ROOT / relative).read_bytes(),
+            label="Mac-Win patch review",
+        )
+
+    def _assert_approved_review_seal(self, raw: bytes) -> None:
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(), self.APPROVED_PATCH_REVIEW_SHA256
+        )
+
+    def _retained_review(
+        self, source_path: str
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        record = next(
+            item for item in review["records"] if item["sourcePath"] == source_path
+        )
+        record["evidenceAndDependencies"] = [
+            *record["evidenceAndDependencies"],
+            {
+                "kind": "patch-license",
+                "value": "https://example.invalid/patch-license",
+            },
+        ]
+        record["patchLicense"] = {
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        record["reason"] = None
+        record["regressionProbeIds"] = ["reviewed-patch-probe"]
+        record["releaseCondition"] = None
+        record["reviewDisposition"] = "retained"
+        record["upstreamStatus"] = "local-only"
+        return review, schema, record
+
+    def test_patch_review_has_literal_seal_and_casefold_unique_paths(self) -> None:
+        common = _load_macwin_asset_common()
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        review = common.parse_json_bytes(raw, label="Mac-Win patch review")
+        self._assert_approved_review_seal(raw)
+
+        source_paths = [record["sourcePath"] for record in review["records"]]
+        self.assertEqual(
+            len(source_paths), len({path.casefold() for path in source_paths})
+        )
+        for record in review["records"]:
+            preimage_paths = [item["path"] for item in record["preimages"]]
+            self.assertEqual(
+                len(preimage_paths),
+                len({path.casefold() for path in preimage_paths}),
+                record["sourcePath"],
+            )
+
+        def mutate_source_oid(value: dict[str, object]) -> None:
+            value["records"][0]["gitBlobOid"] = "f" * 40
+
+        def mutate_upstream_oid(value: dict[str, object]) -> None:
+            value["records"][0]["upstream"]["commit"] = "0" * 40
+
+        def mutate_source_path_case(value: dict[str, object]) -> None:
+            value["records"][0]["sourcePath"] = value["records"][0][
+                "sourcePath"
+            ].upper()
+
+        def target_preimage(value: dict[str, object]) -> dict[str, object]:
+            record = next(
+                item
+                for item in value["records"]
+                if item["sourcePath"]
+                == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+            )
+            return record["preimages"][0]
+
+        def mutate_preimage_path(value: dict[str, object]) -> None:
+            preimage = target_preimage(value)
+            preimage["path"] = preimage["path"].upper()
+
+        def mutate_preimage_oid(value: dict[str, object]) -> None:
+            target_preimage(value)["upstreamBlobOid"] = "f" * 40
+
+        def mutate_preimage_result(value: dict[str, object]) -> None:
+            target_preimage(value)["result"] = "unproven"
+
+        def mutate_tag_object(value: dict[str, object]) -> None:
+            wine = next(
+                item
+                for item in value["records"]
+                if item["sourcePath"].startswith("patches/wine-")
+            )
+            wine["upstream"]["tagObject"] = "0" * 40
+
+        for name, mutate in {
+            "source-oid": mutate_source_oid,
+            "upstream-oid": mutate_upstream_oid,
+            "source-path-case": mutate_source_path_case,
+            "preimage-path-case": mutate_preimage_path,
+            "preimage-oid": mutate_preimage_oid,
+            "preimage-result": mutate_preimage_result,
+            "tag-object": mutate_tag_object,
+        }.items():
+            mutant = copy.deepcopy(review)
+            mutate(mutant)
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    self._assert_approved_review_seal(common.canonical_json_bytes(mutant))
+
+    def test_retained_review_preserves_typed_dependencies(self) -> None:
+        review, schema, record = self._retained_review(
+            "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        self.assertEqual(
+            {item["kind"] for item in record["evidenceAndDependencies"]},
+            {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            },
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_retained_review_accepts_only_proven_existing_or_added_preimages(
+        self,
+    ) -> None:
+        review, schema, _record = self._retained_review(
+            "patches/wine-windows-graphics-imaging.patch"
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        for result in ("mismatched", "unproven"):
+            mutant = copy.deepcopy(review)
+            record = next(
+                item
+                for item in mutant["records"]
+                if item["sourcePath"]
+                == "patches/wine-windows-graphics-imaging.patch"
+            )
+            record["preimages"][0]["result"] = result
+            with self.subTest(result=result):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_project_license_boolean_rejects_integer(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        review["records"][0]["projectLicense"]["contextOnly"] = 1
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_schema_oracle_const_and_enum_use_json_equality(self) -> None:
+        cases = (
+            (True, True, True),
+            (False, False, True),
+            (True, 1, False),
+            (False, 0, False),
+            (1, 1.0, True),
+            ([True], [1], False),
+            ({"nested": False}, {"nested": 0}, False),
+            ({"a": [1, True]}, {"a": [1.0, True]}, True),
+            ([1, 2], [2, 1], False),
+        )
+        for left, right, expected in cases:
+            with self.subTest(left=left, right=right):
+                self.assertIs(
+                    MigrationSchemaTests._json_values_equal(left, right), expected
+                )
+
+    def test_https_evidence_rejects_unsafe_locators(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        invalid = (
+            "https:///missing-host",
+            "https://user@example.com/path",
+            "https://example.com\\backslash",
+            "https://example.com/white space",
+            "https://example.com/\x7f",
+            "https://example.com/\x1b",
+            "https://example.com/\u202eoverride",
+            "https:// example.com/path",
+        )
+        for locator in invalid:
+            mutant = copy.deepcopy(review)
+            mutant["records"][0]["upstream"]["repository"] = locator
+            with self.subTest(locator=repr(locator)):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+        external = copy.deepcopy(review)
+        external_record = next(
+            record
+            for record in external["records"]
+            if record["sourcePath"]
+            == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        external_entry = next(
+            item
+            for item in external_record["evidenceAndDependencies"]
+            if item["kind"] == "external-dependency"
+        )
+        external_entry["value"] = "https:///missing-host"
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                external, schema, schema
+            )
+
+    def test_https_evidence_rejects_percent_syntax_for_every_locator_kind(
+        self,
+    ) -> None:
+        review, schema, record = self._retained_review(
+            "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        license_entries = [
+            item
+            for item in record["evidenceAndDependencies"]
+            if item["kind"] == "patch-license"
+        ]
+        self.assertEqual(len(license_entries), 1)
+        for suffix in ("%", "%zz", "%0a", "%5c"):
+            mutant = copy.deepcopy(review)
+            mutant_record = next(
+                item
+                for item in mutant["records"]
+                if item["sourcePath"]
+                == "patches/wine-windowscodecs-bilinear-scaler.patch"
+            )
+            entry = next(
+                item
+                for item in mutant_record["evidenceAndDependencies"]
+                if item["kind"] == "patch-license"
+            )
+            entry["value"] = "https://example.invalid/patch-license" + suffix
+            with self.subTest(kind="patch-license", suffix=suffix):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+        external = self._strict_json(self.REVIEW_RELATIVE)
+        external_record = next(
+            item
+            for item in external["records"]
+            if item["sourcePath"]
+            == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        external_entry = next(
+            item
+            for item in external_record["evidenceAndDependencies"]
+            if item["kind"] == "external-dependency"
+        )
+        external_entry["value"] += "%5c"
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                external, schema, schema
+            )
+
+        locator = schema["$defs"]["httpsEvidence"]
+        for approved in (
+            "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
+            "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
+        ):
+            with self.subTest(approved=approved):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    approved, locator, schema
+                )
+
+    def test_narratives_reject_controls_and_non_ascii(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        mutations = (
+            ("purpose", "unsafe \x1b[31m purpose"),
+            ("purpose", "unsafe \u202e purpose"),
+            ("releaseCondition", "unsafe \x1b[31m release"),
+            ("releaseCondition", "unsafe\nrelease"),
+        )
+        for field, value in mutations:
+            mutant = copy.deepcopy(review)
+            mutant["records"][0][field] = value
+            with self.subTest(field=field, value=repr(value)):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_upstream_reference_kind_binds_tag_object(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        mutants = []
+        jasp = copy.deepcopy(review)
+        jasp["records"][0]["upstream"]["tagObject"] = "f" * 40
+        mutants.append(("plain-tag-with-object", jasp))
+        wine = copy.deepcopy(review)
+        wine_record = next(
+            record
+            for record in wine["records"]
+            if record["sourcePath"].startswith("patches/wine-")
+        )
+        wine_record["upstream"]["tagObject"] = None
+        mutants.append(("annotated-tag-without-object", wine))
+        for name, mutant in mutants:
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_git_identity_contract_rejects_null_sentinels_as_real_objects(
+        self,
+    ) -> None:
+        review, schema, record = self._retained_review(
+            "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        record["preimages"][0]["patchOldBlob"] = "0" * 7
+        record["preimages"][0]["upstreamBlobOid"] = "0" * 40
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_annotated_tag_rejects_zero_tag_object(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        annotated = self._strict_json(self.REVIEW_RELATIVE)
+        wine_record = next(
+            item
+            for item in annotated["records"]
+            if item["sourcePath"].startswith("patches/wine-")
+        )
+        wine_record["upstream"]["tagObject"] = "0" * 40
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                annotated, schema, schema
+            )
+
+    def test_git_identity_contract_has_exact_nonzero_adjacent_boundaries(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        git_oid = schema["$defs"]["gitOid"]
+        git_prefix = schema["$defs"]["gitObjectPrefix"]
+        zero_prefix = schema["$defs"]["zeroGitObjectPrefix"]
+        for value in ("0" * 39 + "1", "1" + "0" * 39):
+            MigrationSchemaTests._assert_schema_instance_valid(value, git_oid, schema)
+        for value in ("0" * 40, "1" * 39, "1" * 41):
+            with self.subTest(contract="gitOid", value=value):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, git_oid, schema
+                    )
+        for value in ("0" * 6 + "1", "1" + "0" * 39):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                value, git_prefix, schema
+            )
+        for value in ("0" * 7, "0" * 40, "1" * 6, "1" * 41):
+            with self.subTest(contract="gitObjectPrefix", value=value):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, git_prefix, schema
+                    )
+        for value in ("0" * 7, "0" * 40):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                value, zero_prefix, schema
+            )
+
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        engine_sync = next(
+            item
+            for item in review["records"]
+            if item["sourcePath"]
+            == "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch"
+        )
+        self.assertEqual(engine_sync["preimages"][0]["patchOldBlob"], "0" * 7)
+        self.assertEqual(engine_sync["preimages"][0]["result"], "unproven")
+        self.assertNotEqual(engine_sync["preimages"][0]["upstreamBlobOid"], "0" * 40)
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_project_license_evidence_uses_commit_permalinks(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        expected = {
+            "jasp": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
+            "wine": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
+        }
+        for record in review["records"]:
+            family = "jasp" if record["sourcePath"].startswith("patches/jasp-") else "wine"
+            with self.subTest(sourcePath=record["sourcePath"]):
+                self.assertEqual(
+                    record["projectLicense"]["evidenceLocator"], expected[family]
+                )
+
+    def test_patch_review_schema_is_closed_and_bounded(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            set(schema["properties"]),
+            {"schemaVersion", "source", "recordCount", "records"},
+        )
+        self.assertEqual(
+            set(schema["required"]),
+            {"schemaVersion", "source", "recordCount", "records"},
+        )
+        self.assertEqual(schema["properties"]["recordCount"], {"const": 11})
+        self.assertEqual(schema["properties"]["records"]["minItems"], 11)
+        self.assertEqual(schema["properties"]["records"]["maxItems"], 11)
+        self.assertEqual(schema["$defs"]["preimages"]["maxItems"], 128)
+        self.assertEqual(schema["$defs"]["affectedApplications"]["maxItems"], 32)
+        self.assertEqual(schema["$defs"]["evidenceAndDependencies"]["maxItems"], 128)
+        evidence_entry = schema["$defs"]["evidenceOrDependency"]
+        self.assertFalse(evidence_entry["additionalProperties"])
+        self.assertEqual(
+            set(evidence_entry["properties"]["kind"]["enum"]),
+            {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            },
+        )
+        self.assertEqual(schema["$defs"]["regressionProbeIds"]["maxItems"], 32)
+
+    def test_patch_review_covers_the_exact_source_slice(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        source = self._strict_json(PurePosixPath("migration/macwin/source/index.json"))
+        expected = sorted(
+            (asset for asset in source["assets"] if asset["category"] == "patches"),
+            key=lambda asset: asset["sourcePath"].encode("ascii"),
+        )
+        self.assertEqual(review["recordCount"], 11)
+        self.assertEqual(
+            [record["sourcePath"] for record in review["records"]],
+            [asset["sourcePath"] for asset in expected],
+        )
+        for record, asset in zip(review["records"], expected, strict=True):
+            self.assertEqual(record["sourceSha256"], asset["sha256"])
+            self.assertEqual(record["gitBlobOid"], asset["gitBlobOid"])
+            self.assertEqual(record["gitMode"], asset["gitMode"])
+            self.assertEqual(record["byteSize"], asset["byteSize"])
+            self.assertEqual(
+                [
+                    item["value"]
+                    for item in record["evidenceAndDependencies"]
+                    if item["kind"] == "external-dependency"
+                ],
+                asset["externalRefs"],
+            )
+            self.assertEqual(
+                [
+                    item["value"]
+                    for item in record["evidenceAndDependencies"]
+                    if item["kind"] == "development-dependency"
+                ],
+                asset["developmentDependencies"],
+            )
+            self.assertFalse(
+                any(
+                    item["kind"] == "patch-license"
+                    for item in record["evidenceAndDependencies"]
+                )
+            )
+
+    def test_patch_review_records_approved_upstreams_and_initial_policy(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        self.assertEqual(
+            review["source"],
+            {
+                "digestAlgorithm": "sha256",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "repository": "a1112/Mac-Win",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "sourceIndexSha256": "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+            },
+        )
+        expected_preimages = {
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch": {
+                "unproven": 2
+            },
+            "patches/jasp-0.97.1-fix-proxy-model-reset.patch": {"unproven": 2},
+            "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch": {
+                "unproven": 1
+            },
+            "patches/jasp-0.97.1-local-macos-build-configure.patch": {"matched": 3},
+            "patches/wine-dcomp-winui-host-composition.patch": {
+                "matched": 14,
+                "mismatched": 11,
+                "unproven": 9,
+            },
+            "patches/wine-macos-native-ui-integration.patch": {
+                "added": 1,
+                "matched": 8,
+                "mismatched": 2,
+            },
+            "patches/wine-shell32-virtual-desktop-manager.patch": {
+                "added": 1,
+                "matched": 4,
+            },
+            "patches/wine-windows-data-json-modern-apps.patch": {"matched": 5},
+            "patches/wine-windows-graphics-imaging.patch": {
+                "added": 1,
+                "matched": 5,
+            },
+            "patches/wine-windowscodecs-bilinear-scaler.patch": {"matched": 2},
+            "patches/wine-winui-pointer-input.patch": {
+                "matched": 9,
+                "mismatched": 8,
+            },
+        }
+        mail_authored = {
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+            "patches/jasp-0.97.1-fix-proxy-model-reset.patch",
+            "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch",
+        }
+        for record in review["records"]:
+            with self.subTest(sourcePath=record["sourcePath"]):
+                upstream = record["upstream"]
+                if record["sourcePath"].startswith("patches/jasp-"):
+                    self.assertEqual(
+                        upstream,
+                        {
+                            "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+                            "reference": "v0.97.1",
+                            "referenceKind": "tag",
+                            "repository": "https://github.com/jasp-stats/jasp-desktop",
+                            "tagObject": None,
+                        },
+                    )
+                else:
+                    self.assertEqual(
+                        upstream,
+                        {
+                            "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+                            "reference": "wine-11.11",
+                            "referenceKind": "annotated-tag",
+                            "repository": "https://gitlab.winehq.org/wine/wine/",
+                            "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e",
+                        },
+                    )
+                counts = collections.Counter(item["result"] for item in record["preimages"])
+                self.assertEqual(dict(sorted(counts.items())), expected_preimages[record["sourcePath"]])
+                for item in record["preimages"]:
+                    if item["result"] == "matched":
+                        self.assertTrue(item["upstreamBlobOid"].startswith(item["patchOldBlob"]))
+                    elif item["result"] == "mismatched":
+                        self.assertFalse(item["upstreamBlobOid"].startswith(item["patchOldBlob"]))
+                    elif item["result"] == "added":
+                        self.assertIsInstance(item["patchOldBlob"], str)
+                        self.assertEqual(set(item["patchOldBlob"]), {"0"})
+                        self.assertIsNone(item["upstreamBlobOid"])
+                self.assertEqual(record["patchLicense"], {"status": "unresolved"})
+                self.assertEqual(record["reviewDisposition"], "quarantined")
+                self.assertEqual(record["reason"], "missing-license")
+                self.assertEqual(record["regressionProbeIds"], [])
+                self.assertEqual(record["upstreamStatus"], "unresolved")
+                for field in (
+                    "affectedApplications",
+                    "regressionProbeIds",
+                ):
+                    self.assertEqual(
+                        record[field],
+                        sorted(record[field], key=lambda value: value.encode("ascii")),
+                    )
+                    self.assertEqual(len(record[field]), len(set(record[field])))
+                evidence_and_dependencies = record["evidenceAndDependencies"]
+                self.assertEqual(
+                    evidence_and_dependencies,
+                    sorted(
+                        evidence_and_dependencies,
+                        key=lambda item: (
+                            item["kind"].encode("ascii"),
+                            item["value"].encode("ascii"),
+                        ),
+                    ),
+                )
+                self.assertEqual(
+                    len(evidence_and_dependencies),
+                    len(
+                        {
+                            (item["kind"], item["value"])
+                            for item in evidence_and_dependencies
+                        }
+                    ),
+                )
+                self.assertEqual(
+                    [item["path"] for item in record["preimages"]],
+                    sorted(
+                        (item["path"] for item in record["preimages"]),
+                        key=lambda value: value.encode("ascii"),
+                    ),
+                )
+                if record["sourcePath"] in mail_authored:
+                    self.assertEqual(
+                        record["patchAuthor"],
+                        {
+                            "displayName": "MacWin Compatibility Probe",
+                            "email": "dev.local.macwin@local",
+                            "evidence": "frozen-patch-mail-header",
+                            "status": "reviewed",
+                        },
+                    )
+                    self.assertTrue(record["subject"].startswith("[PATCH] "))
+                else:
+                    self.assertEqual(record["patchAuthor"], {"status": "unresolved"})
+                    self.assertIsNone(record["subject"])
+
+    def test_patch_review_is_canonical_and_schema_mutants_fail_closed(self) -> None:
+        common = _load_macwin_asset_common()
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        review = common.parse_json_bytes(raw, label="Mac-Win patch review")
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        self.assertLessEqual(len(raw), 1024 * 1024)
+        self.assertEqual(raw, common.canonical_json_bytes(review))
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        retained = copy.deepcopy(review)
+        retained_record = next(
+            record
+            for record in retained["records"]
+            if record["sourcePath"]
+            == "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        retained_record["patchLicense"] = {
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        retained_record["evidenceAndDependencies"] = [
+            {
+                "kind": "patch-license",
+                "value": "https://example.invalid/patch-license",
+            }
+        ]
+        retained_record["reason"] = None
+        retained_record["regressionProbeIds"] = ["wine-scaler-review-probe"]
+        retained_record["releaseCondition"] = None
+        retained_record["reviewDisposition"] = "retained"
+        retained_record["upstreamStatus"] = "local-only"
+        MigrationSchemaTests._assert_schema_instance_valid(retained, schema, schema)
+        retained_record["regressionProbeIds"] = []
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(retained, schema, schema)
+
+        def reviewed_without_evidence(value: dict[str, object]) -> None:
+            value["records"][0]["patchLicense"] = {
+                "spdxExpression": "LicenseRef-Reviewed-Patch",
+                "status": "reviewed",
+            }
+
+        def unresolved_with_license_evidence(value: dict[str, object]) -> None:
+            value["records"][0]["evidenceAndDependencies"] = [
+                {
+                    "kind": "patch-license",
+                    "value": "https://example.invalid/patch-license",
+                }
+            ]
+
+        mutants = {
+            "unknown-field": lambda value: value["records"][0].__setitem__(
+                "extra", True
+            ),
+            "wrong-count": lambda value: value.__setitem__("recordCount", 12),
+            "bad-path": lambda value: value["records"][0].__setitem__(
+                "sourcePath", "../patch"
+            ),
+            "reviewed-without-spdx": lambda value: value["records"][0].__setitem__(
+                "patchLicense", {"status": "reviewed"}
+            ),
+            "reviewed-without-license-evidence": reviewed_without_evidence,
+            "unresolved-with-license-evidence": unresolved_with_license_evidence,
+            "reviewed-author-with-null-evidence": lambda value: value["records"][
+                0
+            ].__setitem__(
+                "patchAuthor",
+                {
+                    "displayName": None,
+                    "email": None,
+                    "evidence": None,
+                    "status": "reviewed",
+                },
+            ),
+            "quarantined-with-probe": lambda value: value["records"][0].__setitem__(
+                "regressionProbeIds", ["unapproved-probe"]
+            ),
+            "retained-without-probe": lambda value: value["records"][0].__setitem__(
+                "reviewDisposition", "retained"
+            ),
+        }
+        for name, mutate in mutants.items():
+            mutant = copy.deepcopy(review)
+            mutate(mutant)
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_patch_review_combined_evidence_and_dependencies_are_bounded(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        record = next(
+            item
+            for item in review["records"]
+            if item["sourcePath"]
+            == "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        record["patchLicense"] = {
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        record["evidenceAndDependencies"] = [
+            {
+                "kind": "patch-license",
+                "value": f"https://example.invalid/patch-license/{index:03d}",
+            }
+            for index in range(128)
+        ]
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        record["evidenceAndDependencies"].append(
+            {
+                "kind": "external-dependency",
+                "value": "https://example.invalid/one-more-dependency",
+            }
+        )
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        weakened_schema = copy.deepcopy(schema)
+        weakened_schema["$defs"]["evidenceAndDependencies"]["maxItems"] = 129
+        MigrationSchemaTests._assert_schema_instance_valid(
+            review, weakened_schema, weakened_schema
+        )
+
+    def _decision_record(self, source_path: str):
+        review = self.converter.load_patch_review(ROOT, self.source_pack)
+        return next(
+            record for record in review.records if record.source_path == source_path
+        )
+
+    def _with_reviewed_patch_license(self, record):
+        converter = self.converter
+        evidence = tuple(
+            item
+            for item in record.evidence_and_dependencies
+            if item.kind != "patch-license"
+        ) + (
+            converter.PatchEvidenceDependency(
+                kind="patch-license",
+                value="https://example.invalid/patch-license",
+            ),
+        )
+        return dataclasses.replace(
+            record,
+            patch_license=converter.PatchLicense(
+                status="reviewed",
+                spdx_expression="LicenseRef-Reviewed-Patch",
+            ),
+            evidence_and_dependencies=evidence,
+        )
+
+    def _with_manual_quarantine(self, record, reason: str):
+        return dataclasses.replace(
+            record,
+            review_disposition="quarantined",
+            reason=reason,
+            release_condition=self.converter.PATCH_RELEASE_CONDITIONS[reason],
+            regression_probe_ids=(),
+        )
+
+    def _retained_decision_record(self):
+        record = self._decision_record(
+            "patches/wine-windows-data-json-modern-apps.patch"
+        )
+        record = self._with_reviewed_patch_license(record)
+        return dataclasses.replace(
+            record,
+            upstream_status="local-only",
+            review_disposition="retained",
+            reason=None,
+            release_condition=None,
+            regression_probe_ids=("reviewed-patch-probe",),
+        )
+
+    def test_patch_classification_priority(self) -> None:
+        converter = self.converter
+        missing = self._decision_record(
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch"
+        )
+        partial = self._with_manual_quarantine(
+            self._with_reviewed_patch_license(missing), "unverified-base"
+        )
+        conflict = self._decision_record(
+            "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        conflict = self._with_manual_quarantine(
+            self._with_reviewed_patch_license(conflict), "conflict"
+        )
+        upstreamed = self._decision_record(
+            "patches/wine-windows-data-json-modern-apps.patch"
+        )
+        upstreamed = self._with_reviewed_patch_license(upstreamed)
+        upstreamed = self._with_manual_quarantine(
+            dataclasses.replace(upstreamed, upstream_status="upstreamed"),
+            "upstreamed-or-obsolete",
+        )
+        cases = (
+            ("unresolved-license", missing, "missing-license"),
+            ("reviewed-license-partial-base", partial, "unverified-base"),
+            ("reviewed-license-matched-base-conflict", conflict, "conflict"),
+            ("reviewed-license-upstreamed", upstreamed, "upstreamed-or-obsolete"),
+        )
+        for name, record, expected_reason in cases:
+            with self.subTest(case=name):
+                decision = converter._derive_patch_decision(record, {})
+                self.assertEqual(decision.status, "quarantined")
+                self.assertEqual(decision.action, "quarantine")
+                self.assertEqual(decision.reason, expected_reason)
+                self.assertEqual(
+                    decision.release_condition,
+                    converter.PATCH_RELEASE_CONDITIONS[expected_reason],
+                )
+
+    def test_patch_license_requires_typed_https_patch_evidence(self) -> None:
+        converter = self.converter
+        original = self._decision_record(
+            "patches/wine-windows-data-json-modern-apps.patch"
+        )
+        reviewed = dataclasses.replace(
+            original,
+            patch_license=converter.PatchLicense(
+                status="reviewed", spdx_expression="LicenseRef-Reviewed-Patch"
+            ),
+        )
+        for case, evidence in (
+            ("missing", ()),
+            (
+                "wrong-kind",
+                (
+                    converter.PatchEvidenceDependency(
+                        kind="external-dependency",
+                        value="https://example.invalid/patch-license",
+                    ),
+                ),
+            ),
+            (
+                "non-https",
+                (
+                    converter.PatchEvidenceDependency(
+                        kind="patch-license", value="http://example.invalid/license"
+                    ),
+                ),
+            ),
+        ):
+            with self.subTest(case=case):
+                record = dataclasses.replace(
+                    reviewed,
+                    evidence_and_dependencies=evidence,
+                    review_disposition="quarantined",
+                    reason="missing-license",
+                    release_condition=converter.PATCH_RELEASE_CONDITIONS[
+                        "missing-license"
+                    ],
+                )
+                decision = converter._derive_patch_decision(record, {})
+                self.assertEqual(decision.reason, "missing-license")
+
+    def test_project_license_never_clears_missing_patch_license(self) -> None:
+        record = self._decision_record(
+            "patches/wine-windows-data-json-modern-apps.patch"
+        )
+        self.assertEqual(record.project_license.context_only, True)
+        self.assertEqual(
+            self.converter._derive_patch_decision(record, {}).reason,
+            "missing-license",
+        )
+
+    def test_manual_retained_disposition_cannot_override_derived_quarantine(self) -> None:
+        record = self._decision_record(
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch"
+        )
+        forged = dataclasses.replace(record, review_disposition="retained")
+        with self.assertRaisesRegex(
+            self.converter.ConversionError,
+            r"\Apatch review evidence is invalid\Z",
+        ):
+            self.converter._derive_patch_decision(forged, {})
+
+    def test_retained_patch_executes_only_registered_positive_probe(self) -> None:
+        converter = self.converter
+        record = self._retained_decision_record()
+        calls: list[str] = []
+
+        def focused_probe(candidate) -> bool:
+            calls.append(candidate.source_path)
+            return candidate.purpose == record.purpose
+
+        decision = converter._derive_patch_decision(
+            record, {"reviewed-patch-probe": focused_probe}
+        )
+        self.assertEqual(decision.status, "deferred")
+        self.assertEqual(decision.action, "retain-patch")
+        self.assertIsNone(decision.reason)
+        self.assertIsNone(decision.release_condition)
+        self.assertEqual(calls, [record.source_path])
+
+        with self.assertRaisesRegex(
+            converter.ConversionError, r"\Apatch review evidence is invalid\Z"
+        ):
+            converter._derive_patch_decision(
+                dataclasses.replace(record, purpose=record.purpose + " mutant"),
+                {"reviewed-patch-probe": focused_probe},
+            )
+
+    def test_retained_patch_rejects_unknown_duplicate_or_failing_probe(self) -> None:
+        converter = self.converter
+        record = self._retained_decision_record()
+        cases = (
+            ("unknown", record, {}),
+            (
+                "duplicate",
+                dataclasses.replace(
+                    record,
+                    regression_probe_ids=(
+                        "reviewed-patch-probe",
+                        "reviewed-patch-probe",
+                    ),
+                ),
+                {"reviewed-patch-probe": lambda _record: True},
+            ),
+            (
+                "failing",
+                record,
+                {"reviewed-patch-probe": lambda _record: False},
+            ),
+        )
+        for case, candidate, registry in cases:
+            with self.subTest(case=case), self.assertRaisesRegex(
+                converter.ConversionError, r"\Apatch review evidence is invalid\Z"
+            ):
+                converter._derive_patch_decision(candidate, registry)
+
+    def test_added_preimage_is_proven_for_retained_decision(self) -> None:
+        converter = self.converter
+        record = self._decision_record(
+            "patches/wine-windows-graphics-imaging.patch"
+        )
+        record = self._with_reviewed_patch_license(record)
+        record = dataclasses.replace(
+            record,
+            upstream_status="local-only",
+            review_disposition="retained",
+            reason=None,
+            release_condition=None,
+            regression_probe_ids=("reviewed-patch-probe",),
+        )
+        self.assertIn("added", {item.result for item in record.preimages})
+        decision = converter._derive_patch_decision(
+            record, {"reviewed-patch-probe": lambda _record: True}
+        )
+        self.assertEqual((decision.status, decision.action), ("deferred", "retain-patch"))
+
+    def test_real_patch_status_counts(self) -> None:
+        result = self.converter.build_conversion(ROOT)
+        counts = collections.Counter(record.status for record in result.records)
+        self.assertEqual(
+            counts,
+            {"converted": 2, "deferred": 4, "quarantined": 84},
+        )
+        patch_records = [
+            record for record in result.records if record.category == "patches"
+        ]
+        self.assertEqual(len(patch_records), 11)
+        self.assertTrue(
+            all(
+                record.status == "quarantined"
+                and record.action == "quarantine"
+                and record.reason == "missing-license"
+                and record.target_issue == "MW-ASSET-002"
+                and record.evidence_locators
+                == (f"{record.source_path}#patchLicense",)
+                for record in patch_records
+            )
+        )
+
+    def test_generated_patch_review_documents(self) -> None:
+        converter = self.converter
+        common = _load_macwin_asset_common()
+        result = converter.build_conversion(ROOT)
+        documents = converter.render_documents(result)
+        expected_paths = {
+            "migration/macwin/generated/catalog.json",
+            "migration/macwin/generated/index.json",
+            "migration/macwin/generated/mappings/bottle-schemas.json",
+            "migration/macwin/generated/mappings/patches.json",
+            "migration/macwin/generated/quarantine.json",
+        }
+        self.assertEqual(set(documents), expected_paths)
+        mapping = common.parse_json_bytes(
+            documents["migration/macwin/generated/mappings/patches.json"],
+            label="generated patch review",
+        )
+        quarantine = common.parse_json_bytes(
+            documents["migration/macwin/generated/quarantine.json"],
+            label="generated quarantine",
+        )
+        index = common.parse_json_bytes(
+            documents["migration/macwin/generated/index.json"],
+            label="generated index",
+        )
+        self.assertEqual(mapping["schemaVersion"], "1")
+        self.assertEqual(len(mapping["records"]), 11)
+        self.assertEqual(
+            [record["sourcePath"] for record in mapping["records"]],
+            sorted(
+                (record.source_path for record in result.patch_review.records),
+                key=lambda value: value.encode("ascii"),
+            ),
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        for generated, review in zip(
+            mapping["records"], result.patch_review.records, strict=True
+        ):
+            asset = assets[review.source_path]
+            author = {"status": review.patch_author.status}
+            if review.patch_author.display_name is not None:
+                author["displayName"] = review.patch_author.display_name
+            if review.patch_author.email is not None:
+                author["email"] = review.patch_author.email
+            if review.patch_author.evidence is not None:
+                author["evidence"] = review.patch_author.evidence
+            patch_license = {"status": review.patch_license.status}
+            if review.patch_license.spdx_expression is not None:
+                patch_license["spdxExpression"] = (
+                    review.patch_license.spdx_expression
+                )
+            counts = collections.Counter(item.result for item in review.preimages)
+            expected = {
+                "sourceRepository": result.source_pack.repository,
+                "sourcePath": review.source_path,
+                "sourceCommit": asset.source_commit,
+                "gitBlobOid": asset.git_blob_oid,
+                "gitMode": asset.git_mode,
+                "sourceSha256": asset.sha256,
+                "category": "patches",
+                "status": "quarantined",
+                "targetIssue": "MW-ASSET-002",
+                "intendedOwner": asset.intended_owner,
+                "license": {"status": asset.license_status},
+                "provenance": {"status": asset.provenance_status},
+                "purpose": review.purpose,
+                "affectedApplications": list(review.affected_applications),
+                "upstream": {
+                    "repository": review.upstream.repository,
+                    "referenceKind": review.upstream.reference_kind,
+                    "reference": review.upstream.reference,
+                    "tagObject": review.upstream.tag_object,
+                    "commit": review.upstream.commit,
+                },
+                "baseEvidence": {
+                    "matched": counts["matched"],
+                    "mismatched": counts["mismatched"],
+                    "added": counts["added"],
+                    "unproven": counts["unproven"],
+                },
+                "patchAuthor": author,
+                "projectLicense": {
+                    "spdxExpression": review.project_license.spdx_expression,
+                    "evidenceLocator": review.project_license.evidence_locator,
+                    "contextOnly": review.project_license.context_only,
+                },
+                "patchLicense": patch_license,
+                "evidenceAndDependencies": [
+                    {"kind": item.kind, "value": item.value}
+                    for item in review.evidence_and_dependencies
+                ],
+                "upstreamStatus": review.upstream_status,
+                "reviewDisposition": review.review_disposition,
+                "reason": records[review.source_path].reason,
+                "releaseCondition": records[review.source_path].release_condition,
+                "regressionProbeIds": list(review.regression_probe_ids),
+            }
+            self.assertEqual(generated, expected)
+
+            def assert_no_execution_fields(value: object) -> None:
+                if type(value) is dict:
+                    self.assertTrue(
+                        set(value).isdisjoint(
+                            {
+                                "command",
+                                "apply",
+                                "argv",
+                                "env",
+                                "environment",
+                                "executable",
+                                "checkout",
+                            }
+                        )
+                    )
+                    for nested in value.values():
+                        assert_no_execution_fields(nested)
+                elif type(value) is list:
+                    for nested in value:
+                        assert_no_execution_fields(nested)
+
+            assert_no_execution_fields(generated)
+
+        self.assertEqual(len(quarantine["records"]), 84)
+        self.assertEqual(
+            [record["sourcePath"] for record in quarantine["records"]],
+            sorted(
+                (record["sourcePath"] for record in quarantine["records"]),
+                key=lambda value: value.encode("ascii"),
+            ),
+        )
+        patch_quarantine = [
+            record for record in quarantine["records"] if record["category"] == "patches"
+        ]
+        self.assertEqual(len(patch_quarantine), 11)
+        self.assertTrue(
+            all(
+                record["status"] == "quarantined"
+                and record["reason"] == "missing-license"
+                and record["evidenceLocators"]
+                == [f"{record['sourcePath']}#patchLicense"]
+                and record["releaseCondition"]
+                == converter.PATCH_RELEASE_CONDITIONS["missing-license"]
+                for record in patch_quarantine
+            )
+        )
+        self.assertEqual(
+            index["statusCounts"],
+            {"converted": 2, "deferred": 4, "quarantined": 84},
+        )
+        patch_roots = [
+            record for record in index["records"] if record["category"] == "patches"
+        ]
+        self.assertEqual(len(patch_roots), 11)
+        self.assertTrue(
+            all(
+                record["status"] == "quarantined"
+                and record["documentPath"]
+                == "migration/macwin/generated/quarantine.json"
+                for record in patch_roots
+            )
+        )
+
+    def test_migration_record_schema_closes_bottle_and_patch_branches(self) -> None:
+        converter = self.converter
+        result = converter.build_conversion(ROOT)
+        schema = self._strict_json(
+            PurePosixPath("schemas/migration-record.schema.json")
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        reviews = {
+            record.source_path: record for record in result.patch_review.records
+        }
+        patch_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        patch_document = converter._reviewed_patch_document(
+            records[patch_path], assets[patch_path], reviews[patch_path]
+        )
+        bottle_record = next(
+            record for record in result.records if record.category == "bottle-schema"
+        )
+        bottle_document = converter._deferred_document(
+            bottle_record, assets[bottle_record.source_path]
+        )
+        for name, document in (
+            ("patch", patch_document),
+            ("bottle", bottle_document),
+        ):
+            with self.subTest(case=f"valid-{name}"):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [document]}, schema, schema
+                )
+
+        mutants: dict[str, object] = {}
+        wrong_status = copy.deepcopy(patch_document)
+        wrong_status["status"] = "deferred"
+        mutants["status"] = wrong_status
+        wrong_upstream = copy.deepcopy(patch_document)
+        wrong_upstream["upstream"]["commit"] = "f" * 40
+        mutants["upstream-commit"] = wrong_upstream
+        wrong_disposition = copy.deepcopy(patch_document)
+        wrong_disposition["reviewDisposition"] = "retained"
+        mutants["disposition"] = wrong_disposition
+        wrong_reason = copy.deepcopy(patch_document)
+        wrong_reason["reason"] = "conflict"
+        mutants["reason"] = wrong_reason
+        wrong_applications = copy.deepcopy(patch_document)
+        wrong_applications["affectedApplications"].reverse()
+        mutants["application-order"] = wrong_applications
+        for name, mutant in mutants.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [mutant]}, schema, schema
+                )
+
+    def test_migration_record_schema_closes_patch_quarantine_pairs(self) -> None:
+        converter = self.converter
+        result = converter.build_conversion(ROOT)
+        schema = self._strict_json(
+            PurePosixPath("schemas/migration-record.schema.json")
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        reviews = {
+            record.source_path: record for record in result.patch_review.records
+        }
+        patch_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        patch_document = converter._reviewed_patch_document(
+            records[patch_path], assets[patch_path], reviews[patch_path]
+        )
+
+        approved_pairs = {
+            "missing-license": (
+                "Record patch-specific license evidence and repeat review."
+            ),
+            "unverified-base": (
+                "Bind every patch preimage to one exact upstream commit."
+            ),
+            "conflict": "Resolve patch conflicts and close every dependency.",
+            "upstreamed-or-obsolete": (
+                "Confirm removal or replacement in the reviewed source set."
+            ),
+        }
+        for reason, release_condition in approved_pairs.items():
+            quarantined = copy.deepcopy(patch_document)
+            quarantined["reason"] = reason
+            quarantined["releaseCondition"] = release_condition
+            with self.subTest(case=f"valid-{reason}"):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [quarantined]},
+                    schema,
+                    schema,
+                )
+
+        mutants: dict[str, object] = {}
+        null_pair = copy.deepcopy(patch_document)
+        null_pair["reason"] = None
+        null_pair["releaseCondition"] = None
+        mutants["null-pair"] = null_pair
+        wrong_pair = copy.deepcopy(patch_document)
+        wrong_pair["releaseCondition"] = approved_pairs["conflict"]
+        mutants["wrong-pair"] = wrong_pair
+        for name, mutant in mutants.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [mutant]}, schema, schema
+                )
+
+    def test_migration_record_schema_closes_retained_patch_policy(self) -> None:
+        converter = self.converter
+        result = converter.build_conversion(ROOT)
+        schema = self._strict_json(
+            PurePosixPath("schemas/migration-record.schema.json")
+        )
+        assets = {asset.source_path: asset for asset in result.source_pack.assets}
+        records = {record.source_path: record for record in result.records}
+        reviews = {
+            record.source_path: record for record in result.patch_review.records
+        }
+        patch_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        retained = converter._reviewed_patch_document(
+            records[patch_path], assets[patch_path], reviews[patch_path]
+        )
+        retained.update(
+            {
+                "status": "deferred",
+                "baseEvidence": {
+                    "matched": 1,
+                    "mismatched": 0,
+                    "added": 0,
+                    "unproven": 0,
+                },
+                "patchLicense": {
+                    "status": "reviewed",
+                    "spdxExpression": "MIT",
+                },
+                "evidenceAndDependencies": [
+                    {
+                        "kind": "patch-license",
+                        "value": "https://example.com/licenses/MIT",
+                    }
+                ],
+                "upstreamStatus": "local-only",
+                "reviewDisposition": "retained",
+                "reason": None,
+                "releaseCondition": None,
+                "regressionProbeIds": ["reviewed-patch-probe"],
+            }
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(
+            {"schemaVersion": "1", "records": [retained]}, schema, schema
+        )
+        only_added = copy.deepcopy(retained)
+        only_added["baseEvidence"]["matched"] = 0
+        only_added["baseEvidence"]["added"] = 1
+        MigrationSchemaTests._assert_schema_instance_valid(
+            {"schemaVersion": "1", "records": [only_added]}, schema, schema
+        )
+
+        mutants: dict[str, object] = {}
+        for field in ("mismatched", "unproven"):
+            mutant = copy.deepcopy(retained)
+            mutant["baseEvidence"][field] = 2
+            mutants[f"base-{field}"] = mutant
+        no_proven_base = copy.deepcopy(retained)
+        no_proven_base["baseEvidence"]["matched"] = 0
+        mutants["no-proven-base"] = no_proven_base
+        missing_license_evidence = copy.deepcopy(retained)
+        missing_license_evidence["evidenceAndDependencies"] = []
+        mutants["missing-license-evidence"] = missing_license_evidence
+        for kind, value in (
+            ("external-dependency", "https://example.com/dependency"),
+            ("development-dependency", "local-build-tool"),
+        ):
+            conflicting_dependency = copy.deepcopy(retained)
+            conflicting_dependency["evidenceAndDependencies"].append(
+                {"kind": kind, "value": value}
+            )
+            mutants[kind] = conflicting_dependency
+        for name, mutant in mutants.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    {"schemaVersion": "1", "records": [mutant]}, schema, schema
+                )
+
+    def test_repository_oracle_binds_the_exact_reviewed_tree(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-oracle-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            binding, errors = validator._validated_patch_review_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(binding)
+            with binding:
+                binding.revalidate()
+
+    def test_patch_review_binding_rejects_a_canonical_digest_mutation(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-digest-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            review_path = temporary_root / self.REVIEW_RELATIVE
+            review = common.parse_json_bytes(
+                review_path.read_bytes(), label="mutated patch review"
+            )
+            review["taskIssue"] = "MW-ASSET-009"
+            review_path.write_bytes(common.canonical_json_bytes(review))
+
+            validator.ROOT = temporary_root
+            binding, errors = validator._validated_patch_review_binding()
+            self.assertIsNone(binding)
+            self.assertEqual(
+                errors, ["Mac-Win patch review evidence validation failed"]
+            )
+
+    def test_repository_oracle_rejects_self_consistent_patch_review_forge(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-forge-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            review_path = temporary_root / self.REVIEW_RELATIVE
+            review = common.parse_json_bytes(
+                review_path.read_bytes(), label="forged patch review"
+            )
+            target_path = review["records"][0]["sourcePath"]
+            review["records"][0]["upstream"]["commit"] = "f" * 40
+            forged_review = common.canonical_json_bytes(review)
+
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.GENERATED_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            mapping = common.parse_json_bytes(
+                documents[mapping_path], label="forged patch mapping"
+            )
+            mapping_record = next(
+                item for item in mapping["records"] if item["sourcePath"] == target_path
+            )
+            mapping_record["upstream"]["commit"] = "f" * 40
+            forged_mapping = common.canonical_json_bytes(mapping)
+            documents[mapping_path] = forged_mapping
+
+            index_path = "migration/macwin/generated/index.json"
+            index = common.parse_json_bytes(
+                documents[index_path], label="forged generated index"
+            )
+            document_record = next(
+                item for item in index["documents"] if item["path"] == mapping_path
+            )
+            document_record["byteSize"] = len(forged_mapping)
+            document_record["sha256"] = hashlib.sha256(forged_mapping).hexdigest()
+            documents[index_path] = common.canonical_json_bytes(index)
+
+            task6_documents = {
+                relative: documents[relative]
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            with self.assertRaises(ValueError):
+                validator._independent_patch_review_oracle(
+                    source_binding, forged_review, task6_documents
+                )
+
+    def test_independent_patch_oracle_rejects_unmapped_review_shape_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-shape-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+
+            def invalid_subject(review):
+                review["records"][0]["subject"] = 7
+
+            def invalid_upstream_blob_oid(review):
+                review["records"][0]["preimages"][0][
+                    "upstreamBlobOid"
+                ] = "not-a-git-oid"
+
+            for name, mutate in (
+                ("subject-integer", invalid_subject),
+                ("upstream-blob-invalid-oid", invalid_upstream_blob_oid),
+            ):
+                review = copy.deepcopy(original)
+                mutate(review)
+                review_raw = common.canonical_json_bytes(review)
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, documents
+                    )
+
+    def test_independent_patch_oracle_binds_exact_preimage_evidence(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-preimage-evidence-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+
+            def safe_wrong_path(review):
+                review["records"][2]["preimages"][0]["path"] = "forged/safe.c"
+
+            def self_consistent_wrong_matched_objects(review):
+                record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"]
+                    == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+                )
+                preimage = record["preimages"][0]
+                preimage["patchOldBlob"] = "f" * 7
+                preimage["upstreamBlobOid"] = "f" * 40
+
+            def swap_dcomp_results_with_consistent_objects(review):
+                record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"]
+                    == "patches/wine-dcomp-winui-host-composition.patch"
+                )
+                matched = next(
+                    item for item in record["preimages"] if item["result"] == "matched"
+                )
+                mismatched = next(
+                    item
+                    for item in record["preimages"]
+                    if item["result"] == "mismatched"
+                )
+                matched.update(
+                    {
+                        "patchOldBlob": "a" * 7,
+                        "result": "mismatched",
+                        "upstreamBlobOid": "b" * 40,
+                    }
+                )
+                mismatched.update(
+                    {
+                        "patchOldBlob": "c" * 7,
+                        "result": "matched",
+                        "upstreamBlobOid": "c" * 40,
+                    }
+                )
+
+            def evidence_digest(review):
+                projection = [
+                    {
+                        "sourcePath": record["sourcePath"],
+                        "preimages": [
+                            {
+                                "path": preimage["path"],
+                                "result": preimage["result"],
+                                "upstreamBlobOid": preimage["upstreamBlobOid"],
+                            }
+                            for preimage in record["preimages"]
+                        ],
+                    }
+                    for record in review["records"]
+                ]
+                raw = json.dumps(
+                    projection,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("ascii")
+                return hashlib.sha256(raw).hexdigest()
+
+            for name, mutate, bypass_evidence_seal in (
+                ("safe-wrong-path", safe_wrong_path, True),
+                (
+                    "self-consistent-wrong-matched-objects",
+                    self_consistent_wrong_matched_objects,
+                    True,
+                ),
+                (
+                    "self-consistent-result-swap",
+                    swap_dcomp_results_with_consistent_objects,
+                    False,
+                ),
+            ):
+                review = copy.deepcopy(original)
+                mutate(review)
+                review_raw = common.canonical_json_bytes(review)
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(self.subTest(case=name))
+                    stack.enter_context(
+                        mock.patch.object(
+                            validator,
+                            "PATCH_REVIEW_DOCUMENT_SHA256",
+                            hashlib.sha256(review_raw).hexdigest(),
+                        )
+                    )
+                    if bypass_evidence_seal:
+                        stack.enter_context(
+                            mock.patch.object(
+                                validator,
+                                "PATCH_PREIMAGE_EVIDENCE_SHA256",
+                                evidence_digest(review),
+                                create=True,
+                            )
+                        )
+                    stack.enter_context(self.assertRaises(ValueError))
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, documents
+                    )
+
+    def test_independent_patch_oracle_rejects_preimage_evidence_table_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-preimage-table-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original_review = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            original_mapping = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+            source_path = "patches/jasp-0.97.1-local-macos-build-configure.patch"
+
+            def matching_records(review, mapping):
+                review_record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"] == source_path
+                )
+                mapping_record = next(
+                    item
+                    for item in mapping["records"]
+                    if item["sourcePath"] == source_path
+                )
+                return review_record, mapping_record
+
+            def missing(review, mapping):
+                review_record, mapping_record = matching_records(review, mapping)
+                review_record["preimages"].pop()
+                mapping_record["baseEvidence"]["matched"] -= 1
+
+            def extra(review, mapping):
+                review_record, mapping_record = matching_records(review, mapping)
+                review_record["preimages"].append(
+                    {
+                        "patchOldBlob": "e" * 7,
+                        "path": "forged/extra.c",
+                        "result": "matched",
+                        "upstreamBlobOid": "e" * 40,
+                    }
+                )
+                mapping_record["baseEvidence"]["matched"] += 1
+
+            def legal_upstream_replacement(review, _mapping):
+                review["records"][0]["preimages"][0][
+                    "upstreamBlobOid"
+                ] = "a" * 40
+
+            for name, mutate in (
+                ("missing", missing),
+                ("extra", extra),
+                ("legal-value-replacement", legal_upstream_replacement),
+            ):
+                review = copy.deepcopy(original_review)
+                mapping = copy.deepcopy(original_mapping)
+                mutate(review, mapping)
+                review_raw = common.canonical_json_bytes(review)
+                mapping_raw = common.canonical_json_bytes(mapping)
+                forged_documents = {**documents, mapping_path: mapping_raw}
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), mock.patch.dict(
+                    validator.TASK6_DOCUMENT_SHA256,
+                    {mapping_path: hashlib.sha256(mapping_raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
+    def test_independent_patch_oracle_rejects_self_consistent_ledger_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-ledger-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original_review = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            original_mapping = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+
+            def records_for(review, mapping, source_path):
+                review_record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"] == source_path
+                )
+                mapping_record = next(
+                    item
+                    for item in mapping["records"]
+                    if item["sourcePath"] == source_path
+                )
+                return review_record, mapping_record
+
+            def wrong_subject(review, _mapping):
+                review["records"][0]["subject"] = "[PATCH] Forged subject"
+
+            def overlong_subject(review, _mapping):
+                review["records"][0]["subject"] = "x" * 257
+
+            def incomplete_reviewed_author(review, mapping):
+                review_record = review["records"][0]
+                mapping_record = mapping["records"][0]
+                review_record["patchAuthor"] = {"status": "reviewed"}
+                mapping_record["patchAuthor"] = {"status": "reviewed"}
+
+            def populated_unresolved_author(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                author = {"status": "unresolved", "displayName": "Forged"}
+                review_record["patchAuthor"] = author
+                mapping_record["patchAuthor"] = copy.deepcopy(author)
+
+            def overlong_reviewed_author(review, mapping):
+                author = copy.deepcopy(review["records"][0]["patchAuthor"])
+                author["displayName"] = "x" * 257
+                review["records"][0]["patchAuthor"] = author
+                mapping["records"][0]["patchAuthor"] = copy.deepcopy(author)
+
+            def unknown_application(review, mapping):
+                applications = ["forged-app"]
+                review["records"][0]["affectedApplications"] = applications
+                mapping["records"][0]["affectedApplications"] = applications
+
+            def overlong_application(review, mapping):
+                applications = ["a" * 129]
+                review["records"][0]["affectedApplications"] = applications
+                mapping["records"][0]["affectedApplications"] = applications
+
+            def non_https_external_dependency(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies[-1]["value"] = "not-an-https-locator"
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependency_not_in_source(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies.append(
+                    {"kind": "development-dependency", "value": "MACWIN_A"}
+                )
+                dependencies.sort(key=lambda item: (item["kind"], item["value"]))
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependency_value_overlong(review, mapping):
+                dependency = {
+                    "kind": "development-dependency",
+                    "value": "x" * 2049,
+                }
+                review["records"][0]["evidenceAndDependencies"] = [dependency]
+                mapping["records"][0]["evidenceAndDependencies"] = [
+                    copy.deepcopy(dependency)
+                ]
+
+            def unsafe_preimage_path(review, _mapping):
+                review["records"][2]["preimages"][0]["path"] = "../escape.c"
+
+            def overlong_preimage_path(review, _mapping):
+                review["records"][2]["preimages"][0]["path"] = "a" * 1025
+
+            def invalid_patch_old_blob(review, _mapping):
+                review["records"][2]["preimages"][0][
+                    "patchOldBlob"
+                ] = "not-a-git-prefix"
+
+            def matched_without_old_blob(review, _mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    _mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"][0]["patchOldBlob"] = None
+
+            def mismatched_without_upstream_blob(review, mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/wine-dcomp-winui-host-composition.patch",
+                )
+                preimage = next(
+                    item
+                    for item in review_record["preimages"]
+                    if item["result"] == "mismatched"
+                )
+                preimage["upstreamBlobOid"] = None
+
+            def added_with_nonzero_objects(review, mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/wine-macos-native-ui-integration.patch",
+                )
+                preimage = next(
+                    item
+                    for item in review_record["preimages"]
+                    if item["result"] == "added"
+                )
+                preimage["patchOldBlob"] = "1234567"
+                preimage["upstreamBlobOid"] = "1" * 40
+
+            def matched_oid_marked_mismatched(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"][0]["result"] = "mismatched"
+                mapping_record["baseEvidence"]["matched"] -= 1
+                mapping_record["baseEvidence"]["mismatched"] += 1
+
+            def wrong_source_identity(review, _mapping):
+                review["source"]["inventoryCommit"] = "f" * 40
+
+            def wrong_upstream_identity(review, mapping):
+                review["records"][0]["upstream"]["reference"] = "v0.97.2"
+                mapping["records"][0]["upstream"]["reference"] = "v0.97.2"
+
+            def applications_unsorted(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["affectedApplications"].reverse()
+                mapping_record["affectedApplications"].reverse()
+
+            def dependencies_duplicated(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies.append(copy.deepcopy(dependencies[0]))
+                dependencies.sort(key=lambda item: (item["kind"], item["value"]))
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependencies_over_maximum(review, mapping):
+                dependencies = [
+                    {
+                        "kind": "development-dependency",
+                        "value": f"MACWIN_DEP_{index:03d}",
+                    }
+                    for index in range(129)
+                ]
+                review["records"][0]["evidenceAndDependencies"] = dependencies
+                mapping["records"][0]["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def preimages_unsorted(review, _mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    _mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"].reverse()
+
+            def preimages_duplicated(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                preimages = review_record["preimages"]
+                preimages.append(copy.deepcopy(preimages[0]))
+                preimages.sort(key=lambda item: item["path"])
+                mapping_record["baseEvidence"]["matched"] += 1
+
+            def preimages_over_maximum(review, mapping):
+                review_record = review["records"][2]
+                template = review_record["preimages"][0]
+                review_record["preimages"] = [
+                    {**template, "path": f"bounded/file-{index:03d}.c"}
+                    for index in range(129)
+                ]
+                mapping["records"][2]["baseEvidence"]["unproven"] = 129
+
+            for name, mutate in (
+                ("subject-wrong-source-value", wrong_subject),
+                ("subject-overlong", overlong_subject),
+                ("reviewed-author-missing-optionals", incomplete_reviewed_author),
+                ("unresolved-author-populated", populated_unresolved_author),
+                ("reviewed-author-overlong", overlong_reviewed_author),
+                ("application-not-approved", unknown_application),
+                ("application-overlong", overlong_application),
+                ("external-dependency-not-https", non_https_external_dependency),
+                ("dependency-not-in-source", dependency_not_in_source),
+                ("dependency-value-overlong", dependency_value_overlong),
+                ("preimage-path-unsafe", unsafe_preimage_path),
+                ("preimage-path-overlong", overlong_preimage_path),
+                ("patch-old-blob-invalid", invalid_patch_old_blob),
+                ("matched-without-old-blob", matched_without_old_blob),
+                ("mismatched-without-upstream-blob", mismatched_without_upstream_blob),
+                ("added-with-nonzero-objects", added_with_nonzero_objects),
+                ("matched-oid-marked-mismatched", matched_oid_marked_mismatched),
+                ("source-identity", wrong_source_identity),
+                ("upstream-identity", wrong_upstream_identity),
+                ("applications-unsorted", applications_unsorted),
+                ("dependencies-duplicated", dependencies_duplicated),
+                ("dependencies-over-maximum", dependencies_over_maximum),
+                ("preimages-unsorted", preimages_unsorted),
+                ("preimages-duplicated", preimages_duplicated),
+                ("preimages-over-maximum", preimages_over_maximum),
+            ):
+                review = copy.deepcopy(original_review)
+                mapping = copy.deepcopy(original_mapping)
+                mutate(review, mapping)
+                review_raw = common.canonical_json_bytes(review)
+                mapping_raw = common.canonical_json_bytes(mapping)
+                forged_documents = {**documents, mapping_path: mapping_raw}
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), mock.patch.dict(
+                    validator.TASK6_DOCUMENT_SHA256,
+                    {mapping_path: hashlib.sha256(mapping_raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
+    def test_repository_oracle_rejects_unsafe_or_extra_reviewed_tree_entries(self) -> None:
+        cases = (
+            "missing-leaf",
+            "missing-root",
+            "extra-file",
+            "extra-directory",
+            "leaf-directory",
+            "leaf-hardlink",
+            "leaf-symlink",
+            "root-symlink",
+            "root-file",
+        )
+        exercised = 0
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-patch-review-tree-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+                validator = MigrationLayoutTests._load_repository_validator()
+                validator.ROOT = temporary_root
+                reviewed = temporary_root / "migration/macwin/reviewed"
+                leaf = reviewed / "patches.json"
+                try:
+                    if case == "missing-leaf":
+                        leaf.unlink()
+                    elif case == "missing-root":
+                        shutil.rmtree(reviewed)
+                    elif case == "extra-file":
+                        (reviewed / "future.json").write_bytes(b"{}\n")
+                    elif case == "extra-directory":
+                        (reviewed / "future").mkdir()
+                    elif case == "leaf-directory":
+                        leaf.unlink()
+                        leaf.mkdir()
+                    elif case == "leaf-hardlink":
+                        outside = temporary_root / "outside-review.json"
+                        leaf.replace(outside)
+                        os.link(outside, leaf)
+                    elif case == "leaf-symlink":
+                        outside = temporary_root / "outside-review.json"
+                        leaf.replace(outside)
+                        leaf.symlink_to(outside)
+                    elif case == "root-symlink":
+                        outside = temporary_root / "outside-reviewed"
+                        reviewed.replace(outside)
+                        reviewed.symlink_to(outside, target_is_directory=True)
+                    else:
+                        shutil.rmtree(reviewed)
+                        reviewed.write_bytes(b"not a directory")
+                except (OSError, NotImplementedError):
+                    continue
+                exercised += 1
+                binding, errors = validator._validated_patch_review_binding()
+                self.assertIsNone(binding)
+                self.assertEqual(
+                    errors, ["Mac-Win patch review evidence validation failed"]
+                )
+        self.assertGreaterEqual(exercised, 5)
+
+    def test_patch_review_binding_rejects_same_size_restored_mtime_mutation(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-race-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            binding, errors = validator._validated_patch_review_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(binding)
+            with binding:
+                path = temporary_root / self.REVIEW_RELATIVE
+                raw = path.read_bytes()
+                metadata = path.stat()
+                try:
+                    path.write_bytes(
+                        raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:]
+                    )
+                    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+                except OSError:
+                    pass
+                if path.read_bytes() == raw:
+                    binding.revalidate()
+                else:
+                    with self.assertRaises(ValueError):
+                        binding.revalidate()
+
+    def test_patch_review_binding_rejects_reviewed_root_substitution_window(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-root-race-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            binding, errors = validator._validated_patch_review_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(binding)
+            with binding:
+                reviewed = temporary_root / "migration/macwin/reviewed"
+                saved = reviewed.with_name("reviewed-saved")
+                leaf_name = "patches.json"
+                original_verify = binding.verify_path
+                blocked = False
+                exercised = False
+
+                def substitute_root(path: Path) -> bytes:
+                    nonlocal blocked, exercised
+                    root_moved = False
+                    forged_created = False
+                    leaf_moved = False
+
+                    def restore() -> None:
+                        nonlocal forged_created, leaf_moved, root_moved
+                        if leaf_moved:
+                            (reviewed / leaf_name).replace(saved / leaf_name)
+                            leaf_moved = False
+                        if forged_created:
+                            reviewed.rmdir()
+                            forged_created = False
+                        if root_moved:
+                            saved.replace(reviewed)
+                            root_moved = False
+
+                    try:
+                        reviewed.replace(saved)
+                        root_moved = True
+                        reviewed.mkdir()
+                        forged_created = True
+                        (saved / leaf_name).replace(reviewed / leaf_name)
+                        leaf_moved = True
+                        exercised = True
+                    except OSError:
+                        blocked = True
+                        restore()
+                        return original_verify(path)
+                    try:
+                        return original_verify(path)
+                    finally:
+                        restore()
+
+                rejected = False
+                with mock.patch.object(
+                    binding, "verify_path", side_effect=substitute_root
+                ):
+                    try:
+                        binding.revalidate()
+                    except (OSError, ValueError):
+                        rejected = True
+                self.assertTrue(blocked or rejected)
+                self.assertTrue(blocked or exercised)
+
+
+    def test_independent_patch_oracle_rejects_mapping_and_quarantine_mutants(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-documents-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            review_raw = (temporary_root / self.REVIEW_RELATIVE).read_bytes()
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            validator._independent_patch_review_oracle(
+                source_binding, review_raw, documents
+            )
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            mapping_value = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+
+            def missing(value):
+                value["records"].pop()
+
+            def extra(value):
+                value["records"].append(copy.deepcopy(value["records"][-1]))
+
+            def reordered(value):
+                value["records"].reverse()
+
+            def wrong_upstream(value):
+                value["records"][0]["upstream"]["commit"] = "f" * 40
+
+            def false_deferred(value):
+                value["records"][0]["status"] = "deferred"
+                value["records"][0]["reviewDisposition"] = "retained"
+                value["records"][0]["reason"] = None
+                value["records"][0]["releaseCondition"] = None
+
+            for name, mutate in (
+                ("mapping-missing", missing),
+                ("mapping-extra", extra),
+                ("mapping-reordered", reordered),
+                ("mapping-wrong-upstream", wrong_upstream),
+                ("mapping-false-deferred", false_deferred),
+            ):
+                mutant = copy.deepcopy(mapping_value)
+                mutate(mutant)
+                raw = common.canonical_json_bytes(mutant)
+                forged_documents = {**documents, mapping_path: raw}
+                with self.subTest(case=name), mock.patch.dict(
+                    validator.TASK6_DOCUMENT_SHA256,
+                    {mapping_path: hashlib.sha256(raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
+            quarantine_path = "migration/macwin/generated/quarantine.json"
+            quarantine_value = common.parse_json_bytes(
+                documents[quarantine_path], label="patch quarantine"
+            )
+            patch_indices = [
+                index
+                for index, record in enumerate(quarantine_value["records"])
+                if record["category"] == "patches"
+            ]
+
+            def quarantine_missing(value):
+                value["records"].pop(patch_indices[0])
+
+            def quarantine_extra(value):
+                value["records"].insert(
+                    patch_indices[-1] + 1,
+                    copy.deepcopy(value["records"][patch_indices[-1]]),
+                )
+
+            def quarantine_reordered(value):
+                first, second = patch_indices[:2]
+                value["records"][first], value["records"][second] = (
+                    value["records"][second],
+                    value["records"][first],
+                )
+
+            for name, mutate in (
+                ("quarantine-missing", quarantine_missing),
+                ("quarantine-extra", quarantine_extra),
+                ("quarantine-reordered", quarantine_reordered),
+            ):
+                mutant = copy.deepcopy(quarantine_value)
+                mutate(mutant)
+                raw = common.canonical_json_bytes(mutant)
+                forged_documents = {**documents, quarantine_path: raw}
+                with self.subTest(case=name), mock.patch.dict(
+                    validator.TASK5_DOCUMENT_SHA256,
+                    {quarantine_path: hashlib.sha256(raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
+    def test_independent_patch_oracle_rejects_valid_shape_wrong_review_upstream(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-upstream-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            review = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            review["records"][0]["upstream"]["commit"] = "f" * 40
+            review_raw = common.canonical_json_bytes(review)
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            mapping = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+            mapping["records"][0]["upstream"]["commit"] = "f" * 40
+            mapping_raw = common.canonical_json_bytes(mapping)
+            documents[mapping_path] = mapping_raw
+            with mock.patch.object(
+                validator,
+                "PATCH_REVIEW_DOCUMENT_SHA256",
+                hashlib.sha256(review_raw).hexdigest(),
+            ), mock.patch.dict(
+                validator.TASK6_DOCUMENT_SHA256,
+                {mapping_path: hashlib.sha256(mapping_raw).hexdigest()},
+            ), self.assertRaises(ValueError):
+                validator._independent_patch_review_oracle(
+                    source_binding, review_raw, documents
+                )
+
+    def test_repository_scan_revalidates_review_after_ordinary_scan(self) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-final-race-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            review_path = temporary_root / self.REVIEW_RELATIVE
+            original_raw = review_path.read_bytes()
+            original_scan = validator._scan_developer_paths
+            mutated = False
+            attempted = False
+            blocked = False
+
+            def mutate_after_scan(*arguments, **options):
+                nonlocal attempted, blocked, mutated
+                result = original_scan(*arguments, **options)
+                if not attempted:
+                    attempted = True
+                    try:
+                        review_path.write_bytes(
+                            original_raw[:-2]
+                            + bytes([original_raw[-2] ^ 1])
+                            + original_raw[-1:]
+                        )
+                        mutated = True
+                    except OSError:
+                        blocked = True
+                return result
+
+            with mock.patch.object(
+                validator, "_scan_developer_paths", side_effect=mutate_after_scan
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertTrue(attempted)
+            if blocked:
+                self.assertFalse(mutated)
+                self.assertEqual(review_path.read_bytes(), original_raw)
+                self.assertEqual(errors, [])
+            else:
+                self.assertTrue(mutated)
+                self.assertIn(
+                    "Mac-Win patch review evidence validation failed", errors
+                )
+
+    def test_repository_scan_revalidates_review_after_final_ordinary_scan(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-post-ordinary-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            review_path = temporary_root / self.REVIEW_RELATIVE
+            original_raw = review_path.read_bytes()
+            original_scan = validator._scan_developer_paths
+            calls = 0
+            attempted = False
+            blocked = False
+
+            class PostOrdinaryMutation:
+                def __init__(self, binding) -> None:
+                    self.binding = binding
+
+                def revalidate(self) -> None:
+                    nonlocal calls, attempted, blocked
+                    self.binding.revalidate()
+                    calls += 1
+                    if calls == 2:
+                        attempted = True
+                        try:
+                            review_path.write_bytes(b"{}\n")
+                        except OSError:
+                            blocked = True
+
+            def wrap_ordinary_binding(*arguments, **options):
+                errors, binding = original_scan(*arguments, **options)
+                return errors, PostOrdinaryMutation(binding)
+
+            with mock.patch.object(
+                validator,
+                "_scan_developer_paths",
+                side_effect=wrap_ordinary_binding,
+            ):
+                errors = validator.validate_no_developer_paths()
+            self.assertEqual(calls, 2)
+            self.assertTrue(attempted)
+            if blocked:
+                self.assertEqual(review_path.read_bytes(), original_raw)
+                self.assertEqual(errors, [])
+            else:
+                self.assertEqual(review_path.read_bytes(), b"{}\n")
+                self.assertIn(
+                    "Mac-Win patch review evidence validation failed", errors
+                )
+
+    def test_repository_scan_closes_review_handles_on_success_and_failure(
+        self,
+    ) -> None:
+        for case in ("success", "scan-failure"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(
+                prefix=".macwin-patch-review-close-", dir=ROOT
+            ) as directory:
+                temporary_root = Path(directory)
+                MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+                validator = MigrationLayoutTests._load_repository_validator()
+                validator.ROOT = temporary_root
+                original_binding = validator._validated_patch_review_binding
+                captured = []
+
+                def capture_binding():
+                    binding, errors = original_binding()
+                    if binding is not None:
+                        captured.append(binding)
+                    return binding, errors
+
+                with mock.patch.object(
+                    validator,
+                    "_validated_patch_review_binding",
+                    side_effect=capture_binding,
+                ):
+                    if case == "scan-failure":
+                        scan_context = mock.patch.object(
+                            validator,
+                            "_scan_developer_paths",
+                            side_effect=validator._DeveloperPathScanError(),
+                        )
+                    else:
+                        scan_context = contextlib.nullcontext()
+                    with scan_context:
+                        errors = validator.validate_no_developer_paths()
+                self.assertEqual(len(captured), 1)
+                binding = captured[0]
+                self.assertIsNone(binding.parent_descriptor)
+                self.assertIsNone(binding.root_descriptor)
+                self.assertIsNone(binding.leaf_descriptor)
+                with self.assertRaises(ValueError):
+                    binding.revalidate()
+                if case == "success":
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertEqual(
+                        errors, [validator.DEVELOPER_PATH_VALIDATION_ERROR]
+                    )
+                reviewed = temporary_root / "migration/macwin/reviewed"
+                moved = reviewed.with_name("reviewed-moved")
+                reviewed.replace(moved)
+                moved.replace(reviewed)
+
+    def test_patch_review_binding_construction_closes_handles_on_interrupt(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        validator.ROOT = ROOT
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        with mock.patch.object(
+            validator,
+            "_bind_patch_review_directory",
+            side_effect=[("parent-handle", (1, 1)), ("root-handle", (2, 2))],
+        ), mock.patch.object(
+            validator, "_read_held_patch_review_directory"
+        ), mock.patch.object(
+            validator,
+            "_open_patch_review_leaf",
+            return_value=(123, (3, 3, len(raw), 1, 4)),
+        ), mock.patch.object(
+            validator, "_read_held_patch_review_leaf", return_value=raw
+        ), mock.patch.object(
+            validator,
+            "_canonical_patch_review_json",
+            side_effect=KeyboardInterrupt("injected review interrupt"),
+        ), mock.patch.object(
+            validator, "_close_validator_directory"
+        ) as close_directory, mock.patch.object(
+            validator.os, "close"
+        ) as close_leaf:
+            with self.assertRaises(KeyboardInterrupt):
+                validator._validated_patch_review_binding()
+        close_leaf.assert_called_once_with(123)
+        self.assertEqual(
+            close_directory.call_args_list,
+            [mock.call("root-handle"), mock.call("parent-handle")],
+        )
 
 
 class MacWinConversionModelTests(unittest.TestCase):
@@ -1169,7 +4199,7 @@ class MacWinConversionModelTests(unittest.TestCase):
         expected = {
             "probes": ("portable-probe", None, None),
             "fixtures": ("portable-fixture", None, None),
-            "patches": ("patch-mapping", "deferred", "MW-ASSET-002"),
+            "patches": ("patch-mapping", "quarantined", "MW-ASSET-002"),
             "bottle-schema": (
                 "bottle-schema-mapping",
                 "deferred",
@@ -1195,11 +4225,14 @@ class MacWinConversionModelTests(unittest.TestCase):
                 self.assertEqual(record.target_issue, target)
                 self.assertEqual(
                     record.action,
-                    "defer-patch"
+                    "quarantine"
                     if record.category == "patches"
                     else "defer-bottle-schema",
                 )
-                self.assertIsNone(record.reason)
+                if record.category == "patches":
+                    self.assertEqual(record.reason, "missing-license")
+                else:
+                    self.assertIsNone(record.reason)
 
     def test_model_rejects_incomplete_duplicate_extra_and_forged_results(self) -> None:
         converter = self.converter
@@ -1275,7 +4308,7 @@ class MacWinConversionModelTests(unittest.TestCase):
             with self.subTest(asset=asset.source_path), self.assertRaises(
                 converter.ConversionError
             ):
-                converter.classify_source_pack(forged)
+                converter.classify_source_pack(forged, self.result.patch_review)
 
     def test_model_type_gates_reject_hostile_fields_without_reflection(self) -> None:
         converter = self.converter
@@ -1309,7 +4342,7 @@ class MacWinConversionModelTests(unittest.TestCase):
                 converter.ConversionError,
                 r"\Asource pack model fields are invalid\Z",
             ):
-                converter.classify_source_pack(mutant)
+                converter.classify_source_pack(mutant, self.result.patch_review)
 
         asset_mutants = (
             dataclasses.replace(source_asset, category=[]),
@@ -1328,7 +4361,7 @@ class MacWinConversionModelTests(unittest.TestCase):
                 converter.ConversionError,
                 r"\Asource asset model fields are invalid\Z",
             ):
-                converter.classify_source_pack(forged)
+                converter.classify_source_pack(forged, self.result.patch_review)
 
         hostile_path = dataclasses.replace(
             source_asset, source_path="hostile\n\x1b[31m/path"
@@ -1342,8 +4375,49 @@ class MacWinConversionModelTests(unittest.TestCase):
             r"\Asource asset path is invalid\Z",
         ):
             converter.classify_source_pack(
-                dataclasses.replace(source_pack, assets=assets)
+                dataclasses.replace(source_pack, assets=assets),
+                self.result.patch_review,
             )
+
+        review = self.result.patch_review
+        patch = review.records[0]
+        patch_review_mutants = (
+            dataclasses.replace(review, records=list(review.records)),
+            dataclasses.replace(
+                review,
+                records=(
+                    dataclasses.replace(patch, byte_size=True),
+                    *review.records[1:],
+                ),
+            ),
+            dataclasses.replace(
+                review,
+                records=(
+                    dataclasses.replace(patch, source_sha256="f" * 64),
+                    *review.records[1:],
+                ),
+            ),
+            dataclasses.replace(
+                review,
+                records=(
+                    dataclasses.replace(
+                        patch,
+                        upstream=dataclasses.replace(
+                            patch.upstream, repository=[]
+                        ),
+                    ),
+                    *review.records[1:],
+                ),
+            ),
+        )
+        for mutant in patch_review_mutants:
+            with self.subTest(boundary="patch-review"), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.render_documents(
+                    dataclasses.replace(self.result, patch_review=mutant)
+                )
 
         record_mutants = (
             dataclasses.replace(record, source_path=[]),
@@ -1363,6 +4437,278 @@ class MacWinConversionModelTests(unittest.TestCase):
                 r"\Aconversion result record fields are invalid\Z",
             ):
                 converter.render_documents(forged)
+
+    def test_public_apis_reject_forged_approved_patch_review_models(self) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+
+        def replace_preimage(record, original, replacement):
+            return dataclasses.replace(
+                record,
+                preimages=tuple(
+                    replacement if item is original else item
+                    for item in record.preimages
+                ),
+            )
+
+        def replace_record(record, replacement):
+            return dataclasses.replace(
+                review,
+                records=tuple(
+                    replacement if item is record else item
+                    for item in review.records
+                ),
+            )
+
+        matched_record = next(
+            record
+            for record in review.records
+            if any(item.result == "matched" for item in record.preimages)
+        )
+        matched = next(
+            item for item in matched_record.preimages if item.result == "matched"
+        )
+        mismatched_record = next(
+            record
+            for record in review.records
+            if any(item.result == "mismatched" for item in record.preimages)
+        )
+        mismatched = next(
+            item
+            for item in mismatched_record.preimages
+            if item.result == "mismatched"
+        )
+        added_record = next(
+            record
+            for record in review.records
+            if any(item.result == "added" for item in record.preimages)
+        )
+        added = next(
+            item for item in added_record.preimages if item.result == "added"
+        )
+        unproven_record = next(
+            record
+            for record in review.records
+            if any(item.result == "unproven" for item in record.preimages)
+        )
+        unproven = next(
+            item
+            for item in unproven_record.preimages
+            if item.result == "unproven"
+        )
+        shared_prefix_oid = matched.patch_old_blob + "f" * (
+            40 - len(matched.patch_old_blob)
+        )
+        if shared_prefix_oid == matched.upstream_blob_oid:
+            shared_prefix_oid = matched.patch_old_blob + "e" * (
+                40 - len(matched.patch_old_blob)
+            )
+
+        mutants = {
+            "upstream-commit": replace_record(
+                review.records[0],
+                dataclasses.replace(
+                    review.records[0],
+                    upstream=dataclasses.replace(
+                        review.records[0].upstream,
+                        commit="f" * 40,
+                    ),
+                ),
+            ),
+            "different-full-oid-with-approved-prefix": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(
+                        matched,
+                        upstream_blob_oid=shared_prefix_oid,
+                    ),
+                ),
+            ),
+            "matched-to-mismatched": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(matched, result="mismatched"),
+                ),
+            ),
+            "mismatched-to-matched": replace_record(
+                mismatched_record,
+                replace_preimage(
+                    mismatched_record,
+                    mismatched,
+                    dataclasses.replace(mismatched, result="matched"),
+                ),
+            ),
+            "added-to-unproven": replace_record(
+                added_record,
+                replace_preimage(
+                    added_record,
+                    added,
+                    dataclasses.replace(added, result="unproven"),
+                ),
+            ),
+            "unproven-to-added": replace_record(
+                unproven_record,
+                replace_preimage(
+                    unproven_record,
+                    unproven,
+                    dataclasses.replace(unproven, result="added"),
+                ),
+            ),
+            "preimage-path-case": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(
+                        matched,
+                        path=matched.path[0].swapcase() + matched.path[1:],
+                    ),
+                ),
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(api="classify", mutant=name), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.classify_source_pack(self.source_pack, mutant)
+            with self.subTest(api="render", mutant=name), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.render_documents(
+                    dataclasses.replace(self.result, patch_review=mutant)
+                )
+
+    def test_patch_review_preflight_rejects_unbounded_models_before_reconstruction(
+        self,
+    ) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+        first = review.records[0]
+        evidence_record = next(
+            record for record in review.records if record.evidence_and_dependencies
+        )
+
+        def replace_record(record, replacement):
+            return dataclasses.replace(
+                review,
+                records=tuple(
+                    replacement if item is record else item
+                    for item in review.records
+                ),
+            )
+
+        mutants = {
+            "twelve-records": dataclasses.replace(
+                review,
+                record_count=12,
+                records=(first,) * 12,
+            ),
+            "ten-thousand-records": dataclasses.replace(
+                review,
+                record_count=10_000,
+                records=(first,) * 10_000,
+            ),
+            "reordered-records": dataclasses.replace(
+                review,
+                records=tuple(reversed(review.records)),
+            ),
+            "affected-applications": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    affected_applications=("application",) * 33,
+                ),
+            ),
+            "preimages": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    preimages=(first.preimages[0],) * 129,
+                ),
+            ),
+            "evidence-and-dependencies": replace_record(
+                evidence_record,
+                dataclasses.replace(
+                    evidence_record,
+                    evidence_and_dependencies=(
+                        evidence_record.evidence_and_dependencies[0],
+                    )
+                    * 129,
+                ),
+            ),
+            "regression-probes": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    regression_probe_ids=("probe",) * 33,
+                ),
+            ),
+            "purpose-code-points": replace_record(
+                first,
+                dataclasses.replace(first, purpose="a" * 2049),
+            ),
+            "purpose-utf8-bytes": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    purpose="\N{LATIN SMALL LETTER E WITH ACUTE}" * 2048,
+                ),
+            ),
+        }
+        with mock.patch.object(
+            converter,
+            "_patch_review_json_value",
+            side_effect=AssertionError("deep reconstruction reached"),
+        ) as reconstruction:
+            for name, mutant in mutants.items():
+                reconstruction.reset_mock()
+                with self.subTest(mutant=name), self.assertRaisesRegex(
+                    converter.ConversionError,
+                    r"\Apatch review evidence is invalid\Z",
+                ):
+                    converter.classify_source_pack(self.source_pack, mutant)
+                reconstruction.assert_not_called()
+
+    def test_patch_review_preflight_has_bounded_repeated_record_amplification(
+        self,
+    ) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+        mutant = dataclasses.replace(
+            review,
+            record_count=500,
+            records=(review.records[0],) * 500,
+        )
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.classify_source_pack(self.source_pack, mutant)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_patch_review_model_reconstructs_the_exact_approved_bytes(self) -> None:
+        converter = self.converter
+        value = converter._patch_review_value_from_model(
+            self.result.patch_review,
+            self.source_pack,
+        )
+        raw = converter._COMMON.canonical_json_bytes(value)
+        self.assertEqual(len(raw), 35_368)
+        self.assertEqual(
+            raw,
+            (ROOT / "migration/macwin/reviewed/patches.json").read_bytes(),
+        )
 
     def test_converter_import_is_lazy_and_preserves_bytecode_policy(self) -> None:
         previous = sys.dont_write_bytecode
@@ -1899,7 +5245,9 @@ class MacWinConversionModelTests(unittest.TestCase):
             "_read_and_hold_regular_file",
             side_effect=AssertionError("authenticated source bytes were reread"),
         ):
-            result = converter.classify_source_pack(self.source_pack)
+            result = converter.classify_source_pack(
+                self.source_pack, self.result.patch_review
+            )
             documents = converter.render_documents(result)
         self.assertEqual(
             set(documents),
@@ -2268,7 +5616,10 @@ class MacWinPortableAssetTests(unittest.TestCase):
             )
             for record, asset in zip(value["records"], source, strict=True):
                 self.assertEqual(set(record) & forbidden, set())
-                self.assertEqual(record["status"], "deferred")
+                self.assertEqual(
+                    record["status"],
+                    "quarantined" if category == "patches" else "deferred",
+                )
                 self.assertEqual(record["targetIssue"], target)
                 self.assertEqual(record["sourceCommit"], asset.source_commit)
                 self.assertEqual(record["sourceSha256"], asset.sha256)
@@ -2491,9 +5842,14 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 path: full[path]
                 for path in validator.TASK6_EVIDENCE_PATHS
             }
-            validator._independent_task6_oracle(source_binding, task6)
+            review_raw = (
+                temporary_root / "migration/macwin/reviewed/patches.json"
+            ).read_bytes()
+            validator._independent_task6_oracle(source_binding, review_raw, task6)
             with self.assertRaises(ValueError):
-                validator._independent_task6_oracle(source_binding, full)
+                validator._independent_task6_oracle(
+                    source_binding, review_raw, full
+                )
 
     def test_repository_oracle_rejects_an_extra_generated_link(self) -> None:
         validator = MigrationLayoutTests._load_repository_validator()
@@ -2534,7 +5890,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
                         for existing in self.result.source_pack.assets
                     ),
                 )
-                result = self.converter.classify_source_pack(source_pack)
+                result = self.converter.classify_source_pack(
+                    source_pack, self.result.patch_review
+                )
                 record = next(
                     item for item in result.records if item.source_path == path
                 )
@@ -2562,7 +5920,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 for existing in self.result.source_pack.assets
             ),
         )
-        result = self.converter.classify_source_pack(source_pack)
+        result = self.converter.classify_source_pack(
+            source_pack, self.result.patch_review
+        )
         record = next(item for item in result.records if item.source_path == asset.source_path)
         self.assertEqual(record.status, "converted")
         manifest = self.converter._portable_document(replacement, record)
@@ -2599,7 +5959,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
             provenance_status="reviewed",
         )
         result = self.converter.classify_source_pack(
-            self._replace_asset(self.result.source_pack, asset, replacement)
+            self._replace_asset(self.result.source_pack, asset, replacement),
+            self.result.patch_review,
         )
         documents = self.converter.render_documents(result)
         content_path = (
@@ -2628,7 +5989,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 for asset in self.result.source_pack.assets
             ),
         )
-        result = self.converter.classify_source_pack(source_pack)
+        result = self.converter.classify_source_pack(
+            source_pack, self.result.patch_review
+        )
         with mock.patch.object(
             self.converter,
             "_portable_document",
@@ -2668,7 +6031,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     asset, license_status="reviewed", provenance_status="reviewed"
                 )
                 result = self.converter.classify_source_pack(
-                    self._replace_asset(self.result.source_pack, asset, reviewed)
+                    self._replace_asset(self.result.source_pack, asset, reviewed),
+                    self.result.patch_review,
                 )
                 record = next(
                     item for item in result.records if item.source_path == path
@@ -2701,7 +6065,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
                     external_refs=locators,
                 )
                 result = self.converter.classify_source_pack(
-                    self._replace_asset(self.result.source_pack, asset, replacement)
+                    self._replace_asset(self.result.source_pack, asset, replacement),
+                    self.result.patch_review,
                 )
                 documents = self.converter.render_documents(result)
                 quarantine = self.common.parse_json_bytes(
@@ -2727,7 +6092,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
             development_dependencies=(shared[-1],),
         )
         result = self.converter.classify_source_pack(
-            self._replace_asset(self.result.source_pack, asset, deduplicated)
+            self._replace_asset(self.result.source_pack, asset, deduplicated),
+            self.result.patch_review,
         )
         record = next(
             item for item in result.records if item.source_path == asset.source_path
@@ -2743,7 +6109,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
             "portable evidence locator set is invalid",
         ):
             self.converter.classify_source_pack(
-                self._replace_asset(self.result.source_pack, asset, oversized)
+                self._replace_asset(self.result.source_pack, asset, oversized),
+                self.result.patch_review,
             )
 
     def test_portable_asset_table_is_unconditionally_closed(self) -> None:
@@ -2805,7 +6172,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
             ), self.assertRaisesRegex(
                 converter.ConversionError, "portable asset table is invalid"
             ):
-                converter.classify_source_pack(self.result.source_pack)
+                converter.classify_source_pack(
+                    self.result.source_pack, self.result.patch_review
+                )
 
         with mock.patch.object(
             converter, "PORTABLE_ASSET_TABLE", mutants["media"]
@@ -2836,7 +6205,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
                 self.converter.ConversionError
             ):
                 self.converter.classify_source_pack(
-                    self._replace_asset(self.result.source_pack, asset, mutant)
+                    self._replace_asset(self.result.source_pack, asset, mutant),
+                    self.result.patch_review,
                 )
 
     def test_portable_reference_graph_is_closed_acyclic_and_bounded(self) -> None:
@@ -2860,7 +6230,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
             ), self.assertRaisesRegex(
                 converter.ConversionError, "portable reference graph is invalid"
             ):
-                converter.classify_source_pack(self.result.source_pack)
+                converter.classify_source_pack(
+                    self.result.source_pack, self.result.patch_review
+                )
 
     def test_converted_portable_reference_rejects_a_quarantined_target(self) -> None:
         converter = self.converter
@@ -2881,7 +6253,8 @@ class MacWinPortableAssetTests(unittest.TestCase):
             "portable converted reference is unresolved",
         ):
             converter.classify_source_pack(
-                self._replace_asset(self.result.source_pack, source, reviewed_source)
+                self._replace_asset(self.result.source_pack, source, reviewed_source),
+                self.result.patch_review,
             )
 
     def test_converted_portable_reference_renders_both_closed_manifests(self) -> None:
@@ -2909,7 +6282,9 @@ class MacWinPortableAssetTests(unittest.TestCase):
             source_path: (target_id,),
         }
         with mock.patch.object(converter, "PORTABLE_REFERENCE_TABLE", references):
-            result = converter.classify_source_pack(source_pack)
+            result = converter.classify_source_pack(
+                source_pack, self.result.patch_review
+            )
             documents = converter.render_documents(result)
         source_id = converter.PORTABLE_ASSET_TABLE[source_path][0]
         source_manifest_path = (
@@ -4216,6 +7591,8 @@ class MacWinRecipeConversionTests(unittest.TestCase):
         source = temporary_root / "migration/macwin/source"
         source.parent.mkdir(parents=True)
         shutil.copytree(ROOT / "migration/macwin/source", source)
+        reviewed = temporary_root / "migration/macwin/reviewed"
+        shutil.copytree(ROOT / "migration/macwin/reviewed", reviewed)
         generated = temporary_root / "migration/macwin/generated"
         generated.mkdir()
         for name in ("catalog.json", "index.json", "quarantine.json"):
@@ -4303,7 +7680,8 @@ class MacWinRecipeConversionTests(unittest.TestCase):
             for asset in source_pack.assets
         )
         return converter.classify_source_pack(
-            dataclasses.replace(source_pack, assets=assets)
+            dataclasses.replace(source_pack, assets=assets),
+            self.result.patch_review,
         )
 
 
@@ -4363,7 +7741,7 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
         )
         self.assertEqual(
             root["statusCounts"],
-            {"converted": 2, "deferred": 15, "quarantined": 73},
+            {"converted": 2, "deferred": 4, "quarantined": 84},
         )
         self.assertEqual(root["documentCount"], 4)
         self.assertEqual(
@@ -4377,7 +7755,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
                 key=lambda value: value.encode("ascii"),
             ),
         )
-        self.converter.validate_generated_graph(documents, self.result.source_pack)
+        self.converter.validate_generated_graph(
+            documents, self.result.source_pack, self.result.patch_review
+        )
 
     def test_every_leaf_is_canonical_bounded_and_sealed_once(self) -> None:
         documents = self.converter.render_documents(self.result)
@@ -4445,7 +7825,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
         cases["unknown"] = {**original, self.INDEX_PATH: self.common.canonical_json_bytes(unknown)}
         for name, documents in cases.items():
             with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
-                self.converter.validate_generated_graph(documents, self.result.source_pack)
+                self.converter.validate_generated_graph(
+                    documents, self.result.source_pack, self.result.patch_review
+                )
 
     def test_root_count_types_reject_canonical_float_and_boolean_mutants(self) -> None:
         original = self.converter.render_documents(self.result)
@@ -4478,7 +7860,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
                     }
                     with self.assertRaises(self.converter.ConversionError):
                         self.converter.validate_generated_graph(
-                            documents, self.result.source_pack
+                            documents,
+                            self.result.source_pack,
+                            self.result.patch_review,
                         )
 
     def test_dangling_duplicate_and_circular_references_reject(self) -> None:
@@ -4504,7 +7888,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
                 self.INDEX_PATH: self.common.canonical_json_bytes(mutant),
             }
             with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
-                self.converter.validate_generated_graph(documents, self.result.source_pack)
+                self.converter.validate_generated_graph(
+                    documents, self.result.source_pack, self.result.patch_review
+                )
 
     def test_self_consistent_resealed_semantic_forgery_rejects(self) -> None:
         original = self.converter.render_documents(self.result)
@@ -4524,7 +7910,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
             self.INDEX_PATH: self.common.canonical_json_bytes(root),
         }
         with self.assertRaises(self.converter.ConversionError):
-            self.converter.validate_generated_graph(documents, self.result.source_pack)
+            self.converter.validate_generated_graph(
+                documents, self.result.source_pack, self.result.patch_review
+            )
 
     def test_converted_recipe_catalog_digest_is_bound_to_the_recipe_leaf(self) -> None:
         helper = MacWinRecipeConversionTests(methodName="runTest")
@@ -4573,7 +7961,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
         self.assertIn(recipe_path, original)
         for name, documents in cases.items():
             with self.subTest(case=name), self.assertRaises(self.converter.ConversionError):
-                self.converter.validate_generated_graph(documents, result.source_pack)
+                self.converter.validate_generated_graph(
+                    documents, result.source_pack, result.patch_review
+                )
 
     def test_self_consistent_resealed_extra_document_rejects(self) -> None:
         original = self.converter.render_documents(self.result)
@@ -4618,7 +8008,9 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
                 )
                 with self.assertRaises(self.converter.ConversionError):
                     self.converter.validate_generated_graph(
-                        documents, self.result.source_pack
+                        documents,
+                        self.result.source_pack,
+                        self.result.patch_review,
                     )
 
     def test_exhaustive_single_byte_drift_rejects_through_authenticated_seals(self) -> None:
@@ -4657,6 +8049,13 @@ class MacWinGeneratedGraphTests(unittest.TestCase):
 
 
 class MacWinMigrationCliTests(unittest.TestCase):
+    INDEPENDENT_SOURCE_INDEX_SHA256 = (
+        "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3"
+    )
+    INDEPENDENT_PATCH_REVIEW_SHA256 = (
+        "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+    )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.converter = _load_macwin_asset_converter()
@@ -4669,7 +8068,7 @@ class MacWinMigrationCliTests(unittest.TestCase):
             for path, raw in self.documents.items()
         }
         for arguments, expected_stdout in (
-            ((), b'{"converted":2,"deferred":15,"documents":5,"quarantined":73,"records":90}\n'),
+            ((), b'{"converted":2,"deferred":4,"documents":5,"quarantined":84,"records":90}\n'),
             (("--check",), b""),
         ):
             with self.subTest(arguments=arguments):
@@ -4730,6 +8129,335 @@ class MacWinMigrationCliTests(unittest.TestCase):
         self.assertEqual(explanation["status"], "quarantined")
         self.assertEqual(explanation["reason"], "missing-license")
         self.assertEqual(by_source, self.converter.explain_conversion(self.result, source))
+
+    def test_every_reviewed_patch_has_a_canonical_bounded_quarantine_explanation(self) -> None:
+        common = _load_macwin_asset_common()
+        evidence = self._independent_patch_explain_evidence(common)
+        paths = tuple(evidence)
+        self.assertEqual(len(paths), 11)
+        for source_path in paths:
+            with self.subTest(source_path=source_path):
+                self._assert_reviewed_patch_explanation(
+                    common, source_path, evidence[source_path]
+                )
+
+    def _assert_reviewed_patch_explanation(
+        self, common, source_path: str, evidence: dict[str, object]
+    ) -> None:
+        expected = evidence["expected"]
+        patch_raw = evidence["patchRaw"]
+        self.assertIs(type(expected), dict)
+        self.assertIs(type(patch_raw), bytes)
+        first = self._run_cli("--explain", source_path)
+        second = self._run_cli("--explain", source_path)
+        self.assertEqual((first.returncode, first.stderr), (0, b""))
+        self.assertEqual((second.returncode, second.stderr), (0, b""))
+        self.assertEqual(second.stdout, first.stdout)
+        self.assertLessEqual(len(first.stdout), 1024 * 1024)
+        self.assertLessEqual(len(second.stdout), 1024 * 1024)
+        explanation = common.parse_json_bytes(
+            first.stdout, label="patch explanation"
+        )
+        self.assertEqual(first.stdout, common.canonical_json_bytes(explanation))
+        content_lines = self._meaningful_patch_content_lines(patch_raw)
+        self.assertTrue(content_lines)
+        for value in self._json_string_values(explanation):
+            for line, content in content_lines:
+                if line in value or value == content or (
+                    (len(content) >= 8 or any(mark in content for mark in '\t"\\'))
+                    and content in value
+                ):
+                    self.fail("patch explanation reflects authenticated patch content")
+        self.assertEqual(explanation, expected)
+
+    @staticmethod
+    def _meaningful_patch_content_lines(patch_raw: bytes) -> tuple[tuple[str, str], ...]:
+        result = []
+        for line in patch_raw.decode("utf-8", "strict").splitlines():
+            if (
+                not line.startswith(("+", "-"))
+                or line.startswith(("+++ ", "--- "))
+            ):
+                continue
+            content = line[1:]
+            if content.strip():
+                result.append((line, content))
+        return tuple(result)
+
+    @classmethod
+    def _json_string_values(cls, value: object) -> tuple[str, ...]:
+        if type(value) is str:
+            return (value,)
+        if type(value) is list:
+            return tuple(
+                item
+                for member in value
+                for item in cls._json_string_values(member)
+            )
+        if type(value) is dict:
+            return tuple(
+                item
+                for member in value.values()
+                for item in cls._json_string_values(member)
+            )
+        return ()
+
+    def test_patch_explanation_contract_rejects_decoded_content_reflection_mutants(self) -> None:
+        common = _load_macwin_asset_common()
+        evidence = self._independent_patch_explain_evidence(common)
+        cases: dict[str, tuple[str, str]] = {}
+        for source_path, item in evidence.items():
+            patch_raw = item["patchRaw"]
+            self.assertIs(type(patch_raw), bytes)
+            for line in patch_raw.decode("utf-8", "strict").splitlines():
+                if not line.startswith(("+", "-")) or line.startswith(("+++", "---")):
+                    continue
+                content = line[1:]
+                if not content.strip():
+                    continue
+                if "tab" not in cases and "\t" in line and len(line) >= 32:
+                    cases["tab"] = (source_path, line)
+                if "quote" not in cases and '"' in line and len(line) >= 32:
+                    cases["quote"] = (source_path, line)
+                if "backslash" not in cases and "\\" in line and len(line) >= 32:
+                    cases["backslash"] = (source_path, line)
+                if (
+                    "short" not in cases
+                    and len(line) <= 3
+                    and not any(character in line for character in '\t"\\')
+                ):
+                    cases["short"] = (source_path, line)
+        self.assertEqual(set(cases), {"tab", "quote", "backslash", "short"})
+
+        for name, (source_path, reflected_line) in cases.items():
+            explanation = common.parse_json_bytes(
+                self.converter.explain_conversion(self.result, source_path),
+                label="patch explanation",
+            )
+            explanation["releaseCondition"] = reflected_line
+            forged = common.canonical_json_bytes(explanation)
+            self.assertEqual(
+                common.parse_json_bytes(forged, label="patch explanation")[
+                    "releaseCondition"
+                ],
+                reflected_line,
+            )
+            injected_calls = []
+
+            def inject(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+                injected_calls.append(arguments)
+                return subprocess.CompletedProcess(
+                    (
+                        sys.executable,
+                        "-B",
+                        str(ROOT / "tools/convert_macwin_assets.py"),
+                        *arguments,
+                    ),
+                    0,
+                    forged,
+                    b"",
+                )
+
+            caught = None
+            with self.subTest(mutant=name), mock.patch.object(
+                self, "_run_cli", side_effect=inject
+            ):
+                try:
+                    self._assert_reviewed_patch_explanation(
+                        common, source_path, evidence[source_path]
+                    )
+                except AssertionError as error:
+                    caught = error
+                self.assertEqual(
+                    injected_calls,
+                    [
+                        ("--explain", source_path),
+                        ("--explain", source_path),
+                    ],
+                )
+                self.assertIsNotNone(caught, f"{name} reflection mutant was accepted")
+                self.assertIn(
+                    "patch explanation reflects authenticated patch content",
+                    str(caught),
+                )
+
+    def test_patch_explanation_contract_rejects_synchronized_model_and_dto_forge(self) -> None:
+        common = _load_macwin_asset_common()
+        evidence = self._independent_patch_explain_evidence(common)
+        asset = next(
+            asset for asset in self.result.source_pack.assets
+            if asset.category == "patches"
+        )
+        forged_asset = dataclasses.replace(
+            asset,
+            intended_owner="forged/owner",
+            source_commit="1" * 40,
+            sha256="2" * 64,
+            kind="forged-patch-kind",
+        )
+        explanation = common.parse_json_bytes(
+            self.converter.explain_conversion(self.result, asset.source_path),
+            label="patch explanation",
+        )
+        explanation.update(
+            {
+                "intendedOwner": forged_asset.intended_owner,
+                "sourceCommit": forged_asset.source_commit,
+                "sourceSha256": forged_asset.sha256,
+                "sourceKind": forged_asset.kind,
+            }
+        )
+        forged = common.canonical_json_bytes(explanation)
+        decoded = common.parse_json_bytes(forged, label="patch explanation")
+        self.assertEqual(decoded["intendedOwner"], "forged/owner")
+        self.assertEqual(decoded["sourceCommit"], "1" * 40)
+        injected_calls = []
+
+        def inject(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+            injected_calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, forged, b"")
+
+        with mock.patch.object(self, "_run_cli", side_effect=inject), self.assertRaises(
+            AssertionError
+        ):
+            self._assert_reviewed_patch_explanation(
+                common, asset.source_path, evidence[asset.source_path]
+            )
+        self.assertEqual(
+            injected_calls,
+            [
+                ("--explain", asset.source_path),
+                ("--explain", asset.source_path),
+            ],
+        )
+
+    def _independent_patch_explain_evidence(
+        self, common
+    ) -> dict[str, dict[str, object]]:
+        source_path = ROOT / "migration/macwin/source/index.json"
+        review_path = ROOT / "migration/macwin/reviewed/patches.json"
+        source_raw = source_path.read_bytes()
+        review_raw = review_path.read_bytes()
+        self.assertEqual(len(source_raw), 101199)
+        self.assertEqual(
+            hashlib.sha256(source_raw).hexdigest(),
+            self.INDEPENDENT_SOURCE_INDEX_SHA256,
+        )
+        self.assertEqual(len(review_raw), 35368)
+        self.assertEqual(
+            hashlib.sha256(review_raw).hexdigest(),
+            self.INDEPENDENT_PATCH_REVIEW_SHA256,
+        )
+        source = common.parse_json_bytes(source_raw, label="sealed source index")
+        review = common.parse_json_bytes(review_raw, label="sealed patch review")
+        self.assertEqual(source_raw, common.canonical_json_bytes(source))
+        self.assertEqual(review_raw, common.canonical_json_bytes(review))
+        self.assertEqual(
+            {
+                key: source[key]
+                for key in (
+                    "repository",
+                    "sourceTag",
+                    "sourceTagObject",
+                    "sourceCommit",
+                    "inventoryCommit",
+                    "digestAlgorithm",
+                )
+            },
+            {
+                "repository": "a1112/Mac-Win",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "digestAlgorithm": "sha256",
+            },
+        )
+        self.assertEqual(
+            review["source"],
+            {
+                "digestAlgorithm": "sha256",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "repository": "a1112/Mac-Win",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "sourceIndexSha256": self.INDEPENDENT_SOURCE_INDEX_SHA256,
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+            },
+        )
+        source_records = tuple(
+            asset for asset in source["assets"]
+            if asset["category"] == "patches"
+        )
+        review_records = tuple(review["records"])
+        self.assertEqual((len(source_records), len(review_records)), (11, 11))
+        source_paths = tuple(asset["sourcePath"] for asset in source_records)
+        self.assertEqual(
+            source_paths,
+            tuple(sorted(source_paths, key=lambda value: value.encode("ascii"))),
+        )
+        self.assertEqual(len({value.casefold() for value in source_paths}), 11)
+        self.assertEqual(
+            tuple(record["sourcePath"] for record in review_records), source_paths
+        )
+
+        evidence: dict[str, dict[str, object]] = {}
+        release = "Record patch-specific license evidence and repeat review."
+        for asset, record in zip(source_records, review_records, strict=True):
+            self.assertEqual(
+                {
+                    "sourcePath": record["sourcePath"],
+                    "sourceSha256": record["sourceSha256"],
+                    "gitBlobOid": record["gitBlobOid"],
+                    "gitMode": record["gitMode"],
+                    "byteSize": record["byteSize"],
+                },
+                {
+                    "sourcePath": asset["sourcePath"],
+                    "sourceSha256": asset["sha256"],
+                    "gitBlobOid": asset["gitBlobOid"],
+                    "gitMode": asset["gitMode"],
+                    "byteSize": asset["byteSize"],
+                },
+            )
+            self.assertEqual(record["patchLicense"], {"status": "unresolved"})
+            self.assertEqual(record["reviewDisposition"], "quarantined")
+            self.assertEqual(record["reason"], "missing-license")
+            self.assertEqual(record["releaseCondition"], release)
+            self.assertEqual(record["regressionProbeIds"], [])
+            object_relative = PurePosixPath(asset["objectPath"])
+            self.assertFalse(object_relative.is_absolute())
+            self.assertNotIn("..", object_relative.parts)
+            self.assertEqual(
+                object_relative.as_posix(),
+                f'objects/sha256/{asset["sha256"][:2]}/{asset["sha256"][2:]}',
+            )
+            patch_raw = (ROOT / "migration/macwin/source" / object_relative).read_bytes()
+            self.assertEqual(len(patch_raw), asset["byteSize"])
+            self.assertEqual(hashlib.sha256(patch_raw).hexdigest(), asset["sha256"])
+            evidence[asset["sourcePath"]] = {
+                "patchRaw": patch_raw,
+                "expected": {
+                    "action": "quarantine",
+                    "category": "patches",
+                    "evidenceLocators": [
+                        f'{asset["sourcePath"]}#patchLicense'
+                    ],
+                    "intendedOwner": asset["intendedOwner"],
+                    "outputKind": "patch-mapping",
+                    "reason": "missing-license",
+                    "releaseCondition": release,
+                    "schemaVersion": "1",
+                    "sourceCommit": asset["sourceCommit"],
+                    "sourceKind": asset["kind"],
+                    "sourcePath": asset["sourcePath"],
+                    "sourceRepository": "a1112/Mac-Win",
+                    "sourceSha256": asset["sha256"],
+                    "status": "quarantined",
+                    "targetIssue": "MW-ASSET-002",
+                },
+            }
+        return evidence
 
     def test_explain_accepts_an_exact_unique_output_path_alias(self) -> None:
         helper = MacWinRecipeConversionTests(methodName="runTest")
@@ -6768,6 +10496,10 @@ class MigrationLayoutTests(unittest.TestCase):
         destination = root / "migration/macwin/source"
         destination.parent.mkdir(parents=True)
         shutil.copytree(source, destination)
+        reviewed = ROOT / "migration/macwin/reviewed"
+        reviewed_destination = root / "migration/macwin/reviewed"
+        reviewed_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(reviewed, reviewed_destination)
 
     def _prepare_staged_git_repository(self, repository: Path) -> None:
         self._git(repository, "init", "--quiet")
@@ -8018,6 +11750,10 @@ class MacWinSourcePackTests(unittest.TestCase):
             copied = temporary_root / "migration/macwin/source"
             copied.parent.mkdir(parents=True)
             shutil.copytree(source_root, copied)
+            shutil.copytree(
+                ROOT / "migration/macwin/reviewed",
+                temporary_root / "migration/macwin/reviewed",
+            )
             target = self._developer_path_object(copied)
             raw = target.read_bytes()
             original_rglob = Path.rglob
@@ -8049,6 +11785,10 @@ class MacWinSourcePackTests(unittest.TestCase):
             copied = temporary_root / "migration/macwin/source"
             copied.parent.mkdir(parents=True)
             shutil.copytree(source_root, copied)
+            shutil.copytree(
+                ROOT / "migration/macwin/reviewed",
+                temporary_root / "migration/macwin/reviewed",
+            )
             target = self._developer_path_object(copied)
             original_rglob = Path.rglob
             injected = False
@@ -8084,6 +11824,10 @@ class MacWinSourcePackTests(unittest.TestCase):
             copied = temporary_root / "migration/macwin/source"
             copied.parent.mkdir(parents=True)
             shutil.copytree(source_root, copied)
+            shutil.copytree(
+                ROOT / "migration/macwin/reviewed",
+                temporary_root / "migration/macwin/reviewed",
+            )
             index = copied / "index.json"
             original_rglob = Path.rglob
             injected = False
@@ -8272,14 +12016,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"must remain unchanged\n")
-            commands = (
-                self._converter_command(),
-                self._converter_command("--check"),
-                self._converter_command("--explain", "7zip"),
-                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
-                self._converter_command("--write"),
-                self._converter_command("--write"),
-            )
+            commands = self._normal_mode_commands(include_writes=True)
             for command in commands:
                 before = self._snapshot_boundary(sentinel)
                 completed = self._run_audited(command)
@@ -8293,17 +12030,37 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 self.converter.read_generated_documents(ROOT), self.documents
             )
 
+    def test_normal_mode_matrix_covers_all_patch_explanations_and_two_writes(self) -> None:
+        commands = self._normal_mode_commands(include_writes=True)
+        expected_explanations = {
+            self._converter_command("--explain", record.source_path)
+            for record in self.result.patch_review.records
+        }
+        self.assertEqual(
+            {command for command in commands if "--explain" in command},
+            expected_explanations,
+        )
+        self.assertEqual(
+            sum(command[-1] == "--write" for command in commands),
+            2,
+        )
+
+    def test_boundary_snapshot_includes_reviewed_patch_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sentinel = Path(directory) / "external-sentinel"
+            sentinel.write_bytes(b"guarded\n")
+            snapshot = self._snapshot_boundary(sentinel)
+        self.assertEqual(
+            snapshot["reviewed"],
+            self._snapshot_tree(ROOT / "migration/macwin/reviewed"),
+        )
+
     def test_normal_modes_run_in_independent_isolated_processes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sentinel = Path(directory) / "external-sentinel"
             sentinel.write_bytes(b"guarded\n")
             before = self._snapshot_boundary(sentinel)
-            commands = (
-                self._converter_command(),
-                self._converter_command("--check"),
-                self._converter_command("--explain", "7zip"),
-                (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
-            )
+            commands = self._normal_mode_commands(include_writes=True)
             process_ids = []
             for command in commands:
                 with self.subTest(command=command):
@@ -8599,8 +12356,11 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             bottle = ROOT / "examples/bottles/7zip-default.json"
             forbidden_locator = self._forbidden_locators()[0]
             second_locator = self._forbidden_locators()[1]
+            official_locator = self.result.patch_review.records[0].project_license.evidence_locator
+            upstream_repository = self.result.patch_review.records[0].upstream.repository
             mutants = {
                 "dns": lambda: socket.getaddrinfo("example.invalid", 443),
+                "dns-evidence-url": lambda: socket.getaddrinfo("github.com", 443),
                 "dns-name": lambda: socket.gethostbyname("example.invalid"),
                 "dns-name-ex": lambda: socket.gethostbyname_ex("example.invalid"),
                 "dns-reverse": lambda: socket.gethostbyaddr("192.0.2.1"),
@@ -8608,7 +12368,14 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "socket": lambda: socket.socket(),
                 "urlopen": lambda: urllib.request.urlopen("https://example.invalid"),
                 "urlretrieve": lambda: urllib.request.urlretrieve("https://example.invalid"),
+                "network-evidence-url": lambda: urllib.request.urlopen(official_locator),
                 "subprocess": lambda: subprocess.run(["asset"], check=False),
+                "git-upstream-lookup": lambda: subprocess.run(
+                    ["git", "ls-remote", upstream_repository], check=False
+                ),
+                "subprocess-upstream-lookup": lambda: subprocess.check_output(
+                    ["git", "show", "wine-11.11"]
+                ),
                 "environment": lambda: os.getenv("HOME"),
                 "environment-mapping": lambda: self.converter.os.environ["HOME"],
                 "environment-global": lambda: os.environ.get("PATH"),
@@ -8617,6 +12384,9 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "locator-probe": lambda: Path(forbidden_locator).exists(),
                 "locator-stat": lambda: Path(forbidden_locator).stat(),
                 "locator-open": lambda: Path(forbidden_locator).open("rb"),
+                "evidence-locator-path-open": lambda: Path(official_locator).open("rb"),
+                "evidence-locator-builtin-open": lambda: builtins.open(official_locator, "rb"),
+                "evidence-locator-os-open": lambda: os.open(official_locator, os.O_RDONLY),
                 "locator-os-path-exists": lambda: os.path.exists(forbidden_locator),
                 "locator-os-stat": lambda: os.stat(forbidden_locator),
                 "locator-os-lstat": lambda: os.lstat(forbidden_locator),
@@ -8640,6 +12410,13 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 "asset-eval": lambda: builtins.eval("1 + 1"),
                 "asset-builtin-exec": lambda: builtins.exec("x = 1"),
                 "asset-import": lambda: builtins.__import__("migrated_asset"),
+                "patch-apply": lambda: subprocess.run(
+                    ["patch", "-p1", "-i", "reviewed.patch"], check=False
+                ),
+                "patch-import": lambda: importlib.util.spec_from_file_location(
+                    "reviewed_patch", "reviewed.patch"
+                ),
+                "patch-exec": lambda: builtins.exec("PATCH_CONTENT = True"),
                 "bottle-access": lambda: bottle.read_bytes(),
                 "external-write": lambda: sentinel.write_bytes(b"mutated\n"),
             }
@@ -9177,7 +12954,17 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
             (ROOT / "tests/fixtures/runtime-packs").absolute(),
         )
         locator_values = self._forbidden_evidence_values()
-        forbidden_values = frozenset({str(sentinel.absolute()), *locator_values})
+        path_locator_values = {
+            spelling
+            for locator in locator_values
+            for spelling in (
+                str(Path(locator)),
+                str(Path(locator)).replace("\\", "/"),
+            )
+        }
+        forbidden_values = frozenset(
+            {str(sentinel.absolute()), *locator_values, *path_locator_values}
+        )
         allowed_environment = tuple(
             (key, value)
             for key, value in os.environ.items()
@@ -9679,6 +13466,7 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
     def _snapshot_boundary(self, sentinel: Path) -> dict[str, object]:
         return {
             "source": self._snapshot_tree(ROOT / "migration/macwin/source"),
+            "reviewed": self._snapshot_tree(ROOT / "migration/macwin/reviewed"),
             "generated": self._snapshot_tree(ROOT / "migration/macwin/generated"),
             "runtime": self._snapshot_tree(ROOT / "examples/runtime-packs"),
             "runtime-fixtures": self._snapshot_tree(ROOT / "tests/fixtures/runtime-packs"),
@@ -10070,10 +13858,44 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
 
     def _forbidden_evidence_values(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(
-            locator
-            for record in self.result.records
-            for locator in record.evidence_locators
+            [
+                locator
+                for record in self.result.records
+                for locator in record.evidence_locators
+            ]
+            + [
+                record.project_license.evidence_locator
+                for record in self.result.patch_review.records
+            ]
+            + [
+                record.upstream.repository
+                for record in self.result.patch_review.records
+            ]
+            + [
+                item.value
+                for record in self.result.patch_review.records
+                for item in record.evidence_and_dependencies
+            ]
         ))
+
+    def _normal_mode_commands(self, *, include_writes: bool) -> tuple[tuple[str, ...], ...]:
+        commands = [
+            self._converter_command(),
+            self._converter_command("--check"),
+            *(
+                self._converter_command("--explain", record.source_path)
+                for record in self.result.patch_review.records
+            ),
+            (sys.executable, "-B", str(ROOT / "scripts/validate_repository.py")),
+        ]
+        if include_writes:
+            commands.extend(
+                (
+                    self._converter_command("--write"),
+                    self._converter_command("--write"),
+                )
+            )
+        return tuple(commands)
 
     def _run_main(self, arguments: tuple[str, ...]) -> tuple[int, bytes, bytes]:
         stdout = mock.Mock()
@@ -10465,15 +14287,69 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
 
 class MacWinMigrationDocumentationTests(unittest.TestCase):
     DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
-    DOCUMENT_SHA256 = "a89a2cbd56d2a27284dc2ac6d991ef3456d0e2b343cf6695ad59409813dec56f"
+    PROVENANCE_DOCUMENT = ROOT / "docs/migration/macwin-patch-provenance.md"
+    DOCUMENT_SHA256 = "e2bc9fc159e67e6e5a00d7a1b7a49bf24989d798fa541623f89952e49f049f3b"
+    PROVENANCE_DOCUMENT_SHA256 = "0a1387c3d03aa96c9caec9a43b2a5a2c151304f262e65c851fbcee4b26a0dd3d"
     MAX_DOCUMENT_BYTES = 1024 * 1024
+    PROVENANCE_SEALS = (
+        (
+            "migration/macwin/source/index.json",
+            101199,
+            "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+        ),
+        (
+            "migration/macwin/reviewed/patches.json",
+            35368,
+            "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783",
+        ),
+        (
+            "migration/macwin/generated/catalog.json",
+            7603,
+            "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
+        ),
+        (
+            "migration/macwin/generated/index.json",
+            34845,
+            "2c6a0447b4a27c8c0baf0da9dd45cad355db75a6a880e9b90434bc7b93cdf080",
+        ),
+        (
+            "migration/macwin/generated/mappings/bottle-schemas.json",
+            2637,
+            "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb",
+        ),
+        (
+            "migration/macwin/generated/mappings/patches.json",
+            21032,
+            "202c56f99c7f332a7b5c6b93b87baef66d1445ae3981954c23f2b6c7ea64edd1",
+        ),
+        (
+            "migration/macwin/generated/quarantine.json",
+            89656,
+            "ca0132b78ac4bae8ed00446194cd7e9712b37ebc2aea4087ebad695248e2b2e9",
+        ),
+    )
+    PROVENANCE_COMMANDS = (
+        "python -S -B -m unittest tests.test_macwin_asset_migration.MacWinPatchProvenanceTests tests.test_macwin_asset_migration.MacWinMigrationDocumentationTests tests.test_macwin_asset_migration.MacWinMigrationSideEffectTests tests.test_macwin_asset_migration.MacWinMigrationCliTests",
+        "python -B tools/convert_macwin_assets.py",
+        "python -B tools/convert_macwin_assets.py --check",
+        "python -B tools/convert_macwin_assets.py --write",
+        "python -B tools/convert_macwin_assets.py --write",
+        "python -B tools/convert_macwin_assets.py --explain patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+        "python -B scripts/validate_repository.py",
+        "git diff --check",
+        "python -S -B -m unittest tests.test_macwin_asset_migration",
+        "cargo fmt --all -- --check",
+        "cargo check --workspace --all-targets --locked",
+        "cargo test --workspace --all-targets --locked",
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    )
     REQUIRED_FACTS = (
         "repository: `a1112/Mac-Win`",
         "source tag: `mw-migration-baseline-db12d5e`",
         "source commit: `db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`",
         "inventory commit: `97f8423094d25325d8f864eb6f49a9e8628dbb93`",
         "90 = 19 catalog + 11 patches + 26 probes + 30 fixtures + 4 bottle-schema",
-        "2 converted + 15 deferred + 73 quarantined",
+        "2 converted + 4 deferred + 84 quarantined",
         "0 Recipes, 0 portable probes, and 0 portable fixtures",
         "`MW-ASSET-002`",
         "`MW-ASSET-003`",
@@ -10496,6 +14372,77 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         self.assertIn("# Mac-Win portable asset migration boundary", text)
         self.assertEqual(self._parse_output_rows(text), self._generated_rows())
 
+    def test_patch_provenance_document_binds_exact_committed_evidence(self) -> None:
+        raw = self.PROVENANCE_DOCUMENT.read_bytes()
+        text = self._validate_provenance_document(raw)
+        self.assertEqual(self._parse_provenance_seal_rows(text), self.PROVENANCE_SEALS)
+        self.assertEqual(self._parse_patch_review_rows(text), self._review_rows())
+        for path, byte_size, digest in self.PROVENANCE_SEALS:
+            committed = (ROOT / PurePosixPath(path)).read_bytes()
+            self.assertEqual((len(committed), hashlib.sha256(committed).hexdigest()), (byte_size, digest))
+
+    def test_provenance_semantics_reject_resealed_status_and_duplicate_row_forge(self) -> None:
+        raw = self.PROVENANCE_DOCUMENT.read_bytes()
+        patch_row = next(
+            line for line in raw.splitlines(keepends=True)
+            if line.startswith(b"| `patches/")
+        )
+        seal_row = next(
+            line for line in raw.splitlines(keepends=True)
+            if line.startswith(b"| `migration/macwin/generated/catalog.json`")
+        )
+        mutants = {
+            "numeric-status": raw + b"The current result is 3 converted + 5 deferred + 82 quarantined.\n",
+            "word-status": raw + b"There are three converted records.\n",
+            "word-status-inverted": raw + b"Converted records total three.\n",
+            "circled-status": raw + "Converted records total ③.\n".encode("utf-8"),
+            "superscript-status": raw + "Deferred records total ⁵.\n".encode("utf-8"),
+            "chinese-status": raw + "Quarantined records total 八十二。\n".encode("utf-8"),
+            "table-status": raw + b"| converted | 3 |\n",
+            "duplicate-patch-row": raw + patch_row,
+            "duplicate-seal-row": raw + seal_row,
+            "extra-seal-row": raw + b"| `migration/macwin/generated/extra.json` | 1 | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |\n",
+            "extra-malformed-table-row": raw + b"| extra | invalid |\n",
+            "extra-commonmark-table-no-leading-pipe": raw
+            + b"Extra | Value\n--- | ---\nfoo | bar\n",
+            "extra-commonmark-table-indented": raw
+            + b" Extra | Value\n --- | ---\n foo | bar\n",
+            "extra-fenced-command-block": raw
+            + b"```bash\npython -c unsafe\n```\n",
+            "missing-command": raw.replace(
+                b"cargo fmt --all -- --check\n", b"", 1
+            ),
+            "closed-open-owner": raw.replace(
+                b"`MW-ARCH-001` remains open", b"`MW-ARCH-001` is closed", 1
+            ),
+            "unquoted-closed-owner": raw + b"MW-ASSET-002 is closed.\n",
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name), self.assertRaises(ValueError):
+                self._validate_provenance_document(
+                    mutant,
+                    expected_sha256=hashlib.sha256(mutant).hexdigest(),
+                )
+
+    def test_current_documents_have_one_status_and_visible_entry_points(self) -> None:
+        paths = (
+            self.DOCUMENT,
+            self.PROVENANCE_DOCUMENT,
+            ROOT / "README.md",
+            ROOT / "docs/testing.md",
+        )
+        texts = {
+            path: path.read_text(encoding="utf-8")
+            for path in paths
+        }
+        for path, text in texts.items():
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertNotIn("2 converted + 15 deferred + 73 quarantined", text)
+        for path in (ROOT / "README.md", ROOT / "docs/testing.md"):
+            text = texts[path]
+            self.assertIn("macwin-portable-assets.md", text)
+            self.assertIn("macwin-patch-provenance.md", text)
+
     def test_readme_and_testing_docs_link_the_visible_boundary(self) -> None:
         readme = (ROOT / "README.md").read_bytes()
         testing = (ROOT / "docs/testing.md").read_bytes()
@@ -10513,8 +14460,349 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
             b"/README.md text eol=lf\n",
             b"/docs/testing.md text eol=lf\n",
             b"/docs/migration/macwin-portable-assets.md text eol=lf\n",
+            b"/docs/migration/macwin-patch-provenance.md text eol=lf\n",
+            b"/migration/macwin/reviewed/*.json text eol=lf\n",
         ):
             self.assertIn(line, attributes)
+
+    def _validate_provenance_document(
+        self, raw: bytes, *, expected_sha256: str | None = None
+    ) -> str:
+        if len(raw) > self.MAX_DOCUMENT_BYTES or b"\r" in raw:
+            raise ValueError("patch provenance document transport is invalid")
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError as error:
+            raise ValueError("patch provenance document is not UTF-8") from error
+        if not text.endswith("\n") or text.startswith("\ufeff"):
+            raise ValueError("patch provenance document framing is invalid")
+        seal = self.PROVENANCE_DOCUMENT_SHA256 if expected_sha256 is None else expected_sha256
+        if hashlib.sha256(raw).hexdigest() != seal:
+            raise ValueError("patch provenance document whole-file seal changed")
+        self._validate_provenance_semantics(text)
+        return text
+
+    def _validate_provenance_semantics(self, text: str) -> None:
+        expected_review_rows = self._review_rows()
+        parsed_seals = self._parse_provenance_seal_rows(text)
+        parsed_review_rows = self._parse_patch_review_rows(text)
+        if parsed_seals != self.PROVENANCE_SEALS:
+            raise ValueError("patch provenance evidence seals are incomplete")
+        if parsed_review_rows != expected_review_rows:
+            raise ValueError("patch provenance review rows are incomplete")
+        expected_table_lines = self._expected_provenance_table_lines(
+            expected_review_rows
+        )
+        expected_tables = (
+            expected_table_lines[:4],
+            expected_table_lines[4:17],
+            expected_table_lines[17:],
+        )
+        if self._parse_commonmark_tables(text) != expected_tables:
+            raise ValueError("patch provenance tables are not closed")
+        if self._parse_fenced_blocks(text) != (
+            ("```text", self.PROVENANCE_COMMANDS, "```"),
+        ):
+            raise ValueError("patch provenance verification commands are incomplete")
+        if text != self._expected_provenance_text(expected_review_rows):
+            raise ValueError("patch provenance document is outside the closed grammar")
+
+    @classmethod
+    def _expected_provenance_text(
+        cls,
+        review_rows: tuple[tuple[str, str, int, int, int, int, str, str], ...],
+    ) -> str:
+        table_lines = cls._expected_provenance_table_lines(review_rows)
+        replacements = {
+            "@EVIDENCE_TABLE@": "\n".join(table_lines[:4]),
+            "@PATCH_TABLE@": "\n".join(table_lines[4:17]),
+            "@GENERATED_TABLE@": "\n".join(table_lines[17:]),
+            "@VERIFICATION_COMMANDS@": "\n".join(cls.PROVENANCE_COMMANDS),
+        }
+        template = """# Mac-Win patch provenance review
+
+This document is the committed evidence result for `MW-ASSET-002`. It is linked
+from the repository [README](../../README.md) and the [testing entry point](../testing.md).
+It records an offline review result; it does not make a runtime or
+application-compatibility claim. No patch was applied or executed.
+
+## Frozen evidence identities
+
+The review is bound to repository `a1112/Mac-Win`, source tag
+`mw-migration-baseline-db12d5e`, annotated tag object
+`9f10d003382ce7ffbb269376c03477e17516302f`, source commit
+`db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527`, and inventory commit
+`97f8423094d25325d8f864eb6f49a9e8628dbb93`.
+
+The upstream comparison is frozen to these exact identities:
+
+- JASP tag `v0.97.1` resolves to commit `28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2`.
+- Wine annotated tag `wine-11.11` has tag object `b08651f36865a3e1d9300d792df322d2ee8a807e`
+  and resolves to commit `f6c044e1890e84a4aa5e77e76ba7276a615630e1`.
+
+All sizes and SHA-256 values below are computed from the committed bytes.
+
+@EVIDENCE_TABLE@
+
+The source index authenticates the frozen source pack. The review ledger is a
+separate closed, canonical evidence file cross-bound to the exact 11 patch
+source identities; it neither replaces source objects nor grants permission to
+use their patch contents.
+
+## Reviewed patch result
+
+The exact result is: 11 patches -> 0 retained / 11 quarantined. Each patch has
+an unresolved patch license and therefore stops at the first policy rule,
+`missing-license`, even where its upstream base is completely matched.
+
+Project license context is not patch-specific license evidence. JASP's
+AGPL-3.0-or-later and Wine's LGPL-2.1-or-later project notices are recorded only
+as context; neither establishes a redistribution license for a Mac-Win-local
+patch, its author contribution, or its added hunks.
+
+@PATCH_TABLE@
+
+The stable decision priority is: missing-license -> unverified-base -> conflict -> upstreamed-or-obsolete -> retained. Evaluation stops at the first unmet
+condition. The release condition for every current patch is: Record patch-specific license evidence and repeat review.
+
+A future retained patch must additionally bind an SPDX expression and official
+patch-license evidence, match every preimage against the exact upstream commit,
+close external and development dependencies, remain local-only and needed, and
+name at least one registered focused regression probe. Retained still means
+`deferred`; it never authorizes automatic application or execution.
+
+## Generated result
+
+The complete 90-record graph now reports 2 converted + 4 deferred + 84 quarantined.
+The four deferred records are Bottle schema mappings owned by
+`MW-ASSET-003`. The five-file graph remains exact; no Recipe, patch payload,
+probe, fixture, or sixth generated leaf is emitted.
+
+@GENERATED_TABLE@
+
+## Verification and side-effect boundary
+
+Run these commands serially from the repository root:
+
+```text
+@VERIFICATION_COMMANDS@
+```
+
+Default, `--check`, every `--explain`, and repository validation are offline
+and read-only. The two writes may replace only the authenticated five generated
+leaves and the second is a byte-for-byte no-op. These modes do not resolve
+evidence URLs, invoke Git to inspect upstream state, open evidence locators,
+read ambient environment or home paths, access a Bottle, or import, compile,
+apply, execute, or reflect patch contents.
+
+`MW-ASSET-002` owns this evidence result. `MW-ASSET-003` remains open for Bottle
+schema work, and `MW-ARCH-001` remains open for repository archival. Neither is
+closed or advanced by this review.
+"""
+        for marker, replacement in replacements.items():
+            if template.count(marker) != 1:
+                raise AssertionError("closed provenance template marker changed")
+            template = template.replace(marker, replacement)
+        return template
+
+    @staticmethod
+    def _parse_fenced_blocks(
+        text: str,
+    ) -> tuple[tuple[str, tuple[str, ...], str], ...]:
+        lines = text.splitlines()
+        blocks = []
+        index = 0
+        opening_pattern = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+        while index < len(lines):
+            opening = opening_pattern.fullmatch(lines[index])
+            if opening is None:
+                index += 1
+                continue
+            fence = opening.group("fence")
+            closing_pattern = re.compile(
+                rf"^ {{0,3}}{re.escape(fence[0])}{{{len(fence)},}} *$"
+            )
+            body = []
+            opening_line = lines[index]
+            index += 1
+            while index < len(lines) and closing_pattern.fullmatch(lines[index]) is None:
+                body.append(lines[index])
+                index += 1
+            if index == len(lines):
+                raise ValueError("patch provenance fence is unclosed")
+            blocks.append((opening_line, tuple(body), lines[index]))
+            index += 1
+        return tuple(blocks)
+
+    @staticmethod
+    def _parse_commonmark_tables(text: str) -> tuple[tuple[str, ...], ...]:
+        lines = text.splitlines()
+        row_pattern = re.compile(r"^ {0,3}\|?.*\|.*\|? *$")
+        separator_pattern = re.compile(
+            r"^ {0,3}\|? *:?-{3,}:? *(?:\| *:?-{3,}:? *)+\|? *$"
+        )
+        tables = []
+        used = set()
+        for index, line in enumerate(lines):
+            if separator_pattern.fullmatch(line) is None:
+                continue
+            if index == 0 or row_pattern.fullmatch(lines[index - 1]) is None:
+                raise ValueError("patch provenance table header is invalid")
+            start = index - 1
+            if start in used:
+                raise ValueError("patch provenance tables overlap")
+            end = index + 1
+            while end < len(lines) and row_pattern.fullmatch(lines[end]) is not None:
+                end += 1
+            used.update(range(start, end))
+            tables.append(tuple(lines[start:end]))
+        return tuple(tables)
+
+    @classmethod
+    def _expected_provenance_table_lines(
+        cls,
+        review_rows: tuple[tuple[str, str, int, int, int, int, str, str], ...],
+    ) -> tuple[str, ...]:
+        seal_lines = tuple(
+            f"| `{path}` | {byte_size:,} | `{digest}` |"
+            for path, byte_size, digest in cls.PROVENANCE_SEALS
+        )
+        review_lines = tuple(
+            f"| `{path}` | {purpose} | matched={matched}, mismatched={mismatched}, "
+            f"added={added}, unproven={unproven} | `{license_status}` | `{decision}` |"
+            for (
+                path,
+                purpose,
+                matched,
+                mismatched,
+                added,
+                unproven,
+                license_status,
+                decision,
+            ) in review_rows
+        )
+        return (
+            "| Evidence path | Bytes | SHA-256 |",
+            "| --- | ---: | --- |",
+            *seal_lines[:2],
+            "| Source path | Purpose | Base result | Patch license | Disposition |",
+            "| --- | --- | --- | --- | --- |",
+            *review_lines,
+            "| Path | Bytes | SHA-256 |",
+            "| --- | ---: | --- |",
+            *seal_lines[2:],
+        )
+
+    @staticmethod
+    def _parse_provenance_seal_rows(text: str) -> tuple[tuple[str, int, str], ...]:
+        matches = re.findall(
+            r"^\| `(?P<path>[^`]+)` \| (?P<size>[0-9][0-9,]*) "
+            r"\| `(?P<digest>[0-9a-f]{64})` \|$",
+            text,
+            flags=re.MULTILINE,
+        )
+        paths = tuple(path for path, _size, _digest in matches)
+        if len(paths) != len(set(paths)):
+            raise ValueError("patch provenance evidence row is duplicated")
+        return tuple(
+            (path, int(size.replace(",", "")), digest)
+            for path, size, digest in matches
+        )
+
+    @staticmethod
+    def _parse_patch_review_rows(text: str) -> tuple[tuple[str, str, int, int, int, int, str, str], ...]:
+        matches = re.findall(
+            r"^\| `(?P<path>patches/[^`]+\.patch)` \| (?P<purpose>[^|]+?) \| "
+            r"matched=(?P<matched>\d+), mismatched=(?P<mismatched>\d+), "
+            r"added=(?P<added>\d+), unproven=(?P<unproven>\d+) \| "
+            r"`(?P<license>[^`]+)` \| `(?P<decision>[^`]+)` \|$",
+            text,
+            flags=re.MULTILINE,
+        )
+        paths = tuple(path for path, *_rest in matches)
+        if len(paths) != len(set(paths)) or len(paths) != len({path.casefold() for path in paths}):
+            raise ValueError("patch provenance review row is duplicated")
+        return tuple(
+            (
+                path,
+                purpose,
+                int(matched),
+                int(mismatched),
+                int(added),
+                int(unproven),
+                license_status,
+                decision,
+            )
+            for path, purpose, matched, mismatched, added, unproven, license_status, decision in matches
+        )
+
+    @classmethod
+    def _review_rows(cls) -> tuple[tuple[str, str, int, int, int, int, str, str], ...]:
+        common = _load_macwin_asset_common()
+        source_raw = (ROOT / "migration/macwin/source/index.json").read_bytes()
+        review_raw = (ROOT / "migration/macwin/reviewed/patches.json").read_bytes()
+        if (
+            len(source_raw) != cls.PROVENANCE_SEALS[0][1]
+            or hashlib.sha256(source_raw).hexdigest() != cls.PROVENANCE_SEALS[0][2]
+            or len(review_raw) != cls.PROVENANCE_SEALS[1][1]
+            or hashlib.sha256(review_raw).hexdigest() != cls.PROVENANCE_SEALS[1][2]
+        ):
+            raise ValueError("patch provenance source evidence seal changed")
+        source = common.parse_json_bytes(source_raw, label="sealed source index")
+        review = common.parse_json_bytes(review_raw, label="sealed patch review")
+        if source_raw != common.canonical_json_bytes(source) or review_raw != common.canonical_json_bytes(review):
+            raise ValueError("patch provenance source evidence is noncanonical")
+        source_records = tuple(
+            asset for asset in source["assets"] if asset["category"] == "patches"
+        )
+        review_records = tuple(review["records"])
+        source_paths = tuple(asset["sourcePath"] for asset in source_records)
+        if (
+            len(source_records) != 11
+            or len(review_records) != 11
+            or source_paths != tuple(sorted(source_paths, key=lambda value: value.encode("ascii")))
+            or len({path.casefold() for path in source_paths}) != 11
+            or tuple(record["sourcePath"] for record in review_records) != source_paths
+        ):
+            raise ValueError("patch provenance source review order is invalid")
+        rows = []
+        for asset, record in zip(source_records, review_records, strict=True):
+            if (
+                record["sourceSha256"] != asset["sha256"]
+                or record["gitBlobOid"] != asset["gitBlobOid"]
+                or record["gitMode"] != asset["gitMode"]
+                or record["byteSize"] != asset["byteSize"]
+            ):
+                raise ValueError("patch provenance source review identity changed")
+            counts = collections.Counter(item["result"] for item in record["preimages"])
+            if record["patchLicense"]["status"] != "reviewed":
+                derived = "quarantined / missing-license"
+            elif not record["preimages"] or any(
+                item["result"] != "matched" for item in record["preimages"]
+            ):
+                derived = "quarantined / unverified-base"
+            elif record["upstreamStatus"] in {"conflicting", "unresolved"} or any(
+                item["kind"] in {"external-dependency", "development-dependency"}
+                for item in record["evidenceAndDependencies"]
+            ):
+                derived = "quarantined / conflict"
+            elif record["upstreamStatus"] in {"upstreamed", "superseded"}:
+                derived = "quarantined / upstreamed-or-obsolete"
+            else:
+                derived = "retained / retained"
+            if f'{record["reviewDisposition"]} / {record["reason"]}' != derived:
+                raise ValueError("patch provenance derived disposition changed")
+            rows.append((
+                record["sourcePath"],
+                record["purpose"],
+                counts["matched"],
+                counts["mismatched"],
+                counts["added"],
+                counts["unproven"],
+                record["patchLicense"]["status"],
+                derived,
+            ))
+        return tuple(rows)
 
     def test_raw_document_seal_rejects_transport_and_semantic_decoys(self) -> None:
         raw = self.DOCUMENT.read_bytes()
@@ -10579,7 +14867,7 @@ class MacWinMigrationDocumentationTests(unittest.TestCase):
         if any(
             values - {expected}
             for status, values in numeric_statuses.items()
-            for expected in ({"converted": 2, "deferred": 15, "quarantined": 73}[status],)
+            for expected in ({"converted": 2, "deferred": 4, "quarantined": 84}[status],)
         ):
             raise ValueError("migration document status claims are contradictory")
         root = json.loads((ROOT / "migration/macwin/generated/index.json").read_bytes())

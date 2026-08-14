@@ -26,6 +26,7 @@ if os.name == "nt":
 
 ROOT = Path(os.path.abspath(__file__)).parent.parent
 SOURCE_PACK_RELATIVE = PurePosixPath("migration/macwin/source")
+PATCH_REVIEW_RELATIVE = PurePosixPath("migration/macwin/reviewed/patches.json")
 GENERATED_ROOT = "migration/macwin/generated"
 GENERATED_INDEX_PATH = f"{GENERATED_ROOT}/index.json"
 
@@ -34,6 +35,37 @@ APPROVED_SOURCE_TAG = "mw-migration-baseline-db12d5e"
 APPROVED_SOURCE_TAG_OBJECT = "9f10d003382ce7ffbb269376c03477e17516302f"
 APPROVED_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 APPROVED_INVENTORY_COMMIT = "97f8423094d25325d8f864eb6f49a9e8628dbb93"
+APPROVED_SOURCE_INDEX_SHA256 = (
+    "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3"
+)
+APPROVED_PATCH_REVIEW_SHA256 = (
+    "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+)
+APPROVED_PATCH_REVIEW_SOURCE = (
+    APPROVED_REPOSITORY,
+    APPROVED_SOURCE_TAG,
+    APPROVED_SOURCE_TAG_OBJECT,
+    APPROVED_SOURCE_COMMIT,
+    APPROVED_INVENTORY_COMMIT,
+    APPROVED_SOURCE_INDEX_SHA256,
+    "sha256",
+)
+APPROVED_JASP_PATCH_UPSTREAM = (
+    "https://github.com/jasp-stats/jasp-desktop",
+    "tag",
+    "v0.97.1",
+    None,
+    "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+)
+APPROVED_WINE_PATCH_UPSTREAM = (
+    "https://gitlab.winehq.org/wine/wine/",
+    "annotated-tag",
+    "wine-11.11",
+    "b08651f36865a3e1d9300d792df322d2ee8a807e",
+    "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+)
+MAX_PATCH_REVIEW_BYTES = 1024 * 1024
+PATCH_REVIEW_RECORD_COUNT = 11
 
 EXPECTED_CATEGORY_COUNTS = (
     ("bottle-schema", 4),
@@ -67,16 +99,28 @@ CATALOG_RECIPE_PREFIX = f"{CATALOG_ROOT}/recipes/"
 QUARANTINE_REASONS = frozenset(
     {
         "absolute-path",
+        "conflict",
         "missing-digest",
         "missing-license",
         "missing-provenance",
         "mutable-local-installation",
+        "unverified-base",
         "unresolved-environment-path",
         "unresolved-external-reference",
+        "upstreamed-or-obsolete",
         "unsupported-behavior",
         "unsupported-schema",
     }
 )
+PATCH_RELEASE_CONDITIONS = {
+    "missing-license": "Record patch-specific license evidence and repeat review.",
+    "unverified-base": "Bind every patch preimage to one exact upstream commit.",
+    "conflict": "Resolve patch conflicts and close every dependency.",
+    "upstreamed-or-obsolete": (
+        "Confirm removal or replacement in the reviewed source set."
+    ),
+}
+PATCH_REGRESSION_PROBES = types.MappingProxyType({})
 MAX_EVIDENCE_LOCATORS = 512
 APPROVED_PORTABLE_ASSET_TABLE_SHA256 = (
     "9db4bac2e7ddb3f542e655f5f9be1aed9d265ecd6dfa44cd563ef2b1c7eddf54"
@@ -368,6 +412,101 @@ class SourcePack:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchReviewSourceIdentity:
+    repository: str
+    source_tag: str
+    source_tag_object: str
+    source_commit: str
+    inventory_commit: str
+    source_index_sha256: str
+    digest_algorithm: str
+
+
+@dataclass(frozen=True, slots=True)
+class PatchPreimageEvidence:
+    path: str
+    patch_old_blob: str | None
+    upstream_blob_oid: str | None
+    result: str
+
+
+@dataclass(frozen=True, slots=True)
+class PatchEvidenceDependency:
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class PatchAuthor:
+    status: str
+    display_name: str | None
+    email: str | None
+    evidence: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PatchLicense:
+    status: str
+    spdx_expression: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PatchProjectLicense:
+    spdx_expression: str
+    evidence_locator: str
+    context_only: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PatchUpstream:
+    repository: str
+    reference_kind: str
+    reference: str
+    tag_object: str | None
+    commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class PatchReviewRecord:
+    source_path: str
+    source_sha256: str
+    git_blob_oid: str
+    git_mode: str
+    byte_size: int
+    subject: str | None
+    purpose: str
+    affected_applications: tuple[str, ...]
+    upstream: PatchUpstream
+    preimages: tuple[PatchPreimageEvidence, ...]
+    patch_author: PatchAuthor
+    project_license: PatchProjectLicense
+    patch_license: PatchLicense
+    evidence_and_dependencies: tuple[PatchEvidenceDependency, ...]
+    upstream_status: str
+    review_disposition: str
+    reason: str | None
+    release_condition: str | None
+    regression_probe_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PatchReviewLedger:
+    schema_version: str
+    source: PatchReviewSourceIdentity
+    record_count: int
+    records: tuple[PatchReviewRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PatchDecision:
+    status: str
+    action: str
+    reason: str | None
+    evidence_locators: tuple[str, ...]
+    release_condition: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ConversionRecord:
     source_repository: str
     source_commit: str
@@ -388,6 +527,7 @@ class ConversionRecord:
 @dataclass(frozen=True, slots=True)
 class ConversionResult:
     source_pack: SourcePack
+    patch_review: PatchReviewLedger
     records: tuple[ConversionRecord, ...]
 
 
@@ -439,6 +579,15 @@ class _HeldGeneratedDirectory:
     path: Path
     identity: tuple[int, int, int, int, int, int]
     handle: object
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldPatchReviewLeaf:
+    path: Path
+    path_identity: tuple[int, int, int, int, int, int]
+    handle_identity: tuple[int, int, int, int, int, int]
+    descriptor: int
+    raw: bytes
 
 
 if os.name == "nt":
@@ -779,6 +928,765 @@ def load_source_pack(repository_root: Path) -> SourcePack:
                 pass
 
 
+_PATCH_REVIEW_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+_PATCH_REVIEW_SPDX = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+() -]{0,255}\Z")
+_PATCH_REVIEW_PRINTABLE = re.compile(r"[\x20-\x7e]+\Z")
+_PATCH_REVIEW_ZERO_PREFIX = re.compile(r"0{7,40}\Z")
+_PATCH_REVIEW_GIT_PREFIX = re.compile(r"[0-9a-f]{7,40}\Z")
+_PATCH_REVIEW_HTTPS = re.compile(
+    r"https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+"
+    r"(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@+-]+)+/?)?\Z"
+)
+
+
+def _verify_patch_review_directory(directory: _HeldGeneratedDirectory) -> None:
+    _verify_held_generated_directories([directory])
+
+
+def _open_patch_review_directory(
+    path: Path,
+    parent: _HeldGeneratedDirectory | None = None,
+    name: str | None = None,
+) -> _HeldGeneratedDirectory:
+    if parent is None:
+        return _hold_generated_directories([path])[0]
+    if type(name) is not str:
+        raise OSError
+    return _open_bound_child(parent, name)
+
+
+def _close_patch_review_directory(directory: _HeldGeneratedDirectory) -> None:
+    _close_generated_directories([directory])
+
+
+def _hold_patch_review_directories(
+    repository_root: Path,
+) -> list[_HeldGeneratedDirectory]:
+    target = repository_root.absolute() / PATCH_REVIEW_RELATIVE.parent
+    anchor = Path(target.anchor)
+    held: list[_HeldGeneratedDirectory] = []
+    try:
+        current = anchor
+        parent = _open_patch_review_directory(current)
+        held.append(parent)
+        for name in target.parts[1:]:
+            current /= name
+            child = _open_patch_review_directory(current, parent, name)
+            held.append(child)
+            parent = child
+        return held
+    except BaseException:
+        for directory in reversed(held):
+            _close_patch_review_directory(directory)
+        raise
+
+
+def _patch_review_leaf_metadata(
+    parent: _HeldGeneratedDirectory, name: str
+) -> os.stat_result:
+    if os.name == "nt":
+        return _SOURCE_PACK._path_metadata(parent.path / name)
+    metadata = os.stat(name, dir_fd=parent.handle, follow_symlinks=False)
+    if stat.S_ISLNK(metadata.st_mode):
+        raise OSError
+    return metadata
+
+
+def _open_patch_review_leaf_descriptor(
+    parent: _HeldGeneratedDirectory, name: str
+) -> int:
+    if os.name != "nt":
+        return os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent.handle,
+        )
+    return _open_source_leaf_descriptor(parent.path / name)
+
+
+def _read_patch_review_leaf(
+    parent: _HeldGeneratedDirectory,
+) -> _HeldPatchReviewLeaf:
+    name = PATCH_REVIEW_RELATIVE.name
+    descriptor: int | None = None
+    try:
+        _verify_patch_review_directory(parent)
+        before = _patch_review_leaf_metadata(parent, name)
+        identity = _SOURCE_PACK._file_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > MAX_PATCH_REVIEW_BYTES
+        ):
+            raise OSError
+        descriptor = _open_patch_review_leaf_descriptor(parent, name)
+        opened = os.fstat(descriptor)
+        handle_identity = _SOURCE_PACK._file_identity(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or handle_identity[:4] != identity[:4]
+        ):
+            raise OSError
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAX_PATCH_REVIEW_BYTES + 1 - total),
+            )
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_PATCH_REVIEW_BYTES:
+                raise OSError
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        final = os.fstat(descriptor)
+        if (
+            _SOURCE_PACK._file_identity(final) != handle_identity
+            or len(raw) != before.st_size
+            or _SOURCE_PACK._file_identity(_patch_review_leaf_metadata(parent, name))
+            != identity
+        ):
+            raise OSError
+        held = _HeldPatchReviewLeaf(
+            parent.path / name,
+            identity,
+            handle_identity,
+            descriptor,
+            raw,
+        )
+        descriptor = None
+        return held
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _verify_patch_review_leaf(
+    parent: _HeldGeneratedDirectory, leaf: _HeldPatchReviewLeaf
+) -> None:
+    opened = os.fstat(leaf.descriptor)
+    current = _patch_review_leaf_metadata(parent, PATCH_REVIEW_RELATIVE.name)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or _SOURCE_PACK._file_identity(opened) != leaf.handle_identity
+        or _SOURCE_PACK._file_identity(current) != leaf.path_identity
+        or len(leaf.raw) > MAX_PATCH_REVIEW_BYTES
+        or hashlib.sha256(leaf.raw).hexdigest() != APPROVED_PATCH_REVIEW_SHA256
+    ):
+        raise OSError
+
+
+def _close_patch_review_leaf(leaf: _HeldPatchReviewLeaf) -> None:
+    try:
+        os.close(leaf.descriptor)
+    except OSError:
+        pass
+
+
+def _parse_patch_review_bytes(raw: bytes) -> dict[str, object]:
+    value = _COMMON.parse_json_bytes(raw, label="Mac-Win patch review")
+    if type(value) is not dict or _COMMON.canonical_json_bytes(value) != raw:
+        raise ValueError
+    return value
+
+
+def _require_review_object(
+    value: object,
+    allowed: frozenset[str],
+    required: frozenset[str] | None = None,
+) -> dict[str, object]:
+    if type(value) is not dict or any(type(key) is not str for key in value):
+        raise ValueError
+    keys = frozenset(value)
+    if not (required or allowed) <= keys or not keys <= allowed:
+        raise ValueError
+    return value
+
+
+def _require_patch_review_exact_types(value: object) -> dict[str, object]:
+    top = _require_review_object(
+        value,
+        frozenset({"schemaVersion", "source", "recordCount", "records"}),
+    )
+    if (
+        type(top["schemaVersion"]) is not str
+        or type(top["recordCount"]) is not int
+        or type(top["records"]) is not list
+    ):
+        raise ValueError
+    source_fields = frozenset(
+        {
+            "repository",
+            "sourceTag",
+            "sourceTagObject",
+            "sourceCommit",
+            "inventoryCommit",
+            "sourceIndexSha256",
+            "digestAlgorithm",
+        }
+    )
+    source = _require_review_object(top["source"], source_fields)
+    if any(type(source[field]) is not str for field in source_fields):
+        raise ValueError
+    record_fields = frozenset(
+        {
+            "affectedApplications",
+            "byteSize",
+            "evidenceAndDependencies",
+            "gitBlobOid",
+            "gitMode",
+            "patchAuthor",
+            "patchLicense",
+            "preimages",
+            "projectLicense",
+            "purpose",
+            "reason",
+            "regressionProbeIds",
+            "releaseCondition",
+            "reviewDisposition",
+            "sourcePath",
+            "sourceSha256",
+            "subject",
+            "upstream",
+            "upstreamStatus",
+        }
+    )
+    upstream_fields = frozenset(
+        {"repository", "referenceKind", "reference", "tagObject", "commit"}
+    )
+    preimage_fields = frozenset(
+        {"path", "patchOldBlob", "upstreamBlobOid", "result"}
+    )
+    author_fields = frozenset(
+        {"status", "displayName", "email", "evidence"}
+    )
+    project_license_fields = frozenset(
+        {"spdxExpression", "evidenceLocator", "contextOnly"}
+    )
+    patch_license_fields = frozenset({"status", "spdxExpression"})
+    evidence_fields = frozenset({"kind", "value"})
+    for untrusted in top["records"]:
+        record = _require_review_object(untrusted, record_fields)
+        string_fields = (
+            "gitBlobOid",
+            "gitMode",
+            "purpose",
+            "reviewDisposition",
+            "sourcePath",
+            "sourceSha256",
+            "upstreamStatus",
+        )
+        optional_strings = ("reason", "releaseCondition", "subject")
+        if (
+            any(type(record[field]) is not str for field in string_fields)
+            or any(
+                record[field] is not None and type(record[field]) is not str
+                for field in optional_strings
+            )
+            or type(record["byteSize"]) is not int
+            or any(
+                type(record[field]) is not list
+                for field in (
+                    "affectedApplications",
+                    "evidenceAndDependencies",
+                    "preimages",
+                    "regressionProbeIds",
+                )
+            )
+            or any(
+                type(item) is not str
+                for item in record["affectedApplications"]
+            )
+            or any(
+                type(item) is not str for item in record["regressionProbeIds"]
+            )
+        ):
+            raise ValueError
+        upstream = _require_review_object(record["upstream"], upstream_fields)
+        if (
+            any(
+                type(upstream[field]) is not str
+                for field in ("repository", "referenceKind", "reference", "commit")
+            )
+            or upstream["tagObject"] is not None
+            and type(upstream["tagObject"]) is not str
+        ):
+            raise ValueError
+        for untrusted_preimage in record["preimages"]:
+            preimage = _require_review_object(untrusted_preimage, preimage_fields)
+            if (
+                type(preimage["path"]) is not str
+                or type(preimage["result"]) is not str
+                or preimage["patchOldBlob"] is not None
+                and type(preimage["patchOldBlob"]) is not str
+                or preimage["upstreamBlobOid"] is not None
+                and type(preimage["upstreamBlobOid"]) is not str
+            ):
+                raise ValueError
+        author = _require_review_object(
+            record["patchAuthor"], author_fields, frozenset({"status"})
+        )
+        if type(author["status"]) is not str or any(
+            author.get(field) is not None and type(author.get(field)) is not str
+            for field in ("displayName", "email", "evidence")
+        ):
+            raise ValueError
+        project_license = _require_review_object(
+            record["projectLicense"], project_license_fields
+        )
+        if (
+            type(project_license["spdxExpression"]) is not str
+            or type(project_license["evidenceLocator"]) is not str
+            or type(project_license["contextOnly"]) is not bool
+        ):
+            raise ValueError
+        patch_license = _require_review_object(
+            record["patchLicense"],
+            patch_license_fields,
+            frozenset({"status"}),
+        )
+        if (
+            type(patch_license["status"]) is not str
+            or patch_license.get("spdxExpression") is not None
+            and type(patch_license.get("spdxExpression")) is not str
+        ):
+            raise ValueError
+        for untrusted_evidence in record["evidenceAndDependencies"]:
+            evidence = _require_review_object(untrusted_evidence, evidence_fields)
+            if (
+                type(evidence["kind"]) is not str
+                or type(evidence["value"]) is not str
+            ):
+                raise ValueError
+    return top
+
+
+def _review_printable(value: str, minimum: int, maximum: int) -> bool:
+    return minimum <= len(value) <= maximum and _PATCH_REVIEW_PRINTABLE.fullmatch(
+        value
+    ) is not None
+
+
+def _review_https(value: str) -> bool:
+    return (
+        12 <= len(value) <= 2048
+        and _PATCH_REVIEW_HTTPS.fullmatch(value) is not None
+    )
+
+
+def _review_git_oid(value: str) -> bool:
+    return _HEX_40.fullmatch(value) is not None and value != "0" * 40
+
+
+def _review_relative_path(value: str) -> bool:
+    if len(value) > 1024:
+        return False
+    try:
+        _COMMON.require_relative_posix_path(value)
+    except _COMMON.MigrationError:
+        return False
+    return True
+
+
+def _validate_patch_review_semantics(
+    value: dict[str, object], source_pack: SourcePack
+) -> None:
+    source = value["source"]
+    if (
+        value["schemaVersion"] != "1"
+        or value["recordCount"] != PATCH_REVIEW_RECORD_COUNT
+        or len(value["records"]) != PATCH_REVIEW_RECORD_COUNT
+        or tuple(
+            source[field]
+            for field in (
+                "repository",
+                "sourceTag",
+                "sourceTagObject",
+                "sourceCommit",
+                "inventoryCommit",
+                "sourceIndexSha256",
+                "digestAlgorithm",
+            )
+        )
+        != APPROVED_PATCH_REVIEW_SOURCE
+        or source_pack.repository != source["repository"]
+        or source_pack.source_tag != source["sourceTag"]
+        or source_pack.source_tag_object != source["sourceTagObject"]
+        or source_pack.source_commit != source["sourceCommit"]
+        or source_pack.inventory_commit != source["inventoryCommit"]
+        or source_pack.digest_algorithm != source["digestAlgorithm"]
+    ):
+        raise ValueError
+    records = value["records"]
+    paths = [record["sourcePath"] for record in records]
+    if (
+        paths != sorted(paths, key=lambda item: item.encode("ascii"))
+        or len(set(paths)) != len(paths)
+        or len({path.casefold() for path in paths}) != len(paths)
+    ):
+        raise ValueError
+    patch_assets = tuple(
+        asset for asset in source_pack.assets if asset.category == "patches"
+    )
+    if paths != [asset.source_path for asset in patch_assets]:
+        raise ValueError
+    allowed_reasons = {
+        "missing-license",
+        "unverified-base",
+        "conflict",
+        "upstreamed-or-obsolete",
+    }
+    for record, asset in zip(records, patch_assets, strict=True):
+        if (
+            not _review_relative_path(record["sourcePath"])
+            or _HEX_64.fullmatch(record["sourceSha256"]) is None
+            or not _review_git_oid(record["gitBlobOid"])
+            or record["gitMode"] not in {"100644", "100755"}
+            or not 1 <= record["byteSize"] <= 1024 * 1024
+            or record["sourcePath"] != asset.source_path
+            or record["sourceSha256"] != asset.sha256
+            or record["gitBlobOid"] != asset.git_blob_oid
+            or record["gitMode"] != asset.git_mode
+            or record["byteSize"] != asset.byte_size
+            or not _review_printable(record["purpose"], 1, 2048)
+            or record["subject"] is not None
+            and not _review_printable(record["subject"], 1, 256)
+        ):
+            raise ValueError
+        applications = record["affectedApplications"]
+        if (
+            not 1 <= len(applications) <= 32
+            or any(_PATCH_REVIEW_IDENTIFIER.fullmatch(item) is None for item in applications)
+            or applications
+            != sorted(set(applications), key=lambda item: item.encode("ascii"))
+        ):
+            raise ValueError
+        upstream = record["upstream"]
+        if (
+            not _review_https(upstream["repository"])
+            or upstream["referenceKind"] not in {"tag", "annotated-tag"}
+            or not _review_printable(upstream["reference"], 1, 256)
+            or not _review_git_oid(upstream["commit"])
+            or upstream["referenceKind"] == "tag"
+            and upstream["tagObject"] is not None
+            or upstream["referenceKind"] == "annotated-tag"
+            and (
+                upstream["tagObject"] is None
+                or not _review_git_oid(upstream["tagObject"])
+            )
+        ):
+            raise ValueError
+        preimages = record["preimages"]
+        preimage_paths = [item["path"] for item in preimages]
+        if (
+            not 1 <= len(preimages) <= 128
+            or preimage_paths
+            != sorted(preimage_paths, key=lambda item: item.encode("ascii"))
+            or len(set(preimage_paths)) != len(preimage_paths)
+            or len({path.casefold() for path in preimage_paths})
+            != len(preimage_paths)
+        ):
+            raise ValueError
+        for item in preimages:
+            old = item["patchOldBlob"]
+            upstream_oid = item["upstreamBlobOid"]
+            result = item["result"]
+            if (
+                not _review_relative_path(item["path"])
+                or result not in {"matched", "mismatched", "added", "unproven"}
+                or old is not None
+                and _PATCH_REVIEW_GIT_PREFIX.fullmatch(old) is None
+                or upstream_oid is not None
+                and not _review_git_oid(upstream_oid)
+            ):
+                raise ValueError
+            zero_old = (
+                old is not None
+                and _PATCH_REVIEW_ZERO_PREFIX.fullmatch(old) is not None
+            )
+            if result == "matched" and (
+                old is None
+                or zero_old
+                or upstream_oid is None
+                or not upstream_oid.startswith(old)
+            ):
+                raise ValueError
+            if result == "mismatched" and (
+                old is None
+                or zero_old
+                or upstream_oid is None
+                or upstream_oid.startswith(old)
+            ):
+                raise ValueError
+            if result == "added" and (
+                old is None or not zero_old or upstream_oid is not None
+            ):
+                raise ValueError
+            if result == "unproven" and not (
+                (old is None and upstream_oid is not None)
+                or (zero_old and upstream_oid is not None)
+                or (old is not None and not zero_old and upstream_oid is None)
+            ):
+                raise ValueError
+        author = record["patchAuthor"]
+        if author["status"] == "reviewed":
+            if (
+                set(author) != {"status", "displayName", "email", "evidence"}
+                or not 1 <= len(author["displayName"]) <= 256
+                or not 3 <= len(author["email"]) <= 254
+                or author["evidence"] != "frozen-patch-mail-header"
+            ):
+                raise ValueError
+        elif author["status"] == "unresolved":
+            if any(
+                author.get(field) is not None
+                for field in ("displayName", "email", "evidence")
+            ):
+                raise ValueError
+        else:
+            raise ValueError
+        project_license = record["projectLicense"]
+        if (
+            project_license["contextOnly"] is not True
+            or _PATCH_REVIEW_SPDX.fullmatch(project_license["spdxExpression"])
+            is None
+            or not _review_https(project_license["evidenceLocator"])
+        ):
+            raise ValueError
+        patch_license = record["patchLicense"]
+        evidence = record["evidenceAndDependencies"]
+        evidence_pairs = [(item["kind"], item["value"]) for item in evidence]
+        if (
+            len(evidence) > 128
+            or evidence_pairs
+            != sorted(
+                set(evidence_pairs),
+                key=lambda item: (item[0].encode("ascii"), item[1].encode("ascii")),
+            )
+            or any(
+                item["kind"]
+                not in {
+                    "patch-license",
+                    "external-dependency",
+                    "development-dependency",
+                }
+                or not _review_printable(item["value"], 1, 2048)
+                or item["kind"] in {"patch-license", "external-dependency"}
+                and not _review_https(item["value"])
+                for item in evidence
+            )
+        ):
+            raise ValueError
+        patch_evidence = tuple(
+            item["value"] for item in evidence if item["kind"] == "patch-license"
+        )
+        if patch_license["status"] == "reviewed":
+            if (
+                set(patch_license) != {"status", "spdxExpression"}
+                or _PATCH_REVIEW_SPDX.fullmatch(patch_license["spdxExpression"])
+                is None
+                or not patch_evidence
+            ):
+                raise ValueError
+        elif patch_license["status"] == "unresolved":
+            if patch_license.get("spdxExpression") is not None or patch_evidence:
+                raise ValueError
+        else:
+            raise ValueError
+        if tuple(
+            item["value"]
+            for item in evidence
+            if item["kind"] == "external-dependency"
+        ) != asset.external_refs or tuple(
+            item["value"]
+            for item in evidence
+            if item["kind"] == "development-dependency"
+        ) != asset.development_dependencies:
+            raise ValueError
+        probes = record["regressionProbeIds"]
+        if (
+            len(probes) > 32
+            or any(_PATCH_REVIEW_IDENTIFIER.fullmatch(item) is None for item in probes)
+            or probes != sorted(set(probes), key=lambda item: item.encode("ascii"))
+            or record["upstreamStatus"]
+            not in {
+                "local-only",
+                "upstreamed",
+                "superseded",
+                "conflicting",
+                "unresolved",
+            }
+            or record["reviewDisposition"] not in {"retained", "quarantined"}
+            or record["reason"] is not None
+            and record["reason"] not in allowed_reasons
+            or record["releaseCondition"] is not None
+            and not _review_printable(record["releaseCondition"], 1, 512)
+        ):
+            raise ValueError
+        if record["reviewDisposition"] == "retained":
+            if (
+                patch_license["status"] != "reviewed"
+                or any(item["result"] not in {"matched", "added"} for item in preimages)
+                or record["reason"] is not None
+                or not probes
+                or record["releaseCondition"] is not None
+                or record["upstreamStatus"] != "local-only"
+            ):
+                raise ValueError
+        elif (
+            record["reason"] not in allowed_reasons
+            or probes
+            or record["releaseCondition"] is None
+        ):
+            raise ValueError
+
+
+def _validate_approved_patch_upstreams(value: dict[str, object]) -> None:
+    for record in value["records"]:
+        expected = (
+            APPROVED_JASP_PATCH_UPSTREAM
+            if record["sourcePath"].startswith("patches/jasp-")
+            else APPROVED_WINE_PATCH_UPSTREAM
+            if record["sourcePath"].startswith("patches/wine-")
+            else None
+        )
+        upstream = record["upstream"]
+        actual = tuple(
+            upstream[field]
+            for field in (
+                "repository",
+                "referenceKind",
+                "reference",
+                "tagObject",
+                "commit",
+            )
+        )
+        if actual != expected:
+            raise ValueError
+
+
+def _patch_review_model(value: dict[str, object]) -> PatchReviewLedger:
+    source = value["source"]
+    records: list[PatchReviewRecord] = []
+    for record in value["records"]:
+        upstream = record["upstream"]
+        author = record["patchAuthor"]
+        project_license = record["projectLicense"]
+        patch_license = record["patchLicense"]
+        records.append(
+            PatchReviewRecord(
+                source_path=record["sourcePath"],
+                source_sha256=record["sourceSha256"],
+                git_blob_oid=record["gitBlobOid"],
+                git_mode=record["gitMode"],
+                byte_size=record["byteSize"],
+                subject=record["subject"],
+                purpose=record["purpose"],
+                affected_applications=tuple(record["affectedApplications"]),
+                upstream=PatchUpstream(
+                    repository=upstream["repository"],
+                    reference_kind=upstream["referenceKind"],
+                    reference=upstream["reference"],
+                    tag_object=upstream["tagObject"],
+                    commit=upstream["commit"],
+                ),
+                preimages=tuple(
+                    PatchPreimageEvidence(
+                        path=item["path"],
+                        patch_old_blob=item["patchOldBlob"],
+                        upstream_blob_oid=item["upstreamBlobOid"],
+                        result=item["result"],
+                    )
+                    for item in record["preimages"]
+                ),
+                patch_author=PatchAuthor(
+                    status=author["status"],
+                    display_name=author.get("displayName"),
+                    email=author.get("email"),
+                    evidence=author.get("evidence"),
+                ),
+                project_license=PatchProjectLicense(
+                    spdx_expression=project_license["spdxExpression"],
+                    evidence_locator=project_license["evidenceLocator"],
+                    context_only=project_license["contextOnly"],
+                ),
+                patch_license=PatchLicense(
+                    status=patch_license["status"],
+                    spdx_expression=patch_license.get("spdxExpression"),
+                ),
+                evidence_and_dependencies=tuple(
+                    PatchEvidenceDependency(kind=item["kind"], value=item["value"])
+                    for item in record["evidenceAndDependencies"]
+                ),
+                upstream_status=record["upstreamStatus"],
+                review_disposition=record["reviewDisposition"],
+                reason=record["reason"],
+                release_condition=record["releaseCondition"],
+                regression_probe_ids=tuple(record["regressionProbeIds"]),
+            )
+        )
+    return PatchReviewLedger(
+        schema_version=value["schemaVersion"],
+        source=PatchReviewSourceIdentity(
+            repository=source["repository"],
+            source_tag=source["sourceTag"],
+            source_tag_object=source["sourceTagObject"],
+            source_commit=source["sourceCommit"],
+            inventory_commit=source["inventoryCommit"],
+            source_index_sha256=source["sourceIndexSha256"],
+            digest_algorithm=source["digestAlgorithm"],
+        ),
+        record_count=value["recordCount"],
+        records=tuple(records),
+    )
+
+
+def load_patch_review(
+    repository_root: Path, source_pack: SourcePack
+) -> PatchReviewLedger:
+    """Load the sealed patch-review evidence for one authenticated source pack."""
+
+    _bootstrap_dependencies()
+    held_directories: list[_HeldGeneratedDirectory] = []
+    leaf: _HeldPatchReviewLeaf | None = None
+    try:
+        if not isinstance(repository_root, Path):
+            raise ValueError
+        _validate_source_pack_model(source_pack)
+        held_directories = _hold_patch_review_directories(repository_root)
+        leaf = _read_patch_review_leaf(held_directories[-1])
+        if hashlib.sha256(leaf.raw).hexdigest() != APPROVED_PATCH_REVIEW_SHA256:
+            raise ValueError
+        value = _parse_patch_review_bytes(leaf.raw)
+        typed_value = _require_patch_review_exact_types(value)
+        _validate_patch_review_semantics(typed_value, source_pack)
+        _validate_approved_patch_upstreams(typed_value)
+        ledger = _patch_review_model(typed_value)
+        _verify_patch_review_leaf(held_directories[-1], leaf)
+        for directory in held_directories:
+            _verify_patch_review_directory(directory)
+        if hashlib.sha256(leaf.raw).hexdigest() != APPROVED_PATCH_REVIEW_SHA256:
+            raise ValueError
+        return ledger
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException:
+        _fail("patch review evidence is invalid")
+    finally:
+        if leaf is not None:
+            _close_patch_review_leaf(leaf)
+        for directory in reversed(held_directories):
+            _close_patch_review_directory(directory)
+
+
 def _bind_source_tree(
     source_root: Path, expected_paths: frozenset[str]
 ) -> _SourceTreeBinding:
@@ -863,17 +1771,30 @@ def _append_bound_directory(
     )
 
 
-def classify_source_pack(source_pack: SourcePack) -> ConversionResult:
+def classify_source_pack(
+    source_pack: SourcePack, patch_review: PatchReviewLedger
+) -> ConversionResult:
     """Classify every authenticated identity into one closed migration result."""
 
     _bootstrap_dependencies()
     _validate_source_pack_model(source_pack)
+    _validate_patch_review_model(patch_review, source_pack)
     _validate_portable_contract_tables(source_pack)
     recipe_paths = _validate_catalog_boundary(source_pack)
+    review_by_path = {
+        record.source_path: record for record in patch_review.records
+    }
+    if len(review_by_path) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
     records = tuple(
-        _classify_asset(source_pack, asset, recipe_paths) for asset in source_pack.assets
+        _classify_asset(source_pack, asset, recipe_paths, review_by_path)
+        for asset in source_pack.assets
     )
-    result = ConversionResult(source_pack=source_pack, records=records)
+    result = ConversionResult(
+        source_pack=source_pack,
+        patch_review=patch_review,
+        records=records,
+    )
     _validate_conversion_result(result)
     return result
 
@@ -881,7 +1802,9 @@ def classify_source_pack(source_pack: SourcePack) -> ConversionResult:
 def build_conversion(repository_root: Path) -> ConversionResult:
     """Build the pure in-memory conversion ledger from committed source bytes."""
 
-    return classify_source_pack(load_source_pack(repository_root))
+    source_pack = load_source_pack(repository_root)
+    patch_review = load_patch_review(repository_root, source_pack)
+    return classify_source_pack(source_pack, patch_review)
 
 
 def render_documents(result: ConversionResult) -> dict[str, bytes]:
@@ -965,16 +1888,38 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
             _fail("portable asset cannot be rendered")
         documents[content_path] = asset.raw
 
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
+    patch_records = tuple(
+        record for record in result.records if record.category == "patches"
+    )
+    quarantine_records.extend(
+        _quarantine_document(record)
+        for record in patch_records
+        if record.status == "quarantined"
+    )
+    quarantine_records.sort(key=lambda item: item["sourcePath"].encode("ascii"))
     mapping_documents: dict[str, dict[str, object]] = {}
     for category, output_name in (
         ("patches", "patches.json"),
         ("bottle-schema", "bottle-schemas.json"),
     ):
-        mapping_records = [
-            _deferred_document(record, assets[record.source_path])
-            for record in result.records
-            if record.category == category
-        ]
+        if category == "patches":
+            mapping_records = [
+                _reviewed_patch_document(
+                    record,
+                    assets[record.source_path],
+                    review_by_path[record.source_path],
+                )
+                for record in patch_records
+            ]
+        else:
+            mapping_records = [
+                _deferred_document(record, assets[record.source_path])
+                for record in result.records
+                if record.category == category
+            ]
         mapping_documents[
             f"migration/macwin/generated/mappings/{output_name}"
         ] = {"schemaVersion": "1", "records": mapping_records}
@@ -1031,7 +1976,7 @@ def render_documents(result: ConversionResult) -> dict[str, bytes]:
         path: documents[path]
         for path in sorted(documents, key=lambda value: value.encode("ascii"))
     }
-    validate_generated_graph(ordered, source_pack)
+    validate_generated_graph(ordered, source_pack, result.patch_review)
     return ordered
 
 
@@ -1375,13 +2320,15 @@ def _authenticate_generated_graph_seal(
 
 
 def validate_generated_graph(
-    documents: dict[str, bytes], source_pack: SourcePack
+    documents: dict[str, bytes],
+    source_pack: SourcePack,
+    patch_review: PatchReviewLedger,
 ) -> None:
     """Validate a complete graph independently from the rendering entrypoint."""
 
     _bootstrap_dependencies()
     _validate_source_pack_model(source_pack)
-    result = classify_source_pack(source_pack)
+    result = classify_source_pack(source_pack, patch_review)
     _seal, root = _authenticate_generated_graph_seal(documents, result)
     leaves = {path: raw for path, raw in documents.items() if path != GENERATED_INDEX_PATH}
     for path, raw in leaves.items():
@@ -1578,7 +2525,9 @@ def _deferred_document(
 ) -> dict[str, object]:
     if (
         record.status != "deferred"
-        or record.category not in {"patches", "bottle-schema"}
+        or record.category != "bottle-schema"
+        or record.output_kind != "bottle-schema-mapping"
+        or record.target_issue != "MW-ASSET-003"
         or record.source_path != asset.source_path
         or record.source_sha256 != asset.sha256
     ):
@@ -1596,6 +2545,89 @@ def _deferred_document(
         "intendedOwner": record.intended_owner,
         "license": {"status": asset.license_status},
         "provenance": {"status": asset.provenance_status},
+    }
+
+
+def _reviewed_patch_document(
+    record: ConversionRecord,
+    asset: SourceAsset,
+    review: PatchReviewRecord,
+) -> dict[str, object]:
+    decision = _derive_patch_decision(review, PATCH_REGRESSION_PROBES)
+    if (
+        record.category != "patches"
+        or record.output_kind != "patch-mapping"
+        or record.target_issue != "MW-ASSET-002"
+        or record.source_path != asset.source_path
+        or record.source_sha256 != asset.sha256
+        or record.source_commit != asset.source_commit
+        or record.source_repository != APPROVED_REPOSITORY
+        or record.intended_owner != asset.intended_owner
+        or review.source_path != asset.source_path
+        or review.source_sha256 != asset.sha256
+        or review.git_blob_oid != asset.git_blob_oid
+        or review.git_mode != asset.git_mode
+        or review.byte_size != asset.byte_size
+        or record.status != decision.status
+        or record.action != decision.action
+        or record.reason != decision.reason
+        or record.evidence_locators != decision.evidence_locators
+        or record.release_condition != decision.release_condition
+    ):
+        _fail("reviewed patch migration evidence is incomplete")
+    author: dict[str, object] = {"status": review.patch_author.status}
+    if review.patch_author.display_name is not None:
+        author["displayName"] = review.patch_author.display_name
+    if review.patch_author.email is not None:
+        author["email"] = review.patch_author.email
+    if review.patch_author.evidence is not None:
+        author["evidence"] = review.patch_author.evidence
+    patch_license: dict[str, object] = {"status": review.patch_license.status}
+    if review.patch_license.spdx_expression is not None:
+        patch_license["spdxExpression"] = review.patch_license.spdx_expression
+    base_counts = {
+        result: sum(item.result == result for item in review.preimages)
+        for result in ("matched", "mismatched", "added", "unproven")
+    }
+    return {
+        "sourceRepository": record.source_repository,
+        "sourcePath": record.source_path,
+        "sourceCommit": record.source_commit,
+        "gitBlobOid": asset.git_blob_oid,
+        "gitMode": asset.git_mode,
+        "sourceSha256": record.source_sha256,
+        "category": "patches",
+        "status": record.status,
+        "targetIssue": "MW-ASSET-002",
+        "intendedOwner": record.intended_owner,
+        "license": {"status": asset.license_status},
+        "provenance": {"status": asset.provenance_status},
+        "purpose": review.purpose,
+        "affectedApplications": list(review.affected_applications),
+        "upstream": {
+            "repository": review.upstream.repository,
+            "referenceKind": review.upstream.reference_kind,
+            "reference": review.upstream.reference,
+            "tagObject": review.upstream.tag_object,
+            "commit": review.upstream.commit,
+        },
+        "baseEvidence": base_counts,
+        "patchAuthor": author,
+        "projectLicense": {
+            "spdxExpression": review.project_license.spdx_expression,
+            "evidenceLocator": review.project_license.evidence_locator,
+            "contextOnly": review.project_license.context_only,
+        },
+        "patchLicense": patch_license,
+        "evidenceAndDependencies": [
+            {"kind": item.kind, "value": item.value}
+            for item in review.evidence_and_dependencies
+        ],
+        "upstreamStatus": review.upstream_status,
+        "reviewDisposition": review.review_disposition,
+        "reason": decision.reason,
+        "releaseCondition": decision.release_condition,
+        "regressionProbeIds": list(review.regression_probe_ids),
     }
 
 
@@ -2507,10 +3539,108 @@ def _render_reviewed_recipe(
     return recipe
 
 
+def _derive_patch_decision(
+    review: PatchReviewRecord,
+    probe_registry: object,
+) -> PatchDecision:
+    """Derive one patch outcome without trusting its manual disposition."""
+
+    if type(review) is not PatchReviewRecord or not isinstance(
+        probe_registry, (dict, types.MappingProxyType)
+    ):
+        _fail("patch review evidence is invalid")
+    patch_license_evidence = tuple(
+        item.value
+        for item in review.evidence_and_dependencies
+        if type(item) is PatchEvidenceDependency
+        and item.kind == "patch-license"
+        and _review_https(item.value)
+    )
+    licensed = (
+        type(review.patch_license) is PatchLicense
+        and review.patch_license.status == "reviewed"
+        and type(review.patch_license.spdx_expression) is str
+        and _PATCH_REVIEW_SPDX.fullmatch(review.patch_license.spdx_expression)
+        is not None
+        and bool(patch_license_evidence)
+    )
+    if not licensed:
+        reason = "missing-license"
+    elif not review.preimages or any(
+        type(item) is not PatchPreimageEvidence
+        or item.result not in {"matched", "added"}
+        for item in review.preimages
+    ):
+        reason = "unverified-base"
+    elif review.upstream_status in {"conflicting", "unresolved"} or any(
+        type(item) is PatchEvidenceDependency
+        and item.kind in {"external-dependency", "development-dependency"}
+        for item in review.evidence_and_dependencies
+    ):
+        reason = "conflict"
+    elif review.upstream_status in {"upstreamed", "superseded"}:
+        reason = "upstreamed-or-obsolete"
+    elif review.upstream_status == "local-only":
+        reason = None
+    else:
+        _fail("patch review evidence is invalid")
+
+    evidence_locators = (f"{review.source_path}#patchLicense",)
+    if reason is not None:
+        release_condition = PATCH_RELEASE_CONDITIONS[reason]
+        if (
+            review.review_disposition != "quarantined"
+            or review.reason != reason
+            or review.release_condition != release_condition
+            or review.regression_probe_ids
+        ):
+            _fail("patch review evidence is invalid")
+        return PatchDecision(
+            status="quarantined",
+            action="quarantine",
+            reason=reason,
+            evidence_locators=evidence_locators,
+            release_condition=release_condition,
+        )
+
+    probe_ids = review.regression_probe_ids
+    if (
+        review.review_disposition != "retained"
+        or review.reason is not None
+        or review.release_condition is not None
+        or type(probe_ids) is not tuple
+        or not probe_ids
+        or len(set(probe_ids)) != len(probe_ids)
+        or probe_ids
+        != tuple(sorted(probe_ids, key=lambda value: value.encode("ascii")))
+    ):
+        _fail("patch review evidence is invalid")
+    for probe_id in probe_ids:
+        if type(probe_id) is not str or probe_id not in probe_registry:
+            _fail("patch review evidence is invalid")
+        probe = probe_registry[probe_id]
+        if not callable(probe):
+            _fail("patch review evidence is invalid")
+        try:
+            passed = probe(review)
+        except Exception:
+            _fail("patch review evidence is invalid")
+        if passed is not True:
+            _fail("patch review evidence is invalid")
+    return PatchDecision(
+        status="deferred",
+        action="retain-patch",
+        reason=None,
+        evidence_locators=evidence_locators,
+        release_condition=None,
+    )
+
+
 def _classify_asset(
     source_pack: SourcePack,
     asset: SourceAsset,
     recipe_paths: frozenset[str],
+    review_by_path: dict[str, PatchReviewRecord],
 ) -> ConversionRecord:
     base = {
         "source_repository": source_pack.repository,
@@ -2575,15 +3705,19 @@ def _classify_asset(
             base, asset, "portable-fixture", "export-portable-fixture"
         )
     if asset.category == "patches":
+        review = review_by_path.get(asset.source_path)
+        if type(review) is not PatchReviewRecord:
+            _fail("patch review evidence is invalid")
+        decision = _derive_patch_decision(review, PATCH_REGRESSION_PROBES)
         return ConversionRecord(
             **base,
             output_kind="patch-mapping",
-            status="deferred",
-            action="defer-patch",
+            status=decision.status,
+            action=decision.action,
             target_issue="MW-ASSET-002",
-            reason=None,
-            evidence_locators=(),
-            release_condition=None,
+            reason=decision.reason,
+            evidence_locators=decision.evidence_locators,
+            release_condition=decision.release_condition,
         )
     if asset.category == "bottle-schema":
         return ConversionRecord(
@@ -2726,10 +3860,323 @@ def _validate_conversion_record_field_types(record: ConversionRecord) -> None:
         _fail("conversion result record path is invalid")
 
 
+def _bounded_review_model_string(value: object, maximum_bytes: int) -> bool:
+    if type(value) is not str or len(value) > maximum_bytes:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= maximum_bytes
+    except UnicodeEncodeError:
+        return False
+
+
+def _bounded_optional_review_model_string(
+    value: object, maximum_bytes: int
+) -> bool:
+    return value is None or _bounded_review_model_string(value, maximum_bytes)
+
+
+def _preflight_patch_review_model(
+    review: PatchReviewLedger, source_pack: SourcePack
+) -> None:
+    if (
+        type(review) is not PatchReviewLedger
+        or type(review.source) is not PatchReviewSourceIdentity
+        or type(review.schema_version) is not str
+        or type(review.record_count) is not int
+        or type(review.records) is not tuple
+        or review.schema_version != "1"
+        or review.record_count != PATCH_REVIEW_RECORD_COUNT
+        or len(review.records) != PATCH_REVIEW_RECORD_COUNT
+    ):
+        _fail("patch review evidence is invalid")
+    source = review.source
+    source_values = (
+        source.repository,
+        source.source_tag,
+        source.source_tag_object,
+        source.source_commit,
+        source.inventory_commit,
+        source.source_index_sha256,
+        source.digest_algorithm,
+    )
+    if (
+        any(type(value) is not str for value in source_values)
+        or source_values != APPROVED_PATCH_REVIEW_SOURCE
+        or source.repository != source_pack.repository
+        or source.source_tag != source_pack.source_tag
+        or source.source_tag_object != source_pack.source_tag_object
+        or source.source_commit != source_pack.source_commit
+        or source.inventory_commit != source_pack.inventory_commit
+        or source.digest_algorithm != source_pack.digest_algorithm
+    ):
+        _fail("patch review evidence is invalid")
+
+    for record in review.records:
+        if (
+            type(record) is not PatchReviewRecord
+            or type(record.upstream) is not PatchUpstream
+            or type(record.patch_author) is not PatchAuthor
+            or type(record.project_license) is not PatchProjectLicense
+            or type(record.patch_license) is not PatchLicense
+            or type(record.affected_applications) is not tuple
+            or not 1 <= len(record.affected_applications) <= 32
+            or type(record.preimages) is not tuple
+            or not 1 <= len(record.preimages) <= 128
+            or type(record.evidence_and_dependencies) is not tuple
+            or len(record.evidence_and_dependencies) > 128
+            or type(record.regression_probe_ids) is not tuple
+            or len(record.regression_probe_ids) > 32
+        ):
+            _fail("patch review evidence is invalid")
+
+    patch_assets = tuple(
+        asset for asset in source_pack.assets if asset.category == "patches"
+    )
+    if len(patch_assets) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
+    for record, asset in zip(review.records, patch_assets, strict=True):
+        if (
+            not _bounded_review_model_string(record.source_path, 1024)
+            or not _bounded_review_model_string(record.source_sha256, 64)
+            or not _bounded_review_model_string(record.git_blob_oid, 40)
+            or not _bounded_review_model_string(record.git_mode, 6)
+            or type(record.byte_size) is not int
+            or not _bounded_optional_review_model_string(record.subject, 256)
+            or not _bounded_review_model_string(record.purpose, 2048)
+            or not _bounded_review_model_string(record.upstream_status, 32)
+            or not _bounded_review_model_string(record.review_disposition, 32)
+            or not _bounded_optional_review_model_string(record.reason, 32)
+            or not _bounded_optional_review_model_string(
+                record.release_condition, 512
+            )
+            or any(
+                not _bounded_review_model_string(value, 128)
+                for value in record.affected_applications
+            )
+            or any(
+                not _bounded_review_model_string(value, 128)
+                for value in record.regression_probe_ids
+            )
+            or record.source_path != asset.source_path
+            or record.source_sha256 != asset.sha256
+            or record.git_blob_oid != asset.git_blob_oid
+            or record.git_mode != asset.git_mode
+            or record.byte_size != asset.byte_size
+        ):
+            _fail("patch review evidence is invalid")
+        upstream = record.upstream
+        if (
+            not _bounded_review_model_string(upstream.repository, 2048)
+            or not _bounded_review_model_string(upstream.reference_kind, 16)
+            or not _bounded_review_model_string(upstream.reference, 256)
+            or not _bounded_optional_review_model_string(upstream.tag_object, 40)
+            or not _bounded_review_model_string(upstream.commit, 40)
+        ):
+            _fail("patch review evidence is invalid")
+        for item in record.preimages:
+            if (
+                type(item) is not PatchPreimageEvidence
+                or not _bounded_review_model_string(item.path, 1024)
+                or not _bounded_optional_review_model_string(
+                    item.patch_old_blob, 40
+                )
+                or not _bounded_optional_review_model_string(
+                    item.upstream_blob_oid, 40
+                )
+                or not _bounded_review_model_string(item.result, 16)
+            ):
+                _fail("patch review evidence is invalid")
+        author = record.patch_author
+        if (
+            not _bounded_review_model_string(author.status, 16)
+            or not _bounded_optional_review_model_string(author.display_name, 256)
+            or not _bounded_optional_review_model_string(author.email, 254)
+            or not _bounded_optional_review_model_string(author.evidence, 256)
+        ):
+            _fail("patch review evidence is invalid")
+        project_license = record.project_license
+        if (
+            not _bounded_review_model_string(
+                project_license.spdx_expression, 256
+            )
+            or not _bounded_review_model_string(
+                project_license.evidence_locator, 2048
+            )
+            or type(project_license.context_only) is not bool
+        ):
+            _fail("patch review evidence is invalid")
+        patch_license = record.patch_license
+        if (
+            not _bounded_review_model_string(patch_license.status, 16)
+            or not _bounded_optional_review_model_string(
+                patch_license.spdx_expression, 256
+            )
+        ):
+            _fail("patch review evidence is invalid")
+        for item in record.evidence_and_dependencies:
+            if (
+                type(item) is not PatchEvidenceDependency
+                or not _bounded_review_model_string(item.kind, 32)
+                or not _bounded_review_model_string(item.value, 2048)
+            ):
+                _fail("patch review evidence is invalid")
+
+
+def _patch_review_json_value(review: PatchReviewLedger) -> dict[str, object]:
+    source = review.source
+    records: list[dict[str, object]] = []
+    for record in review.records:
+        author: dict[str, object] = {"status": record.patch_author.status}
+        if record.patch_author.display_name is not None:
+            author["displayName"] = record.patch_author.display_name
+        if record.patch_author.email is not None:
+            author["email"] = record.patch_author.email
+        if record.patch_author.evidence is not None:
+            author["evidence"] = record.patch_author.evidence
+        patch_license: dict[str, object] = {
+            "status": record.patch_license.status
+        }
+        if record.patch_license.spdx_expression is not None:
+            patch_license["spdxExpression"] = (
+                record.patch_license.spdx_expression
+            )
+        records.append(
+            {
+                "sourcePath": record.source_path,
+                "sourceSha256": record.source_sha256,
+                "gitBlobOid": record.git_blob_oid,
+                "gitMode": record.git_mode,
+                "byteSize": record.byte_size,
+                "subject": record.subject,
+                "purpose": record.purpose,
+                "affectedApplications": list(record.affected_applications),
+                "upstream": {
+                    "repository": record.upstream.repository,
+                    "referenceKind": record.upstream.reference_kind,
+                    "reference": record.upstream.reference,
+                    "tagObject": record.upstream.tag_object,
+                    "commit": record.upstream.commit,
+                },
+                "preimages": [
+                    {
+                        "path": item.path,
+                        "patchOldBlob": item.patch_old_blob,
+                        "upstreamBlobOid": item.upstream_blob_oid,
+                        "result": item.result,
+                    }
+                    for item in record.preimages
+                ],
+                "patchAuthor": author,
+                "projectLicense": {
+                    "spdxExpression": record.project_license.spdx_expression,
+                    "evidenceLocator": record.project_license.evidence_locator,
+                    "contextOnly": record.project_license.context_only,
+                },
+                "patchLicense": patch_license,
+                "evidenceAndDependencies": [
+                    {"kind": item.kind, "value": item.value}
+                    for item in record.evidence_and_dependencies
+                ],
+                "upstreamStatus": record.upstream_status,
+                "reviewDisposition": record.review_disposition,
+                "reason": record.reason,
+                "releaseCondition": record.release_condition,
+                "regressionProbeIds": list(record.regression_probe_ids),
+            }
+        )
+    return {
+        "schemaVersion": review.schema_version,
+        "source": {
+            "repository": source.repository,
+            "sourceTag": source.source_tag,
+            "sourceTagObject": source.source_tag_object,
+            "sourceCommit": source.source_commit,
+            "inventoryCommit": source.inventory_commit,
+            "sourceIndexSha256": source.source_index_sha256,
+            "digestAlgorithm": source.digest_algorithm,
+        },
+        "recordCount": review.record_count,
+        "records": records,
+    }
+
+
+def _patch_review_value_from_model(
+    review: PatchReviewLedger, source_pack: SourcePack
+) -> dict[str, object]:
+    _preflight_patch_review_model(review, source_pack)
+    return _patch_review_json_value(review)
+
+
+def _validate_patch_review_model(
+    review: PatchReviewLedger, source_pack: SourcePack
+) -> None:
+    try:
+        value = _patch_review_value_from_model(review, source_pack)
+        typed_value = _require_patch_review_exact_types(value)
+        _validate_patch_review_semantics(typed_value, source_pack)
+        _validate_approved_patch_upstreams(typed_value)
+        raw = _COMMON.canonical_json_bytes(typed_value)
+        if (
+            len(raw) > MAX_PATCH_REVIEW_BYTES
+            or hashlib.sha256(raw).hexdigest() != APPROVED_PATCH_REVIEW_SHA256
+        ):
+            raise ValueError
+    except ConversionError:
+        raise
+    except BaseException:
+        _fail("patch review evidence is invalid")
+
+
+def _source_pack_model_has_approved_index(source_pack: SourcePack) -> bool:
+    category_counts = {
+        "bottleSchema": dict(source_pack.category_counts)["bottle-schema"],
+        "catalog": dict(source_pack.category_counts)["catalog"],
+        "fixtures": dict(source_pack.category_counts)["fixtures"],
+        "patches": dict(source_pack.category_counts)["patches"],
+        "probes": dict(source_pack.category_counts)["probes"],
+    }
+    manifest = {
+        "schemaVersion": "1",
+        "repository": source_pack.repository,
+        "sourceTag": source_pack.source_tag,
+        "sourceTagObject": source_pack.source_tag_object,
+        "sourceCommit": source_pack.source_commit,
+        "inventoryCommit": source_pack.inventory_commit,
+        "digestAlgorithm": source_pack.digest_algorithm,
+        "assetCount": len(source_pack.assets),
+        "categoryCounts": category_counts,
+        "assets": [
+            {
+                "byteSize": asset.byte_size,
+                "category": asset.category,
+                "developmentDependencies": list(asset.development_dependencies),
+                "externalRefs": list(asset.external_refs),
+                "gitBlobOid": asset.git_blob_oid,
+                "gitMode": asset.git_mode,
+                "intendedOwner": asset.intended_owner,
+                "kind": asset.kind,
+                "license": {"status": asset.license_status},
+                "objectPath": asset.object_path,
+                "provenance": {"status": asset.provenance_status},
+                "sha256": asset.sha256,
+                "sourceCommit": asset.source_commit,
+                "sourcePath": asset.source_path,
+            }
+            for asset in source_pack.assets
+        ],
+    }
+    try:
+        raw = _COMMON.canonical_json_bytes(manifest)
+    except _COMMON.MigrationError:
+        _fail("source pack model fields are invalid")
+    return hashlib.sha256(raw).hexdigest() == APPROVED_SOURCE_INDEX_SHA256
+
+
 def _validate_conversion_result(result: ConversionResult) -> None:
     if (
         type(result) is not ConversionResult
         or type(result.source_pack) is not SourcePack
+        or type(result.patch_review) is not PatchReviewLedger
         or type(result.records) is not tuple
     ):
         _fail("conversion result is invalid")
@@ -2738,6 +4185,7 @@ def _validate_conversion_result(result: ConversionResult) -> None:
             _fail("conversion result coverage is invalid")
         _validate_conversion_record_field_types(record)
     _validate_source_pack_model(result.source_pack)
+    _validate_patch_review_model(result.patch_review, result.source_pack)
     _validate_portable_contract_tables(result.source_pack)
     if len(result.records) != 90:
         _fail("conversion result coverage is invalid")
@@ -2749,12 +4197,32 @@ def _validate_conversion_result(result: ConversionResult) -> None:
     ):
         _fail("conversion result identity set is invalid")
     recipe_paths = _validate_catalog_boundary(result.source_pack)
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
+    if len(review_by_path) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
     expected = tuple(
-        _classify_asset(result.source_pack, asset, recipe_paths)
+        _classify_asset(
+            result.source_pack,
+            asset,
+            recipe_paths,
+            review_by_path,
+        )
         for asset in result.source_pack.assets
     )
     if result.records != expected:
         _fail("conversion result record is invalid")
+    status_counts = {
+        status: sum(record.status == status for record in result.records)
+        for status in ("converted", "deferred", "quarantined")
+    }
+    if _source_pack_model_has_approved_index(result.source_pack) and status_counts != {
+        "converted": 2,
+        "deferred": 4,
+        "quarantined": 84,
+    }:
+        _fail("conversion result status counts are invalid")
     records_by_path = {record.source_path: record for record in result.records}
     paths_by_identifier = {
         entry[0]: path for path, entry in PORTABLE_ASSET_TABLE.items()
@@ -2985,6 +4453,9 @@ def _validate_task6_documents(
     if type(mappings) is not dict or set(mappings) != set(expected_paths):
         _fail("deferred mapping set is invalid")
     assets = {asset.source_path: asset for asset in result.source_pack.assets}
+    review_by_path = {
+        record.source_path: record for record in result.patch_review.records
+    }
     for relative, category in expected_paths.items():
         document = mappings[relative]
         if (
@@ -2994,11 +4465,23 @@ def _validate_task6_documents(
             or type(document["records"]) is not list
         ):
             _fail("deferred mapping contract is invalid")
-        expected = [
-            _deferred_document(record, assets[record.source_path])
-            for record in result.records
-            if record.category == category
+        category_records = [
+            record for record in result.records if record.category == category
         ]
+        if category == "patches":
+            expected = [
+                _reviewed_patch_document(
+                    record,
+                    assets[record.source_path],
+                    review_by_path[record.source_path],
+                )
+                for record in category_records
+            ]
+        else:
+            expected = [
+                _deferred_document(record, assets[record.source_path])
+                for record in category_records
+            ]
         if document["records"] != expected:
             _fail("deferred mapping coverage is invalid")
 
@@ -4890,7 +6373,9 @@ def main(arguments: tuple[str, ...]) -> int:
     try:
         result = build_conversion(ROOT)
         documents = render_documents(result)
-        validate_generated_graph(documents, result.source_pack)
+        validate_generated_graph(
+            documents, result.source_pack, result.patch_review
+        )
         if options.write:
             try:
                 write_generated_documents(ROOT, documents)

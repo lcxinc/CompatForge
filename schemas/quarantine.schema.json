@@ -57,12 +57,15 @@
         "reason": {
           "enum": [
             "absolute-path",
+            "conflict",
             "mutable-local-installation",
             "missing-digest",
             "unresolved-external-reference",
             "unresolved-environment-path",
             "missing-license",
             "missing-provenance",
+            "unverified-base",
+            "upstreamed-or-obsolete",
             "unsupported-schema",
             "unsupported-behavior"
           ]

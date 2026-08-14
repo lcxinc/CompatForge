@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 
 if os.name == "nt":
     import ctypes
+    import msvcrt
     from ctypes import wintypes
 
     _VALIDATOR_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -83,15 +84,99 @@ TASK6_EVIDENCE_PATHS = TASK5_DOCUMENT_PATHS | TASK6_DOCUMENT_PATHS
 GENERATED_EVIDENCE_PATHS = TASK6_EVIDENCE_PATHS | TASK7_DOCUMENT_PATHS
 TASK5_DOCUMENT_SHA256 = {
     "migration/macwin/generated/catalog.json": "c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a",
-    "migration/macwin/generated/quarantine.json": "cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b",
+    "migration/macwin/generated/quarantine.json": "ca0132b78ac4bae8ed00446194cd7e9712b37ebc2aea4087ebad695248e2b2e9",
 }
 TASK6_DOCUMENT_SHA256 = {
-    "migration/macwin/generated/mappings/patches.json": "c4505c787005d962af5fae3f715f2e7856bbbe790283a21bde75cf214f8a61e2",
+    "migration/macwin/generated/mappings/patches.json": "202c56f99c7f332a7b5c6b93b87baef66d1445ae3981954c23f2b6c7ea64edd1",
     "migration/macwin/generated/mappings/bottle-schemas.json": "f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb",
 }
 TASK7_DOCUMENT_SHA256 = {
-    "migration/macwin/generated/index.json": "b77ab1cb7ca2ec91aa09c6a8891df94a02089d46ad44122783f72c7735bad761",
+    "migration/macwin/generated/index.json": "2c6a0447b4a27c8c0baf0da9dd45cad355db75a6a880e9b90434bc7b93cdf080",
 }
+PATCH_REVIEW_PATH = "migration/macwin/reviewed/patches.json"
+PATCH_REVIEW_DOCUMENT_SHA256 = (
+    "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+)
+PATCH_REVIEW_TREE = {"patches.json": "regular"}
+MAX_PATCH_REVIEW_BYTES = 1024 * 1024
+PATCH_REVIEW_SOURCE = {
+    "repository": "a1112/Mac-Win",
+    "sourceTag": "mw-migration-baseline-db12d5e",
+    "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+    "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+    "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+    "sourceIndexSha256": "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+    "digestAlgorithm": "sha256",
+}
+PATCH_UPSTREAM_JASP = {
+    "repository": "https://github.com/jasp-stats/jasp-desktop",
+    "referenceKind": "tag",
+    "reference": "v0.97.1",
+    "tagObject": None,
+    "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+}
+PATCH_UPSTREAM_WINE = {
+    "repository": "https://gitlab.winehq.org/wine/wine/",
+    "referenceKind": "annotated-tag",
+    "reference": "wine-11.11",
+    "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e",
+    "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+}
+PATCH_MISSING_LICENSE_RELEASE = (
+    "Record patch-specific license evidence and repeat review."
+)
+PATCH_PREIMAGE_EVIDENCE_SHA256 = (
+    "5d9cc21f82fe883acfa5174d4e06dfdf1cf48ca7ff2e822d8d54fd81bf9d974d"
+)
+PATCH_PREIMAGE_RECORD_COUNT = 11
+PATCH_PREIMAGE_COUNT = 88
+PATCH_APPLICATIONS = {
+    "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch": (
+        "jasp-desktop",
+    ),
+    "patches/jasp-0.97.1-fix-proxy-model-reset.patch": ("jasp-desktop",),
+    "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch": (
+        "jasp-desktop",
+    ),
+    "patches/jasp-0.97.1-local-macos-build-configure.patch": (
+        "jasp-build",
+        "jasp-desktop",
+    ),
+    "patches/wine-dcomp-winui-host-composition.patch": ("wine", "winui"),
+    "patches/wine-macos-native-ui-integration.patch": ("macos-driver", "wine"),
+    "patches/wine-shell32-virtual-desktop-manager.patch": ("shell32", "wine"),
+    "patches/wine-windows-data-json-modern-apps.patch": (
+        "windows-data-json",
+        "wine",
+    ),
+    "patches/wine-windows-graphics-imaging.patch": (
+        "windows-graphics-imaging",
+        "wine",
+    ),
+    "patches/wine-windowscodecs-bilinear-scaler.patch": (
+        "windowscodecs",
+        "wine",
+    ),
+    "patches/wine-winui-pointer-input.patch": ("wine", "winui"),
+}
+PATCH_GIT_OID = re.compile(r"^(?!0{40}$)[0-9a-f]{40}$")
+PATCH_GIT_PREFIX = re.compile(r"^(?!0{7,40}$)[0-9a-f]{7,40}$")
+PATCH_ANY_GIT_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
+PATCH_ZERO_GIT_PREFIX = re.compile(r"^0{7,40}$")
+PATCH_IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+PATCH_HTTPS_EVIDENCE = re.compile(
+    r"^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+"
+    r"(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@+-]+)+/?)?$"
+)
+PATCH_MAIL_AUTHOR = re.compile(r"^([^<>\r\n]{1,256}) <([^<>\s]{3,254})>$")
+PATCH_RESERVED_SEGMENT = re.compile(
+    r"^(?:conin\$|conout\$|con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
+    re.IGNORECASE,
+)
+PATCH_INDEX_LINE = re.compile(
+    rb"^index ([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})(?: ([0-7]{6}))?$"
+)
 TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
 TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 TASK5_CATALOG_ROOT = "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog"
@@ -384,6 +469,13 @@ def _filesystem_identity(
     )
 
 
+def _held_patch_review_leaf_identity(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    identity = _filesystem_identity(metadata)
+    return identity[:5]
+
+
 def _validate_bound_path_chain(path: Path) -> None:
     absolute = path.absolute()
     current = Path(absolute.anchor)
@@ -481,6 +573,7 @@ class _GeneratedEvidenceBinding:
         converter_path: Path,
         converter_raw: bytes,
         converter_identity: tuple[int, int, int, int, int, int],
+        patch_review_binding: _PatchReviewBinding,
     ) -> None:
         self.generated_root = generated_root
         self.root_identity = root_identity
@@ -491,6 +584,7 @@ class _GeneratedEvidenceBinding:
         self.converter_path = converter_path
         self.converter_raw = converter_raw
         self.converter_identity = converter_identity
+        self.patch_review_binding = patch_review_binding
 
     def contains(self, path: Path) -> bool:
         return path.absolute() in self.leaves
@@ -506,6 +600,7 @@ class _GeneratedEvidenceBinding:
         return raw
 
     def revalidate(self) -> None:
+        self.patch_review_binding.revalidate()
         root = self.generated_root.lstat()
         if (
             not stat.S_ISDIR(root.st_mode)
@@ -537,6 +632,7 @@ class _GeneratedEvidenceBinding:
         final_root = self.generated_root.lstat()
         if _filesystem_identity(final_root) != self.root_identity:
             raise ValueError("generated evidence root changed")
+        self.patch_review_binding.revalidate()
 
 
 def _read_exact_generated_directory(
@@ -602,6 +698,372 @@ def _revalidate_exact_generated_tree(
         identity, expected = directories[path]
         if _read_exact_generated_directory(path, expected) != identity:
             raise ValueError("generated evidence tree changed")
+
+
+def _bind_patch_review_directory(
+    path: Path,
+    *,
+    parent_descriptor: object | None = None,
+    name: str | None = None,
+) -> tuple[object, tuple[int, int]]:
+    before = path.lstat()
+    if _ordinary_entry_kind(before) != "directory":
+        raise ValueError("patch review evidence tree is invalid")
+    identity = _directory_identity(before)
+    if os.name == "nt" or parent_descriptor is None:
+        descriptor, _opened_identity = _bind_validator_directory(path)
+    else:
+        if type(name) is not str or not name:
+            raise ValueError("patch review evidence tree is invalid")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _directory_identity(opened) != identity
+        ):
+            _close_validator_directory(descriptor)
+            raise ValueError("patch review evidence tree identity changed")
+    after = path.lstat()
+    if _ordinary_entry_kind(after) != "directory" or _directory_identity(
+        after
+    ) != identity:
+        _close_validator_directory(descriptor)
+        raise ValueError("patch review evidence tree identity changed")
+    return descriptor, identity
+
+
+def _open_patch_review_leaf(
+    root: Path,
+    root_descriptor: object,
+    name: str,
+) -> tuple[int, tuple[int, int, int, int, int]]:
+    path = root / name
+    before = path.lstat()
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_reparse_tag", 0)
+        or before.st_nlink != 1
+        or before.st_size > MAX_PATCH_REVIEW_BYTES
+    ):
+        raise ValueError("patch review evidence leaf is invalid")
+    descriptor: int | None = None
+    handle: object | None = None
+    try:
+        if os.name == "nt":
+            handle = _VALIDATOR_CREATE_FILE(
+                str(path),
+                0x80000000 | 0x0080,
+                0x00000001,
+                None,
+                3,
+                0x00200000 | 0x08000000,
+                None,
+            )
+            if handle == _VALIDATOR_INVALID_HANDLE:
+                raise ValueError("patch review evidence leaf could not be bound")
+            descriptor = msvcrt.open_osfhandle(
+                int(handle), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
+            handle = None
+        else:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_descriptor,
+            )
+        opened = os.fstat(descriptor)
+        identity = _held_patch_review_leaf_identity(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(opened.st_mode)
+            or getattr(opened, "st_reparse_tag", 0)
+            or opened.st_nlink != 1
+            or opened.st_size > MAX_PATCH_REVIEW_BYTES
+            or identity != _held_patch_review_leaf_identity(before)
+        ):
+            raise ValueError("patch review evidence leaf identity changed")
+        after = path.lstat()
+        if _held_patch_review_leaf_identity(after) != identity:
+            raise ValueError("patch review evidence leaf identity changed")
+        return descriptor, identity
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        elif handle is not None and handle != _VALIDATOR_INVALID_HANDLE:
+            _VALIDATOR_CLOSE_HANDLE(handle)
+        raise
+
+
+def _read_held_patch_review_leaf(
+    descriptor: int,
+    expected_identity: tuple[int, int, int, int, int],
+) -> bytes:
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_reparse_tag", 0)
+        or before.st_nlink != 1
+        or before.st_size > MAX_PATCH_REVIEW_BYTES
+        or _held_patch_review_leaf_identity(before) != expected_identity
+    ):
+        raise ValueError("patch review evidence leaf changed")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(
+            descriptor,
+            min(64 * 1024, MAX_PATCH_REVIEW_BYTES + 1 - total),
+        )
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_PATCH_REVIEW_BYTES:
+            raise ValueError("patch review evidence exceeds the byte limit")
+        chunks.append(chunk)
+    after = os.fstat(descriptor)
+    if _held_patch_review_leaf_identity(after) != expected_identity:
+        raise ValueError("patch review evidence leaf changed")
+    return b"".join(chunks)
+
+
+def _read_held_patch_review_directory(
+    path: Path,
+    descriptor: object,
+    expected_identity: tuple[int, int],
+    expected_children: tuple[tuple[str, str], ...],
+) -> None:
+    if os.name != "nt":
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _directory_identity(opened) != expected_identity
+        ):
+            raise ValueError("patch review evidence tree changed")
+        scan_target: object = descriptor
+    else:
+        scan_target = path
+    entries: list[tuple[str, str]] = []
+    with os.scandir(scan_target) as iterator:
+        for entry in iterator:
+            if len(entries) >= len(expected_children):
+                raise ValueError("patch review evidence tree changed")
+            entries.append(
+                (
+                    entry.name,
+                    _ordinary_entry_kind(entry.stat(follow_symlinks=False)),
+                )
+            )
+    actual = tuple(sorted(entries, key=lambda item: item[0].encode("utf-8")))
+    current = path.lstat()
+    if (
+        actual != expected_children
+        or _ordinary_entry_kind(current) != "directory"
+        or _directory_identity(current) != expected_identity
+    ):
+        raise ValueError("patch review evidence tree changed")
+    if os.name != "nt":
+        final = os.fstat(descriptor)
+        if _directory_identity(final) != expected_identity:
+            raise ValueError("patch review evidence tree changed")
+
+
+class _PatchReviewBinding:
+    """Hold the exact reviewed root and leaf through every repository scan."""
+
+    def __init__(
+        self,
+        parent: Path,
+        parent_descriptor: object,
+        parent_identity: tuple[int, int],
+        root: Path,
+        root_descriptor: object,
+        root_identity: tuple[int, int],
+        expected_children: tuple[tuple[str, str], ...],
+        leaf: Path,
+        leaf_descriptor: int,
+        raw: bytes,
+        leaf_identity: tuple[int, int, int, int, int],
+    ) -> None:
+        self.parent = parent
+        self.parent_descriptor: object | None = parent_descriptor
+        self.parent_identity = parent_identity
+        self.root = root
+        self.root_descriptor: object | None = root_descriptor
+        self.root_identity = root_identity
+        self.expected_children = expected_children
+        self.leaf = leaf
+        self.leaf_descriptor: int | None = leaf_descriptor
+        self.raw = raw
+        self.leaf_identity = leaf_identity
+
+    def close(self) -> None:
+        leaf_descriptor = self.leaf_descriptor
+        root_descriptor = self.root_descriptor
+        parent_descriptor = self.parent_descriptor
+        self.leaf_descriptor = None
+        self.root_descriptor = None
+        self.parent_descriptor = None
+        for descriptor, close in (
+            (parent_descriptor, _close_validator_directory),
+            (root_descriptor, _close_validator_directory),
+            (leaf_descriptor, os.close),
+        ):
+            if descriptor is not None:
+                try:
+                    close(descriptor)
+                except OSError:
+                    pass
+
+    def __enter__(self) -> _PatchReviewBinding:
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.close()
+
+    def contains(self, path: Path) -> bool:
+        return path.absolute() == self.leaf
+
+    def _require_open(self) -> tuple[object, int]:
+        if self.root_descriptor is None or self.leaf_descriptor is None:
+            raise ValueError("patch review evidence binding is closed")
+        return self.root_descriptor, self.leaf_descriptor
+
+    def verify_path(self, path: Path) -> bytes:
+        if path.absolute() != self.leaf:
+            raise ValueError("patch review evidence path is not authenticated")
+        root_descriptor, leaf_descriptor = self._require_open()
+        raw = _read_held_patch_review_leaf(leaf_descriptor, self.leaf_identity)
+        if raw != self.raw:
+            raise ValueError("patch review evidence changed")
+        if os.name == "nt":
+            metadata = self.leaf.lstat()
+        else:
+            metadata = os.stat(
+                self.leaf.name,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_reparse_tag", 0)
+            or _held_patch_review_leaf_identity(metadata) != self.leaf_identity
+        ):
+            raise ValueError("patch review evidence path changed")
+        return raw
+
+    def revalidate(self) -> None:
+        root_descriptor, _leaf_descriptor = self._require_open()
+        _read_held_patch_review_directory(
+            self.root,
+            root_descriptor,
+            self.root_identity,
+            self.expected_children,
+        )
+        self.verify_path(self.leaf)
+        _read_held_patch_review_directory(
+            self.root,
+            root_descriptor,
+            self.root_identity,
+            self.expected_children,
+        )
+        parent = self.parent.lstat()
+        if (
+            _ordinary_entry_kind(parent) != "directory"
+            or _directory_identity(parent) != self.parent_identity
+        ):
+            raise ValueError("patch review evidence parent changed")
+        if os.name != "nt" and self.parent_descriptor is not None:
+            opened_parent = os.fstat(self.parent_descriptor)
+            if _directory_identity(opened_parent) != self.parent_identity:
+                raise ValueError("patch review evidence parent changed")
+
+
+def _validated_patch_review_binding() -> tuple[_PatchReviewBinding | None, list[str]]:
+    """Authenticate and hold the exact canonical reviewed policy independently."""
+
+    parent_descriptor: object | None = None
+    root_descriptor: object | None = None
+    leaf_descriptor: int | None = None
+    binding: _PatchReviewBinding | None = None
+    try:
+        parent = (ROOT / "migration" / "macwin").absolute()
+        _validate_bound_path_chain(parent)
+        parent_descriptor, parent_identity = _bind_patch_review_directory(parent)
+        root = parent / "reviewed"
+        root_descriptor, root_identity = _bind_patch_review_directory(
+            root,
+            parent_descriptor=parent_descriptor,
+            name="reviewed",
+        )
+        expected_children = tuple(
+            sorted(PATCH_REVIEW_TREE.items(), key=lambda item: item[0].encode("ascii"))
+        )
+        _read_held_patch_review_directory(
+            root,
+            root_descriptor,
+            root_identity,
+            expected_children,
+        )
+        review_relative = PurePosixPath(PATCH_REVIEW_PATH)
+        if review_relative.parts != (
+            "migration",
+            "macwin",
+            "reviewed",
+            "patches.json",
+        ):
+            raise ValueError("patch review evidence path is invalid")
+        leaf = (ROOT / review_relative).absolute()
+        if leaf.parent != root:
+            raise ValueError("patch review evidence path is invalid")
+        leaf_descriptor, leaf_identity = _open_patch_review_leaf(
+            root, root_descriptor, leaf.name
+        )
+        raw = _read_held_patch_review_leaf(leaf_descriptor, leaf_identity)
+        if hashlib.sha256(raw).hexdigest() != PATCH_REVIEW_DOCUMENT_SHA256:
+            raise ValueError("patch review evidence digest is invalid")
+        _canonical_patch_review_json(raw)
+        binding = _PatchReviewBinding(
+            parent,
+            parent_descriptor,
+            parent_identity,
+            root,
+            root_descriptor,
+            root_identity,
+            expected_children,
+            leaf,
+            leaf_descriptor,
+            raw,
+            leaf_identity,
+        )
+        parent_descriptor = None
+        root_descriptor = None
+        leaf_descriptor = None
+        binding.revalidate()
+    except BaseException as error:
+        if binding is not None:
+            binding.close()
+        if leaf_descriptor is not None:
+            os.close(leaf_descriptor)
+        if root_descriptor is not None:
+            _close_validator_directory(root_descriptor)
+        if parent_descriptor is not None:
+            _close_validator_directory(parent_descriptor)
+        if not isinstance(error, (OSError, RuntimeError, TypeError, ValueError)):
+            raise
+        return None, ["Mac-Win patch review evidence validation failed"]
+    return binding, []
 
 
 class _DeveloperPathScanError(ValueError):
@@ -814,6 +1276,589 @@ def _canonical_task5_json(raw: bytes) -> dict[str, object]:
     return value
 
 
+def _canonical_patch_review_json(raw: bytes) -> dict[str, object]:
+    if type(raw) is not bytes or len(raw) > MAX_PATCH_REVIEW_BYTES:
+        raise ValueError("patch review evidence is invalid")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("patch review evidence is invalid")
+            value[key] = item
+        return value
+
+    try:
+        text = raw.decode("utf-8", errors="strict")
+        value = json.loads(text, object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise ValueError("patch review evidence is invalid") from None
+    if type(value) is not dict:
+        raise ValueError("patch review evidence is invalid")
+    pending: list[tuple[object, int]] = [(value, 1)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > 128:
+            raise ValueError("patch review evidence is invalid")
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise ValueError("patch review evidence is invalid")
+            pending.extend((nested, depth + 1) for nested in item.values())
+        elif type(item) is list:
+            pending.extend((nested, depth + 1) for nested in item)
+    canonical = (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        + b"\n"
+    )
+    if raw != canonical:
+        raise ValueError("patch review evidence is invalid")
+    return value
+
+
+def _independent_patch_text(value: object, maximum: int) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= maximum
+        and all(32 <= ord(character) <= 126 for character in value)
+    )
+
+
+def _independent_patch_relative_path(value: object) -> bool:
+    if (
+        not _independent_patch_text(value, 1024)
+        or value.startswith("/")
+        or "\\" in value
+        or any(character in '<>:"|?*' for character in value)
+    ):
+        return False
+    segments = value.split("/")
+    for segment in segments:
+        if (
+            not segment
+            or len(segment) > 255
+            or segment in {".", ".."}
+            or segment[-1] in {" ", "."}
+        ):
+            return False
+        reserved_stem = segment.split(".", 1)[0].rstrip(" ")
+        if PATCH_RESERVED_SEGMENT.fullmatch(reserved_stem):
+            return False
+    return True
+
+
+def _independent_patch_diff_metadata(
+    raw: bytes,
+) -> tuple[tuple[str, str | None], ...]:
+    if type(raw) is not bytes or not 1 <= len(raw) <= 1024 * 1024 or b"\r" in raw:
+        raise ValueError("patch source diff evidence is invalid")
+    entries: list[tuple[str, str | None]] = []
+    current_path: str | None = None
+    current_old_blob: str | None = None
+    current_has_index = False
+    for line in raw.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            if current_path is not None:
+                entries.append((current_path, current_old_blob))
+            if not line.startswith(b"diff --git a/"):
+                raise ValueError("patch source diff evidence is invalid")
+            left, separator, right = line[len(b"diff --git a/") :].partition(b" b/")
+            if not separator or b" b/" in right or left != right:
+                raise ValueError("patch source diff evidence is invalid")
+            try:
+                current_path = left.decode("ascii", errors="strict")
+            except UnicodeDecodeError:
+                raise ValueError("patch source diff evidence is invalid") from None
+            if not _independent_patch_relative_path(current_path):
+                raise ValueError("patch source diff evidence is invalid")
+            current_old_blob = None
+            current_has_index = False
+        elif line.startswith(b"index "):
+            match = PATCH_INDEX_LINE.fullmatch(line)
+            if current_path is None or current_has_index or match is None:
+                raise ValueError("patch source diff evidence is invalid")
+            current_old_blob = match.group(1).decode("ascii")
+            current_has_index = True
+    if current_path is not None:
+        entries.append((current_path, current_old_blob))
+    if not 1 <= len(entries) <= 128:
+        raise ValueError("patch source diff evidence is invalid")
+    entries.sort(key=lambda item: item[0].encode("ascii"))
+    if len({path.casefold() for path, _old_blob in entries}) != len(entries):
+        raise ValueError("patch source diff evidence is invalid")
+    return tuple(entries)
+
+
+def _independent_patch_mail_identity(
+    source_binding: object, asset: dict[str, object]
+) -> tuple[str | None, dict[str, object], bytes]:
+    object_path = asset.get("objectPath")
+    if type(object_path) is not str:
+        raise ValueError("patch source object identity is invalid")
+    raw = source_binding.verify_path(
+        source_binding.root / PurePosixPath(object_path)
+    )
+    if type(raw) is not bytes or len(raw) != asset.get("byteSize"):
+        raise ValueError("patch source object identity is invalid")
+    if not raw.startswith(b"From "):
+        return None, {"status": "unresolved"}, raw
+    header_end = raw.find(b"\n\n")
+    if not 0 < header_end <= 16 * 1024 or b"\r" in raw[:header_end]:
+        raise ValueError("patch source mail identity is invalid")
+    try:
+        lines = raw[:header_end].decode("ascii", errors="strict").split("\n")
+    except UnicodeDecodeError:
+        raise ValueError("patch source mail identity is invalid") from None
+    if not lines or re.fullmatch(
+        r"From [0-9a-f]{40} Mon Sep 17 00:00:00 2001", lines[0]
+    ) is None:
+        raise ValueError("patch source mail identity is invalid")
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ": " not in line:
+            raise ValueError("patch source mail identity is invalid")
+        key, value = line.split(": ", 1)
+        if key in headers:
+            raise ValueError("patch source mail identity is invalid")
+        headers[key] = value
+    if set(headers) != {"From", "Date", "Subject"}:
+        raise ValueError("patch source mail identity is invalid")
+    subject = headers["Subject"]
+    author_match = PATCH_MAIL_AUTHOR.fullmatch(headers["From"])
+    if (
+        not _independent_patch_text(subject, 256)
+        or not _independent_patch_text(headers["Date"], 128)
+        or author_match is None
+    ):
+        raise ValueError("patch source mail identity is invalid")
+    return (
+        subject,
+        {
+            "displayName": author_match.group(1),
+            "email": author_match.group(2),
+            "evidence": "frozen-patch-mail-header",
+            "status": "reviewed",
+        },
+        raw,
+    )
+
+
+def _independent_patch_author(author: object) -> bool:
+    if type(author) is not dict or not {"status"}.issubset(author):
+        return False
+    status = author.get("status")
+    if status == "reviewed":
+        return (
+            set(author) == {"displayName", "email", "evidence", "status"}
+            and type(author.get("displayName")) is str
+            and 1 <= len(author["displayName"]) <= 256
+            and type(author.get("email")) is str
+            and 3 <= len(author["email"]) <= 254
+            and author.get("evidence") == "frozen-patch-mail-header"
+        )
+    if status == "unresolved":
+        return set(author).issubset(
+            {"displayName", "email", "evidence", "status"}
+        ) and all(
+            author.get(optional) is None
+            for optional in ("displayName", "email", "evidence")
+            if optional in author
+        )
+    return False
+
+
+def _independent_patch_dependencies(
+    dependencies: object, asset: dict[str, object]
+) -> list[dict[str, str]]:
+    if type(dependencies) is not list or len(dependencies) > 128:
+        raise ValueError("patch review dependency evidence is invalid")
+    keys: list[tuple[str, str]] = []
+    for dependency in dependencies:
+        if (
+            type(dependency) is not dict
+            or set(dependency) != {"kind", "value"}
+            or dependency.get("kind")
+            not in {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            }
+            or not _independent_patch_text(dependency.get("value"), 2048)
+            or (
+                dependency["kind"] in {"patch-license", "external-dependency"}
+                and PATCH_HTTPS_EVIDENCE.fullmatch(dependency["value"]) is None
+            )
+        ):
+            raise ValueError("patch review dependency evidence is invalid")
+        keys.append((dependency["kind"], dependency["value"]))
+    if keys != sorted(set(keys)):
+        raise ValueError("patch review dependency evidence is invalid")
+    external_refs = asset.get("externalRefs")
+    development_dependencies = asset.get("developmentDependencies")
+    if type(external_refs) is not list or type(development_dependencies) is not list:
+        raise ValueError("patch source dependency evidence is invalid")
+    expected = [
+        {"kind": "development-dependency", "value": value}
+        for value in development_dependencies
+    ] + [
+        {"kind": "external-dependency", "value": value}
+        for value in external_refs
+    ]
+    expected.sort(key=lambda item: (item["kind"], item["value"]))
+    if dependencies != expected:
+        raise ValueError("patch source dependency evidence is invalid")
+    return expected
+
+
+def _independent_patch_preimages(
+    preimages: object,
+    source_metadata: tuple[tuple[str, str | None], ...],
+) -> dict[str, int]:
+    if type(preimages) is not list or not 1 <= len(preimages) <= 128:
+        raise ValueError("patch review base evidence is invalid")
+    paths: list[str] = []
+    old_blobs: list[tuple[str, str | None]] = []
+    counts = {"matched": 0, "mismatched": 0, "added": 0, "unproven": 0}
+    for preimage in preimages:
+        if (
+            type(preimage) is not dict
+            or set(preimage)
+            != {"path", "patchOldBlob", "upstreamBlobOid", "result"}
+            or not _independent_patch_relative_path(preimage.get("path"))
+            or preimage.get("result") not in counts
+        ):
+            raise ValueError("patch review base evidence is invalid")
+        path = preimage["path"]
+        result = preimage["result"]
+        patch_old = preimage["patchOldBlob"]
+        upstream = preimage["upstreamBlobOid"]
+        if result in {"matched", "mismatched"}:
+            if (
+                type(patch_old) is not str
+                or PATCH_GIT_PREFIX.fullmatch(patch_old) is None
+                or type(upstream) is not str
+                or PATCH_GIT_OID.fullmatch(upstream) is None
+                or (result == "matched") != upstream.startswith(patch_old)
+            ):
+                raise ValueError("patch review base evidence is invalid")
+        elif result == "added":
+            if (
+                type(patch_old) is not str
+                or PATCH_ZERO_GIT_PREFIX.fullmatch(patch_old) is None
+                or upstream is not None
+            ):
+                raise ValueError("patch review base evidence is invalid")
+        elif (
+            patch_old is not None
+            and (
+                type(patch_old) is not str
+                or PATCH_ANY_GIT_PREFIX.fullmatch(patch_old) is None
+            )
+        ) or (
+            upstream is not None
+            and (
+                type(upstream) is not str
+                or PATCH_GIT_OID.fullmatch(upstream) is None
+            )
+        ):
+            raise ValueError("patch review base evidence is invalid")
+        paths.append(path)
+        old_blobs.append((path, patch_old))
+        counts[result] += 1
+    if (
+        paths != sorted(paths, key=lambda value: value.encode("ascii"))
+        or len({path.casefold() for path in paths}) != len(paths)
+        or tuple(old_blobs) != source_metadata
+    ):
+        raise ValueError("patch review base evidence is invalid")
+    return counts
+
+
+def _independent_patch_review_oracle(
+    source_binding: object,
+    review_raw: bytes,
+    documents: dict[str, bytes],
+) -> None:
+    """Rebuild the exact patch decision without converter policy callbacks."""
+
+    if (
+        type(review_raw) is not bytes
+        or hashlib.sha256(review_raw).hexdigest() != PATCH_REVIEW_DOCUMENT_SHA256
+        or type(documents) is not dict
+        or set(documents) != TASK6_EVIDENCE_PATHS
+    ):
+        raise ValueError("patch review evidence is invalid")
+    review = _canonical_patch_review_json(review_raw)
+    if set(review) != {"schemaVersion", "source", "recordCount", "records"}:
+        raise ValueError("patch review evidence is invalid")
+    review_records = review.get("records")
+    if (
+        review.get("schemaVersion") != "1"
+        or review.get("source") != PATCH_REVIEW_SOURCE
+        or review.get("recordCount") != 11
+        or type(review_records) is not list
+        or len(review_records) != 11
+    ):
+        raise ValueError("patch review evidence is invalid")
+    manifest = source_binding.manifest
+    assets = manifest.get("assets") if type(manifest) is dict else None
+    if type(assets) is not list or len(assets) != 90:
+        raise ValueError("patch review source evidence is invalid")
+    patch_assets = sorted(
+        (
+            asset
+            for asset in assets
+            if type(asset) is dict and asset.get("category") == "patches"
+        ),
+        key=lambda asset: asset["sourcePath"].encode("ascii"),
+    )
+    if len(patch_assets) != 11:
+        raise ValueError("patch review source evidence is invalid")
+    if any(type(record) is not dict for record in review_records):
+        raise ValueError("patch review coverage is invalid")
+    review_paths = [record.get("sourcePath") for record in review_records]
+    expected_paths = [asset["sourcePath"] for asset in patch_assets]
+    if (
+        any(type(path) is not str for path in review_paths)
+        or review_paths != expected_paths
+        or review_paths != sorted(review_paths, key=lambda value: value.encode("ascii"))
+        or len({path.casefold() for path in review_paths}) != 11
+        or set(PATCH_APPLICATIONS) != set(expected_paths)
+    ):
+        raise ValueError("patch review coverage is invalid")
+
+    expected_mapping: list[dict[str, object]] = []
+    expected_quarantine: list[dict[str, object]] = []
+    preimage_evidence: list[dict[str, object]] = []
+    preimage_count = 0
+    record_fields = {
+        "sourcePath",
+        "sourceSha256",
+        "gitBlobOid",
+        "gitMode",
+        "byteSize",
+        "subject",
+        "purpose",
+        "affectedApplications",
+        "upstream",
+        "preimages",
+        "patchAuthor",
+        "projectLicense",
+        "patchLicense",
+        "evidenceAndDependencies",
+        "upstreamStatus",
+        "reviewDisposition",
+        "reason",
+        "releaseCondition",
+        "regressionProbeIds",
+    }
+    for record, asset in zip(review_records, patch_assets, strict=True):
+        if type(record) is not dict or set(record) != record_fields:
+            raise ValueError("patch review record is invalid")
+        path = record["sourcePath"]
+        if (
+            record.get("sourceSha256") != asset.get("sha256")
+            or record.get("gitBlobOid") != asset.get("gitBlobOid")
+            or record.get("gitMode") != asset.get("gitMode")
+            or record.get("byteSize") != asset.get("byteSize")
+            or type(record.get("byteSize")) is not int
+            or not 1 <= record["byteSize"] <= 1024 * 1024
+            or not _independent_patch_text(record.get("purpose"), 2048)
+            or record.get("upstreamStatus") != "unresolved"
+            or record.get("reviewDisposition") != "quarantined"
+            or record.get("reason") != "missing-license"
+            or record.get("releaseCondition") != PATCH_MISSING_LICENSE_RELEASE
+            or record.get("regressionProbeIds") != []
+            or record.get("patchLicense") != {"status": "unresolved"}
+        ):
+            raise ValueError("patch review record is invalid")
+        expected_upstream = (
+            PATCH_UPSTREAM_JASP
+            if path.startswith("patches/jasp-")
+            else PATCH_UPSTREAM_WINE
+            if path.startswith("patches/wine-")
+            else None
+        )
+        if expected_upstream is None or record.get("upstream") != expected_upstream:
+            raise ValueError("patch review upstream evidence is invalid")
+        expected_subject, expected_author, patch_raw = _independent_patch_mail_identity(
+            source_binding, asset
+        )
+        subject = record.get("subject")
+        if (
+            subject != expected_subject
+            or (
+                subject is not None
+                and not _independent_patch_text(subject, 256)
+            )
+        ):
+            raise ValueError("patch review subject evidence is invalid")
+        author = record.get("patchAuthor")
+        if not _independent_patch_author(author) or author != expected_author:
+            raise ValueError("patch review author evidence is invalid")
+        applications = record.get("affectedApplications")
+        expected_applications = PATCH_APPLICATIONS.get(path)
+        if (
+            type(applications) is not list
+            or not 1 <= len(applications) <= 32
+            or any(
+                type(item) is not str or PATCH_IDENTIFIER.fullmatch(item) is None
+                for item in applications
+            )
+            or applications
+            != sorted(set(applications), key=lambda value: value.encode("ascii"))
+            or tuple(applications) != expected_applications
+        ):
+            raise ValueError("patch review application evidence is invalid")
+        preimages = record.get("preimages")
+        source_metadata = _independent_patch_diff_metadata(patch_raw)
+        base_counts = _independent_patch_preimages(preimages, source_metadata)
+        preimage_evidence.append(
+            {
+                "sourcePath": path,
+                "preimages": [
+                    {
+                        "path": preimage["path"],
+                        "result": preimage["result"],
+                        "upstreamBlobOid": preimage["upstreamBlobOid"],
+                    }
+                    for preimage in preimages
+                ],
+            }
+        )
+        preimage_count += len(preimages)
+        project_license = record.get("projectLicense")
+        expected_project_license = (
+            {
+                "contextOnly": True,
+                "evidenceLocator": (
+                    "https://github.com/jasp-stats/jasp-desktop/blob/"
+                    "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/"
+                    "Docs/development/jasp-licensing.md"
+                ),
+                "spdxExpression": "AGPL-3.0-or-later",
+            }
+            if path.startswith("patches/jasp-")
+            else {
+                "contextOnly": True,
+                "evidenceLocator": (
+                    "https://gitlab.winehq.org/wine/wine/-/blob/"
+                    "f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE"
+                ),
+                "spdxExpression": "LGPL-2.1-or-later",
+            }
+        )
+        if project_license != expected_project_license:
+            raise ValueError("patch review project license is invalid")
+        dependencies = _independent_patch_dependencies(
+            record.get("evidenceAndDependencies"), asset
+        )
+        expected_mapping.append(
+            {
+                "sourceRepository": TASK5_SOURCE_REPOSITORY,
+                "sourcePath": path,
+                "sourceCommit": asset["sourceCommit"],
+                "gitBlobOid": asset["gitBlobOid"],
+                "gitMode": asset["gitMode"],
+                "sourceSha256": asset["sha256"],
+                "category": "patches",
+                "status": "quarantined",
+                "targetIssue": "MW-ASSET-002",
+                "intendedOwner": "compatforge/patches",
+                "license": asset["license"],
+                "provenance": asset["provenance"],
+                "purpose": record["purpose"],
+                "affectedApplications": applications,
+                "upstream": expected_upstream,
+                "baseEvidence": base_counts,
+                "patchAuthor": author,
+                "projectLicense": project_license,
+                "patchLicense": {"status": "unresolved"},
+                "evidenceAndDependencies": dependencies,
+                "upstreamStatus": "unresolved",
+                "reviewDisposition": "quarantined",
+                "reason": "missing-license",
+                "releaseCondition": PATCH_MISSING_LICENSE_RELEASE,
+                "regressionProbeIds": [],
+            }
+        )
+        expected_quarantine.append(
+            {
+                "sourcePath": path,
+                "sourceCommit": asset["sourceCommit"],
+                "sourceSha256": asset["sha256"],
+                "category": "patches",
+                "status": "quarantined",
+                "reason": "missing-license",
+                "evidenceLocators": [f"{path}#patchLicense"],
+                "intendedOwner": "compatforge/patches",
+                "releaseCondition": PATCH_MISSING_LICENSE_RELEASE,
+            }
+        )
+
+    preimage_evidence_raw = json.dumps(
+        preimage_evidence,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    if (
+        len(preimage_evidence) != PATCH_PREIMAGE_RECORD_COUNT
+        or preimage_count != PATCH_PREIMAGE_COUNT
+        or hashlib.sha256(preimage_evidence_raw).hexdigest()
+        != PATCH_PREIMAGE_EVIDENCE_SHA256
+    ):
+        raise ValueError("patch review canonical preimage evidence is invalid")
+
+    mapping_raw = documents.get(
+        "migration/macwin/generated/mappings/patches.json"
+    )
+    quarantine_raw = documents.get("migration/macwin/generated/quarantine.json")
+    if (
+        type(mapping_raw) is not bytes
+        or hashlib.sha256(mapping_raw).hexdigest()
+        != TASK6_DOCUMENT_SHA256[
+            "migration/macwin/generated/mappings/patches.json"
+        ]
+        or type(quarantine_raw) is not bytes
+        or hashlib.sha256(quarantine_raw).hexdigest()
+        != TASK5_DOCUMENT_SHA256["migration/macwin/generated/quarantine.json"]
+    ):
+        raise ValueError("patch generated evidence digest is invalid")
+    mapping = _canonical_task5_json(mapping_raw)
+    quarantine = _canonical_task5_json(quarantine_raw)
+    quarantine_records = quarantine.get("records")
+    if (
+        mapping
+        != {"schemaVersion": "1", "records": expected_mapping}
+        or type(quarantine_records) is not list
+        or len(quarantine_records) != 84
+        or [item.get("sourcePath") for item in quarantine_records if type(item) is dict]
+        != sorted(
+            (item.get("sourcePath") for item in quarantine_records if type(item) is dict),
+            key=lambda value: value.encode("ascii"),
+        )
+        or [
+            item
+            for item in quarantine_records
+            if type(item) is dict and item.get("category") == "patches"
+        ]
+        != expected_quarantine
+    ):
+        raise ValueError("patch generated evidence semantics are invalid")
+    if {
+        "converted": 2,
+        "deferred": 4,
+        "quarantined": 84,
+    } != {
+        "converted": 2,
+        "deferred": sum(asset.get("category") == "bottle-schema" for asset in assets),
+        "quarantined": len(assets) - 2 - sum(
+            asset.get("category") == "bottle-schema" for asset in assets
+        ),
+    }:
+        raise ValueError("patch migration status counts are invalid")
+
+
 def _independent_task5_oracle(
     source_binding: object,
     documents: dict[str, bytes],
@@ -930,10 +1975,20 @@ def _independent_task5_oracle(
         set(quarantine) != {"schemaVersion", "records"}
         or quarantine.get("schemaVersion") != "1"
         or type(records) is not list
-        or len(records) < 17
+        or len(records) != 84
     ):
         raise ValueError("generated quarantine semantics are invalid")
-    for actual, expected in zip(records[:17], expected_records, strict=True):
+    catalog_records = {
+        record.get("sourcePath"): record
+        for record in records
+        if type(record) is dict and record.get("category") == "catalog"
+    }
+    if set(catalog_records) != {
+        record["sourcePath"] for record in expected_records
+    }:
+        raise ValueError("generated quarantine catalog coverage is invalid")
+    for expected in expected_records:
+        actual = catalog_records[expected["sourcePath"]]
         if (
             type(actual) is not dict
             or set(actual)
@@ -955,6 +2010,7 @@ def _independent_task5_oracle(
 
 def _independent_task6_oracle(
     source_binding: object,
+    review_raw: bytes,
     documents: dict[str, bytes],
 ) -> None:
     """Independently close every real Task 6 mapping and quarantine decision."""
@@ -989,47 +2045,50 @@ def _independent_task6_oracle(
     }:
         raise ValueError("Task 6 source coverage is invalid")
 
-    for category, relative, issue, owner in (
-        ("patches", "migration/macwin/generated/mappings/patches.json", "MW-ASSET-002", "compatforge/patches"),
-        ("bottle-schema", "migration/macwin/generated/mappings/bottle-schemas.json", "MW-ASSET-003", "compatforge/bottle-schema"),
-    ):
-        value = _canonical_task5_json(documents[relative])
-        expected = [
-            {
-                "sourceRepository": TASK5_SOURCE_REPOSITORY,
-                "sourcePath": asset["sourcePath"],
-                "sourceCommit": asset["sourceCommit"],
-                "gitBlobOid": asset["gitBlobOid"],
-                "gitMode": asset["gitMode"],
-                "sourceSha256": asset["sha256"],
-                "category": category,
-                "status": "deferred",
-                "targetIssue": issue,
-                "intendedOwner": owner,
-                "license": asset["license"],
-                "provenance": asset["provenance"],
-            }
-            for asset in by_category[category]
-        ]
-        if (
-            set(value) != {"schemaVersion", "records"}
-            or value.get("schemaVersion") != "1"
-            or value.get("records") != expected
-        ):
-            raise ValueError("deferred mapping semantics are invalid")
+    bottle_relative = "migration/macwin/generated/mappings/bottle-schemas.json"
+    bottle_mapping = _canonical_task5_json(documents[bottle_relative])
+    expected_bottles = [
+        {
+            "sourceRepository": TASK5_SOURCE_REPOSITORY,
+            "sourcePath": asset["sourcePath"],
+            "sourceCommit": asset["sourceCommit"],
+            "gitBlobOid": asset["gitBlobOid"],
+            "gitMode": asset["gitMode"],
+            "sourceSha256": asset["sha256"],
+            "category": "bottle-schema",
+            "status": "deferred",
+            "targetIssue": "MW-ASSET-003",
+            "intendedOwner": "compatforge/bottle-schema",
+            "license": asset["license"],
+            "provenance": asset["provenance"],
+        }
+        for asset in by_category["bottle-schema"]
+    ]
+    if bottle_mapping != {"schemaVersion": "1", "records": expected_bottles}:
+        raise ValueError("deferred Bottle mapping semantics are invalid")
+
+    _independent_patch_review_oracle(source_binding, review_raw, documents)
 
     quarantine = _canonical_task5_json(
         documents["migration/macwin/generated/quarantine.json"]
     )
     records = quarantine.get("records")
-    if type(records) is not list or len(records) != 73:
+    if type(records) is not list or len(records) != 84:
         raise ValueError("Task 6 quarantine coverage is invalid")
-    task6_records = records[17:]
     task6_assets = sorted(
         (*by_category["probes"], *by_category["fixtures"]),
         key=lambda asset: asset["sourcePath"].encode("ascii"),
     )
-    for record, asset in zip(task6_records, task6_assets, strict=True):
+    task6_records = {
+        record.get("sourcePath"): record
+        for record in records
+        if type(record) is dict
+        and record.get("category") in {"probes", "fixtures"}
+    }
+    if set(task6_records) != {asset["sourcePath"] for asset in task6_assets}:
+        raise ValueError("Task 6 quarantine coverage is invalid")
+    for asset in task6_assets:
+        record = task6_records[asset["sourcePath"]]
         evidence = sorted(
             {
                 f'{asset["sourcePath"]}#license',
@@ -1120,8 +2179,8 @@ def _independent_task7_oracle(
             status = "quarantined"
             document_path = "migration/macwin/generated/quarantine.json"
         elif category == "patches":
-            status = "deferred"
-            document_path = "migration/macwin/generated/mappings/patches.json"
+            status = "quarantined"
+            document_path = "migration/macwin/generated/quarantine.json"
         elif category == "bottle-schema":
             status = "deferred"
             document_path = "migration/macwin/generated/mappings/bottle-schemas.json"
@@ -1158,7 +2217,7 @@ def _independent_task7_oracle(
         or category_counts
         != {"bottle-schema": 4, "catalog": 19, "fixtures": 30, "patches": 11, "probes": 26}
         or root.get("statusCounts") != status_counts
-        or status_counts != {"converted": 2, "deferred": 15, "quarantined": 73}
+        or status_counts != {"converted": 2, "deferred": 4, "quarantined": 84}
         or root.get("documentCount") != 4
         or root.get("documents") != expected_documents
         or root.get("records") != expected_records
@@ -1166,7 +2225,10 @@ def _independent_task7_oracle(
         raise ValueError("Task 7 generated graph semantics are invalid")
 
 
-def _validated_macwin_generated_evidence_binding(source_binding: object) -> tuple[
+def _validated_macwin_generated_evidence_binding(
+    source_binding: object,
+    patch_review_binding: _PatchReviewBinding,
+) -> tuple[
     _GeneratedEvidenceBinding | None, list[str]
 ]:
     """Rebuild, compare, and bind the complete Task 7 generated graph."""
@@ -1211,6 +2273,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
         )
         _independent_task6_oracle(
             source_binding,
+            patch_review_binding.raw,
             {relative: committed[relative] for relative in TASK6_EVIDENCE_PATHS},
         )
         _independent_task7_oracle(source_binding, committed)
@@ -1226,6 +2289,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
             converter_path,
             converter_raw,
             converter_identity,
+            patch_review_binding,
         )
         binding.revalidate()
     except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -1236,6 +2300,7 @@ def _validated_macwin_generated_evidence_binding(source_binding: object) -> tupl
 def _scan_developer_paths(
     source_binding: object | None,
     generated_binding: _GeneratedEvidenceBinding | None = None,
+    patch_review_binding: _PatchReviewBinding | None = None,
 ) -> tuple[list[str], _OrdinaryFileBinding]:
     errors: list[str] = []
     ordinary_binding = _OrdinaryFileBinding()
@@ -1300,6 +2365,9 @@ def _scan_developer_paths(
         if generated_binding is not None and generated_binding.contains(path):
             generated_binding.verify_path(path)
             continue
+        if patch_review_binding is not None and patch_review_binding.contains(path):
+            patch_review_binding.verify_path(path)
+            continue
         if path == Path(__file__).absolute():
             continue
         if enumerated_identity is None:
@@ -1342,28 +2410,31 @@ def _scan_developer_paths(
 
 def _unbound_developer_path_scan() -> list[str]:
     try:
-        errors, binding = _scan_developer_paths(None, None)
+        errors, binding = _scan_developer_paths(None, None, None)
         binding.revalidate()
     except _DeveloperPathScanError:
         return [DEVELOPER_PATH_VALIDATION_ERROR]
     return errors
 
 
-def validate_no_developer_paths() -> list[str]:
-    source_binding, errors = _validated_macwin_source_pack_binding()
-    if source_binding is None:
-        return [*errors, *_unbound_developer_path_scan()]
+def _validate_with_patch_review_binding(
+    source_binding: object,
+    patch_review_binding: _PatchReviewBinding,
+) -> list[str]:
     generated_binding, generated_errors = (
-        _validated_macwin_generated_evidence_binding(source_binding)
+        _validated_macwin_generated_evidence_binding(
+            source_binding, patch_review_binding
+        )
     )
     if generated_binding is None:
         try:
             scanned_errors, ordinary_binding = _scan_developer_paths(
-                source_binding, None
+                source_binding, None, patch_review_binding
             )
             source_binding.revalidate()
             ordinary_binding.revalidate()
             source_binding.revalidate()
+            patch_review_binding.revalidate()
         except _DeveloperPathScanError:
             return [*generated_errors, DEVELOPER_PATH_VALIDATION_ERROR]
         except (OSError, RuntimeError, TypeError, ValueError):
@@ -1375,7 +2446,7 @@ def validate_no_developer_paths() -> list[str]:
         return [*generated_errors, *scanned_errors]
     try:
         scanned_errors, ordinary_binding = _scan_developer_paths(
-            source_binding, generated_binding
+            source_binding, generated_binding, patch_review_binding
         )
     except _DeveloperPathScanError:
         return [DEVELOPER_PATH_VALIDATION_ERROR]
@@ -1404,6 +2475,13 @@ def validate_no_developer_paths() -> list[str]:
             *_unbound_developer_path_scan(),
         ]
     try:
+        patch_review_binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return [
+            "Mac-Win patch review evidence validation failed",
+            *_unbound_developer_path_scan(),
+        ]
+    try:
         generated_binding.revalidate()
     except (OSError, RuntimeError, TypeError, ValueError):
         return [
@@ -1421,7 +2499,38 @@ def validate_no_developer_paths() -> list[str]:
         ordinary_binding.revalidate()
     except _DeveloperPathScanError:
         return [DEVELOPER_PATH_VALIDATION_ERROR]
+    try:
+        patch_review_binding.revalidate()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return [
+            "Mac-Win patch review evidence validation failed",
+            *_unbound_developer_path_scan(),
+        ]
     return scanned_errors
+
+
+def validate_no_developer_paths() -> list[str]:
+    source_binding, errors = _validated_macwin_source_pack_binding()
+    if source_binding is None:
+        return [*errors, *_unbound_developer_path_scan()]
+    patch_review_binding, patch_review_errors = _validated_patch_review_binding()
+    if patch_review_binding is None:
+        try:
+            scanned_errors, ordinary_binding = _scan_developer_paths(
+                source_binding, None, None
+            )
+            source_binding.revalidate()
+            ordinary_binding.revalidate()
+            source_binding.revalidate()
+        except (_DeveloperPathScanError, OSError, RuntimeError, TypeError, ValueError):
+            return [*patch_review_errors, DEVELOPER_PATH_VALIDATION_ERROR]
+        return [*patch_review_errors, *scanned_errors]
+    try:
+        return _validate_with_patch_review_binding(
+            source_binding, patch_review_binding
+        )
+    finally:
+        patch_review_binding.close()
 
 
 def validate_pe_inspection_fixture() -> list[str]:

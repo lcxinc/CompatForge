@@ -20,6 +20,11 @@ release, URL, developer-machine path, process environment, or current working
 directory. The importer is a review-only utility and is not part of normal
 generation, repository validation, or CI.
 
+The 11 patch identities also have a closed reviewed evidence ledger at
+`migration/macwin/reviewed/patches.json`. Its exact upstream comparison,
+license boundary, and disposition are documented in the [Mac-Win patch
+provenance review](macwin-patch-provenance.md).
+
 The source index and each generated JSON document are bounded to 1 MiB before
 parsing or comparison. Source objects have separate per-object and aggregate
 bounds recorded by the source-pack contract. Inputs are strict UTF-8 where JSON
@@ -28,13 +33,13 @@ and SHA-256 are validated before conversion.
 
 ## Reviewed result
 
-The sealed root graph reports 2 converted + 15 deferred + 73 quarantined across
+The sealed root graph reports 2 converted + 4 deferred + 84 quarantined across
 all 90 identities.
 
 | Category | Inputs | Reviewed result |
 | --- | ---: | --- |
 | Catalog | 19 | The catalog index and signature boundary are the two converted records; all 17 Recipe candidates are quarantined. |
-| Patches | 11 | Eleven deferred mappings target `MW-ASSET-002`. No patch is applied. |
+| Patches | 11 | All 11 are quarantined as `missing-license` under `MW-ASSET-002`; 0 are retained. No patch is applied or executed. |
 | Probes | 26 | All 26 are quarantined; no source asset is executed or emitted as portable content. |
 | Fixtures | 30 | All 30 are quarantined; no source asset is imported, compiled, or executed. |
 | Bottle schema | 4 | Four deferred mappings target `MW-ASSET-003`. No Bottle is opened or written. |
@@ -55,10 +60,10 @@ files and their reviewed SHA-256 values are:
 | Path | Bytes | SHA-256 |
 | --- | ---: | --- |
 | `migration/macwin/generated/catalog.json` | 7,603 | `c0c5b93b97b3f3c6e9197d2e00645dc28b1163b3130fe3e73ec7d1fde9e8fa4a` |
-| `migration/macwin/generated/index.json` | 34,878 | `b77ab1cb7ca2ec91aa09c6a8891df94a02089d46ad44122783f72c7735bad761` |
+| `migration/macwin/generated/index.json` | 34,845 | `2c6a0447b4a27c8c0baf0da9dd45cad355db75a6a880e9b90434bc7b93cdf080` |
 | `migration/macwin/generated/mappings/bottle-schemas.json` | 2,637 | `f99698eaf5e341a58c7f7b91299701481c38df8a31203064aab38822622041cb` |
-| `migration/macwin/generated/mappings/patches.json` | 7,037 | `c4505c787005d962af5fae3f715f2e7856bbbe790283a21bde75cf214f8a61e2` |
-| `migration/macwin/generated/quarantine.json` | 83,297 | `cdf8e53b9f5553f442d9103c630010097364d9e3d6615172cc64dc83c4e9e44b` |
+| `migration/macwin/generated/mappings/patches.json` | 21,032 | `202c56f99c7f332a7b5c6b93b87baef66d1445ae3981954c23f2b6c7ea64edd1` |
+| `migration/macwin/generated/quarantine.json` | 89,656 | `ca0132b78ac4bae8ed00446194cd7e9712b37ebc2aea4087ebad695248e2b2e9` |
 
 `index.json` is the root seal and therefore does not list itself as a dependent
 document. It records four dependent documents, 90 records, the exact category
@@ -104,8 +109,10 @@ side-effect snapshots before accepting new bytes.
 
 Quarantine release requires the release condition in the record to be met by a
 reviewed source or policy update; rerunning the converter alone cannot release
-it. Patch mappings remain deferred until the review and removal criteria in
-`MW-ASSET-002` are completed. Bottle schema mappings remain deferred until the
+it. The patch evidence result under `MW-ASSET-002` is 0 retained and 11
+quarantined; a future retained review must prove a patch-specific license,
+complete upstream base, closed dependencies, local-only need, and a registered
+focused regression probe. Bottle schema mappings remain deferred until the
 snapshot, conversion, rollback, and source-preservation work in `MW-ASSET-003`
 is completed. Any future portable asset or Recipe must carry complete license,
 provenance, safe references, and its required test evidence before regeneration
