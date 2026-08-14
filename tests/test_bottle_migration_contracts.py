@@ -18,6 +18,17 @@ SCHEMA_NAMES = (
 DIGEST_A = "sha256:" + ("a" * 64)
 DIGEST_B = "sha256:" + ("b" * 64)
 MAX_SNAPSHOT_MANIFEST_BYTES = 64 * 1024 * 1024
+MAX_DOCUMENT_SCALAR_CHARACTERS = 4096
+MAX_DOCUMENT_COLLECTION_ITEMS = 100000
+MAX_DOCUMENT_NODES = 1000000
+MAX_DOCUMENT_DEPTH = 128
+DOCUMENT_STRUCTURE_ERROR = "Bottle migration document exceeds structural limits"
+DOCUMENT_UNICODE_ERRORS = {
+    "bottle-snapshot.schema.json": "snapshot manifest contains invalid Unicode",
+    "bottle-runtime-map.schema.json": "runtime map contains invalid Unicode",
+    "bottle-migration-plan.schema.json": "migration plan contains invalid Unicode",
+    "bottle-active-ref.schema.json": "active reference contains invalid Unicode",
+}
 WINDOWS_SUPERSCRIPT_DEVICE_PATHS = (
     "COM¹",
     "COM².txt",
@@ -247,6 +258,21 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 ):
                     self._assert_valid(value, contract, schema)
 
+    def test_portable_path_surrogates_have_a_fixed_unchained_error(self) -> None:
+        for surrogate_kind, surrogate in (
+            ("high", "\ud800"),
+            ("low", "\udfff"),
+        ):
+            with self.subTest(surrogate=surrogate_kind):
+                with self.assertRaises(AssertionError) as caught:
+                    self._assert_portable_path(f"secret-{surrogate}")
+                error = caught.exception
+                self.assertIs(type(error), AssertionError)
+                self.assertEqual(str(error), "path is not valid Unicode")
+                self.assertNotIn("secret", str(error))
+                self.assertIsNone(error.__cause__)
+                self.assertTrue(error.__suppress_context__)
+
     def test_schema_patterns_reject_windows_superscript_device_aliases(self) -> None:
         for name in (
             "bottle-snapshot.schema.json",
@@ -370,6 +396,104 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         actual = "".join(self._canonical_json_chunks(value)).encode("utf-8") + b"\n"
         self.assertEqual(actual, expected)
 
+    def test_structural_preflight_rejects_a_long_scalar_before_utf8_or_json(self) -> None:
+        instances = self._instances()
+        long_scalar_name = "bottle-snapshot.schema.json"
+        long_scalar = instances[long_scalar_name]
+        long_scalar["bottleId"] = "x" * (MAX_DOCUMENT_SCALAR_CHARACTERS + 1)
+        long_key_name = "bottle-active-ref.schema.json"
+        long_key = instances[long_key_name]
+        long_key["x" * (MAX_DOCUMENT_SCALAR_CHARACTERS + 1)] = None
+
+        for label, name, value in (
+            ("value", long_scalar_name, long_scalar),
+            ("key", long_key_name, long_key),
+        ):
+            with self.subTest(case=label), mock.patch.object(
+                type(self),
+                "_utf8_chunk_size",
+                side_effect=AssertionError("UTF-8 encoding was attempted"),
+            ), mock.patch.object(
+                type(self),
+                "_canonical_json_chunks",
+                side_effect=AssertionError("JSONEncoder was constructed"),
+            ), self.assertRaisesRegex(
+                AssertionError,
+                f"^{re.escape(DOCUMENT_STRUCTURE_ERROR)}$",
+            ):
+                self._assert_document_valid(name, value, self._schema(name))
+
+    def test_structural_preflight_bounds_collections_nodes_and_depth(self) -> None:
+        instances = self._instances()
+
+        runtime_name = "bottle-runtime-map.schema.json"
+        oversized_collection = copy.deepcopy(instances[runtime_name])
+        oversized_collection["mappings"] = [None] * (
+            MAX_DOCUMENT_COLLECTION_ITEMS + 1
+        )
+
+        wide_item = {f"field-{index}": "x" for index in range(10)}
+        oversized_graph = copy.deepcopy(instances[runtime_name])
+        oversized_graph["mappings"] = [wide_item] * MAX_DOCUMENT_COLLECTION_ITEMS
+
+        active_name = "bottle-active-ref.schema.json"
+        excessive_depth = copy.deepcopy(instances[active_name])
+        nested: object = None
+        for _ in range(MAX_DOCUMENT_DEPTH + 1):
+            nested = [nested]
+        excessive_depth["nested"] = nested
+
+        for label, name, value in (
+            ("collection", runtime_name, oversized_collection),
+            ("nodes", runtime_name, oversized_graph),
+            ("depth", active_name, excessive_depth),
+        ):
+            with self.subTest(case=label), mock.patch.object(
+                type(self),
+                "_utf8_chunk_size",
+                side_effect=AssertionError("UTF-8 encoding was attempted"),
+            ), self.assertRaisesRegex(
+                AssertionError,
+                f"^{re.escape(DOCUMENT_STRUCTURE_ERROR)}$",
+            ):
+                self._assert_document_valid(name, value, self._schema(name))
+
+    def test_portable_path_length_precedes_utf8_encoding(self) -> None:
+        class EncodeBomb(str):
+            def encode(self, *args, **kwargs):
+                raise AssertionError("portable path encoding was attempted")
+
+        value = EncodeBomb("x" * (MAX_DOCUMENT_SCALAR_CHARACTERS + 1))
+        with self.assertRaisesRegex(
+            AssertionError,
+            "^path exceeds the UTF-8 byte limit$",
+        ):
+            self._assert_portable_path(value)
+
+    def test_rfc3339_length_precedes_regular_expression_matching(self) -> None:
+        value = "x" * (MAX_DOCUMENT_SCALAR_CHARACTERS + 1)
+        with mock.patch.object(
+            re,
+            "fullmatch",
+            side_effect=AssertionError("regular expression matching was attempted"),
+        ), self.assertRaisesRegex(
+            AssertionError,
+            "^RFC 3339 timestamp is invalid$",
+        ):
+            self._assert_rfc3339(value)
+
+    def test_schema_items_are_validated_before_unique_canonicalization(self) -> None:
+        name = "bottle-migration-plan.schema.json"
+        schema = self._schema(name)
+        value = [{"invented": True}]
+
+        with mock.patch.object(
+            json,
+            "dumps",
+            side_effect=AssertionError("unique item JSON was materialized"),
+        ), self.assertRaisesRegex(AssertionError, "^enum mismatch$"):
+            self._assert_valid(value, schema["properties"]["diagnostics"], schema)
+
     def test_snapshot_document_surrogates_use_fixed_non_reflecting_error(self) -> None:
         name = "bottle-snapshot.schema.json"
         schema = self._schema(name)
@@ -405,6 +529,52 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                     self.assertNotIn("secret", str(error))
                     self.assertIsNone(error.__cause__)
                     self.assertTrue(error.__suppress_context__)
+
+    def test_all_document_string_values_and_keys_reject_lone_surrogates(self) -> None:
+        def locations(value: object, pointer=()):
+            if isinstance(value, str):
+                yield "value", pointer
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    yield from locations(item, (*pointer, index))
+            elif isinstance(value, dict):
+                yield "key", pointer
+                for key, item in value.items():
+                    yield from locations(item, (*pointer, key))
+
+        for name, original in self._instances().items():
+            schema = self._schema(name)
+            for location_kind, pointer in locations(original):
+                for surrogate_kind, surrogate in (
+                    ("high", "\ud800"),
+                    ("low", "\udfff"),
+                ):
+                    value = copy.deepcopy(original)
+                    target = value
+                    for component in pointer[:-1]:
+                        target = target[component]
+                    hostile = f"secret-{surrogate}"
+                    if location_kind == "value":
+                        target[pointer[-1]] = hostile
+                    else:
+                        for component in pointer[-1:]:
+                            target = target[component]
+                        target[hostile] = None
+
+                    with self.subTest(
+                        schema=name,
+                        location=location_kind,
+                        pointer=repr(pointer),
+                        surrogate=surrogate_kind,
+                    ):
+                        with self.assertRaises(AssertionError) as caught:
+                            self._assert_document_valid(name, value, schema)
+                        error = caught.exception
+                        self.assertIs(type(error), AssertionError)
+                        self.assertEqual(str(error), DOCUMENT_UNICODE_ERRORS[name])
+                        self.assertNotIn("secret", str(error))
+                        self.assertIsNone(error.__cause__)
+                        self.assertTrue(error.__suppress_context__)
 
     def test_records_are_sorted_and_unique(self) -> None:
         instances = self._instances()
@@ -556,6 +726,73 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             sort_keys=True,
         ).iterencode(value)
 
+    @staticmethod
+    def _utf8_chunk_size(value: str) -> int:
+        return len(value.encode("utf-8", errors="strict"))
+
+    @classmethod
+    def _utf8_text_size(cls, value: str) -> int:
+        return sum(
+            cls._utf8_chunk_size(value[start : start + 256])
+            for start in range(0, len(value), 256)
+        )
+
+    @staticmethod
+    def _contains_surrogate(value: str) -> bool:
+        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+
+    @classmethod
+    def _iter_document_strings(cls, value: object):
+        stack = [value]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, str):
+                yield current
+            elif isinstance(current, dict):
+                for key, item in current.items():
+                    if isinstance(key, str):
+                        yield key
+                    stack.append(item)
+            elif isinstance(current, list):
+                stack.extend(current)
+
+    @classmethod
+    def _assert_document_preflight(cls, name: str, value: object) -> None:
+        stack = [(value, 0)]
+        node_count = 0
+        while stack:
+            current, depth = stack.pop()
+            node_count += 1
+            if depth > MAX_DOCUMENT_DEPTH or node_count > MAX_DOCUMENT_NODES:
+                raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+
+            if isinstance(current, str):
+                if len(current) > MAX_DOCUMENT_SCALAR_CHARACTERS:
+                    raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                if cls._contains_surrogate(current):
+                    raise AssertionError(DOCUMENT_UNICODE_ERRORS[name]) from None
+            elif isinstance(current, dict):
+                if len(current) > MAX_DOCUMENT_COLLECTION_ITEMS:
+                    raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                for key, item in current.items():
+                    if not isinstance(key, str):
+                        raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                    if len(key) > MAX_DOCUMENT_SCALAR_CHARACTERS:
+                        raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                    if cls._contains_surrogate(key):
+                        raise AssertionError(DOCUMENT_UNICODE_ERRORS[name]) from None
+                    stack.append((item, depth + 1))
+            elif isinstance(current, list):
+                if len(current) > MAX_DOCUMENT_COLLECTION_ITEMS:
+                    raise AssertionError(DOCUMENT_STRUCTURE_ERROR) from None
+                stack.extend((item, depth + 1) for item in current)
+
+        try:
+            for text in cls._iter_document_strings(value):
+                cls._utf8_text_size(text)
+        except UnicodeEncodeError:
+            raise AssertionError(DOCUMENT_UNICODE_ERRORS[name]) from None
+
     @classmethod
     def _assert_snapshot_manifest_size(cls, value: object) -> None:
         canonical_size = 1  # The canonical trailing LF.
@@ -586,6 +823,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
     def _assert_document_valid(
         cls, name: str, value: object, schema: dict[str, object]
     ) -> None:
+        cls._assert_document_preflight(name, value)
         if name == "bottle-snapshot.schema.json":
             cls._assert_snapshot_manifest_size(value)
         cls._assert_valid(value, schema, schema)
@@ -629,13 +867,15 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         if len(folded) != len(set(folded)):
             raise AssertionError("paths collide after Unicode case folding")
 
-    @staticmethod
-    def _assert_portable_path(value: str) -> None:
+    @classmethod
+    def _assert_portable_path(cls, value: str) -> None:
+        if len(value) > MAX_DOCUMENT_SCALAR_CHARACTERS:
+            raise AssertionError("path exceeds the UTF-8 byte limit")
         try:
-            encoded = value.encode("utf-8", errors="strict")
-        except UnicodeEncodeError as error:
-            raise AssertionError("path is not valid Unicode") from error
-        if len(encoded) > 4096:
+            encoded_size = cls._utf8_text_size(value)
+        except UnicodeEncodeError:
+            raise AssertionError("path is not valid Unicode") from None
+        if encoded_size > 4096:
             raise AssertionError("path exceeds the UTF-8 byte limit")
         if unicodedata.normalize("NFC", value) != value:
             raise AssertionError("path is not NFC")
@@ -662,7 +902,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         for component in components:
             if not component or component in (".", ".."):
                 raise AssertionError("path component is ambiguous")
-            if len(component.encode("utf-8")) > 255:
+            if cls._utf8_text_size(component) > 255:
                 raise AssertionError("path component exceeds the UTF-8 byte limit")
             if component.endswith((".", " ")):
                 raise AssertionError("path component has an ambiguous suffix")
@@ -678,13 +918,15 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
     @staticmethod
     def _assert_rfc3339(value: str) -> None:
+        if not 20 <= len(value) <= MAX_DOCUMENT_SCALAR_CHARACTERS:
+            raise AssertionError("RFC 3339 timestamp is invalid")
         match = re.fullmatch(
             r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
             r"[Tt](?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
             r"(?:\.[0-9]+)?(?P<timezone>[Zz]|[+-][0-9]{2}:[0-9]{2})",
             value,
         )
-        if match is None or not 20 <= len(value) <= 4096:
+        if match is None:
             raise AssertionError("RFC 3339 timestamp is invalid")
 
         year, month, day, hour, minute, second = (
@@ -798,13 +1040,13 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 raise AssertionError("array too short")
             if len(value) > schema.get("maxItems", len(value)):
                 raise AssertionError("array too long")
+            if isinstance(schema.get("items"), dict):
+                for item in value:
+                    cls._assert_valid(item, schema["items"], root)
             if schema.get("uniqueItems"):
                 rendered = [json.dumps(item, sort_keys=True) for item in value]
                 if len(rendered) != len(set(rendered)):
                     raise AssertionError("array items are not unique")
-            if isinstance(schema.get("items"), dict):
-                for item in value:
-                    cls._assert_valid(item, schema["items"], root)
         elif isinstance(value, dict):
             required = schema.get("required", [])
             if any(key not in value for key in required):
