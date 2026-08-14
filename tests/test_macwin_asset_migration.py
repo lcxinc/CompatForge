@@ -8538,6 +8538,29 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                     (1, b"", b"isolated process failed\n"),
                 )
 
+        real_popen = subprocess.Popen
+
+        def descendant_holds_pipe(_arguments, **options):
+            return real_popen(
+                (
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    "import subprocess,sys;subprocess.Popen((sys.executable,'-B','-c','import time;time.sleep(5)'));print('123')",
+                ),
+                **options,
+            )
+
+        started = time.monotonic()
+        with mock.patch.object(subprocess, "Popen", side_effect=descendant_holds_pipe):
+            normalized = self._run_audited(command, report_process_id=True)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 4.0)
+        self.assertEqual(
+            (normalized.returncode, normalized.stdout, normalized.stderr),
+            (1, b"", b"isolated process failed\n"),
+        )
+
         for expression, expected_code in (
             ("SystemExit(None)", 0),
             ("SystemExit(7)", 7),
@@ -9977,7 +10000,8 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                         process.kill()
 
             readers = tuple(
-                threading.Thread(target=drain, args=(index,)) for index in (0, 1)
+                threading.Thread(target=drain, args=(index,), daemon=True)
+                for index in (0, 1)
             )
             for reader in readers:
                 reader.start()
@@ -9988,8 +10012,16 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
                 process.kill()
                 process.wait()
                 returncode = 250
+            deadline = time.monotonic() + 1.0
             for reader in readers:
-                reader.join()
+                reader.join(max(0.0, deadline - time.monotonic()))
+            if any(reader.is_alive() for reader in readers):
+                overflow.set()
+                process.kill()
+                try:
+                    process.wait(timeout=1)
+                except BaseException:
+                    pass
             if overflow.is_set():
                 returncode = 250
                 chunks = [[], []]
