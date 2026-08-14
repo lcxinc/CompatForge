@@ -1361,6 +1361,66 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                 external, schema, schema
             )
 
+    def test_https_evidence_rejects_percent_syntax_for_every_locator_kind(
+        self,
+    ) -> None:
+        review, schema, record = self._retained_review(
+            "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        license_entries = [
+            item
+            for item in record["evidenceAndDependencies"]
+            if item["kind"] == "patch-license"
+        ]
+        self.assertEqual(len(license_entries), 1)
+        for suffix in ("%", "%zz", "%0a", "%5c"):
+            mutant = copy.deepcopy(review)
+            mutant_record = next(
+                item
+                for item in mutant["records"]
+                if item["sourcePath"]
+                == "patches/wine-windowscodecs-bilinear-scaler.patch"
+            )
+            entry = next(
+                item
+                for item in mutant_record["evidenceAndDependencies"]
+                if item["kind"] == "patch-license"
+            )
+            entry["value"] = "https://example.invalid/patch-license" + suffix
+            with self.subTest(kind="patch-license", suffix=suffix):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+        external = self._strict_json(self.REVIEW_RELATIVE)
+        external_record = next(
+            item
+            for item in external["records"]
+            if item["sourcePath"]
+            == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        external_entry = next(
+            item
+            for item in external_record["evidenceAndDependencies"]
+            if item["kind"] == "external-dependency"
+        )
+        external_entry["value"] += "%5c"
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                external, schema, schema
+            )
+
+        locator = schema["$defs"]["httpsEvidence"]
+        for approved in (
+            "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
+            "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
+        ):
+            with self.subTest(approved=approved):
+                MigrationSchemaTests._assert_schema_instance_valid(
+                    approved, locator, schema
+                )
+
     def test_narratives_reject_controls_and_non_ascii(self) -> None:
         review = self._strict_json(self.REVIEW_RELATIVE)
         schema = self._strict_json(self.SCHEMA_RELATIVE)
@@ -1400,6 +1460,71 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                     MigrationSchemaTests._assert_schema_instance_valid(
                         mutant, schema, schema
                     )
+
+    def test_git_identity_contract_rejects_null_sentinels_as_real_objects(
+        self,
+    ) -> None:
+        review, schema, record = self._retained_review(
+            "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        record["preimages"][0]["patchOldBlob"] = "0" * 7
+        record["preimages"][0]["upstreamBlobOid"] = "0" * 40
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_annotated_tag_rejects_zero_tag_object(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        annotated = self._strict_json(self.REVIEW_RELATIVE)
+        wine_record = next(
+            item
+            for item in annotated["records"]
+            if item["sourcePath"].startswith("patches/wine-")
+        )
+        wine_record["upstream"]["tagObject"] = "0" * 40
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                annotated, schema, schema
+            )
+
+    def test_git_identity_contract_has_exact_nonzero_adjacent_boundaries(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        git_oid = schema["$defs"]["gitOid"]
+        git_prefix = schema["$defs"]["gitObjectPrefix"]
+        zero_prefix = schema["$defs"]["zeroGitObjectPrefix"]
+        for value in ("0" * 39 + "1", "1" + "0" * 39):
+            MigrationSchemaTests._assert_schema_instance_valid(value, git_oid, schema)
+        for value in ("0" * 40, "1" * 39, "1" * 41):
+            with self.subTest(contract="gitOid", value=value):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, git_oid, schema
+                    )
+        for value in ("0" * 6 + "1", "1" + "0" * 39):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                value, git_prefix, schema
+            )
+        for value in ("0" * 7, "0" * 40, "1" * 6, "1" * 41):
+            with self.subTest(contract="gitObjectPrefix", value=value):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        value, git_prefix, schema
+                    )
+        for value in ("0" * 7, "0" * 40):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                value, zero_prefix, schema
+            )
+
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        engine_sync = next(
+            item
+            for item in review["records"]
+            if item["sourcePath"]
+            == "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch"
+        )
+        self.assertEqual(engine_sync["preimages"][0]["patchOldBlob"], "0" * 7)
+        self.assertEqual(engine_sync["preimages"][0]["result"], "unproven")
+        self.assertNotEqual(engine_sync["preimages"][0]["upstreamBlobOid"], "0" * 40)
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
 
     def test_project_license_evidence_uses_commit_permalinks(self) -> None:
         review = self._strict_json(self.REVIEW_RELATIVE)
