@@ -10087,6 +10087,153 @@ class MacWinMigrationSideEffectTests(unittest.TestCase):
         return code, stdout.buffer.getvalue(), stderr.buffer.getvalue()
 
 
+class MacWinMigrationWorkflowTests(unittest.TestCase):
+    WORKFLOW = ROOT / ".github/workflows/ci.yml"
+    CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+    SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    BASELINE_SHA256 = "fe0e4abe26bdbe5d3944f0e8f5e220b47ae482b5e251e64b6dcf7528ac270ab5"
+    MIGRATION_STEP = (
+        "      - name: Check portable Mac-Win assets\n"
+        "        run: python -B tools/convert_macwin_assets.py --check\n"
+    )
+
+    def test_workflow_rejects_duplicate_mapping_keys(self) -> None:
+        text = self._workflow_text()
+        self._assert_no_duplicate_mapping_keys(text)
+        mutants = (
+            text.replace("permissions:\n", "permissions:\npermissions:\n", 1),
+            text.replace("  contracts:\n", "  contracts:\n  contracts:\n", 1),
+            text.replace("    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    runs-on: macos-latest\n", 1),
+            re.sub(
+                r"(?m)^(        run: .+)$",
+                r"\1\n        run: echo hidden",
+                text,
+                count=1,
+            ),
+        )
+        for mutant in mutants:
+            with self.subTest(mutant=mutant[:40]), self.assertRaises(ValueError):
+                self._assert_no_duplicate_mapping_keys(mutant)
+
+    def test_contract_job_is_pinned_read_only_and_ordered(self) -> None:
+        text = self._workflow_text()
+        self.assertEqual(self._top_level_block(text, "permissions"), "permissions:\n  contents: read\n\n")
+        self.assertNotRegex(
+            text,
+            r"actions/(?:checkout|setup-python)@(?![0-9a-f]{40}(?:\s|$))",
+        )
+        contracts = self._job_block(text, "contracts")
+        self.assertEqual(contracts.count(f"uses: {self.CHECKOUT}"), 1)
+        self.assertEqual(contracts.count(f"uses: {self.SETUP_PYTHON}"), 1)
+        self.assertIn('python-version: "3.12"', contracts)
+        expected = (
+            "run: python -B scripts/validate_repository.py",
+            "run: python -B tools/convert_macwin_assets.py --check",
+            "name: Compile public C header",
+            "name: Compile public C++ header",
+        )
+        positions = tuple(contracts.index(value) for value in expected)
+        self.assertEqual(positions, tuple(sorted(positions)))
+
+    def test_every_rust_platform_checks_the_same_generated_bytes(self) -> None:
+        text = self._workflow_text()
+        rust = self._job_block(text, "rust")
+        self.assertIn("os: [ubuntu-latest, macos-latest, windows-latest]", rust)
+        self.assertEqual(rust.count(f"uses: {self.CHECKOUT}"), 1)
+        self.assertEqual(rust.count(self.MIGRATION_STEP.strip()), 1)
+        self.assertLess(
+            rust.index("run: python -B tools/convert_macwin_assets.py --check"),
+            rust.index("run: cargo fmt --all --check"),
+        )
+
+    def test_workflow_changes_only_pins_and_read_only_migration_checks(self) -> None:
+        text = self._workflow_text()
+        lowered = text.lower()
+        for forbidden in (
+            "convert_macwin_assets.py --write",
+            "import_macwin_assets.py",
+            "curl ",
+            "wget ",
+            "invoke-webrequest",
+            "continue-on-error",
+            "|| true",
+            "if: always()",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, lowered)
+        self.assertNotRegex(
+            text,
+            r"(?im)^\s*run:\s*.*(?:migration/macwin/source|examples/bottles).*(?:python|bash|sh|powershell|cmd)",
+        )
+        normalized = text.replace(self.CHECKOUT, "actions/checkout@v4")
+        normalized = normalized.replace(self.SETUP_PYTHON, "actions/setup-python@v5")
+        normalized = normalized.replace(self.MIGRATION_STEP, "")
+        normalized = normalized.replace(
+            "run: python -B scripts/validate_repository.py",
+            "run: python scripts/validate_repository.py",
+        )
+        self.assertEqual(
+            hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            self.BASELINE_SHA256,
+        )
+
+    def _workflow_text(self) -> str:
+        raw = self.WORKFLOW.read_bytes()
+        if b"\r" in raw:
+            raise ValueError("workflow must use LF line endings")
+        return raw.decode("utf-8", "strict")
+
+    @staticmethod
+    def _top_level_block(text: str, name: str) -> str:
+        match = re.search(rf"(?ms)^{re.escape(name)}:\n.*?(?=^[A-Za-z][^\n]*:\n|\Z)", text)
+        if match is None:
+            raise AssertionError(f"missing workflow block: {name}")
+        return match.group(0)
+
+    @staticmethod
+    def _job_block(text: str, name: str) -> str:
+        match = re.search(rf"(?ms)^  {re.escape(name)}:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)", text)
+        if match is None:
+            raise AssertionError(f"missing workflow job: {name}")
+        return match.group(0)
+
+    @staticmethod
+    def _assert_no_duplicate_mapping_keys(text: str) -> None:
+        ancestors: list[tuple[int, str]] = []
+        sequence_numbers: dict[tuple[tuple[str, ...], int], int] = {}
+        seen: set[tuple[tuple[str, ...], int, str]] = set()
+        key_pattern = re.compile(r"^([^:#][^:]*):(?:\s|$)")
+        for number, raw_line in enumerate(text.splitlines(), 1):
+            if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+                continue
+            indent = len(raw_line) - len(raw_line.lstrip(" "))
+            if "\t" in raw_line[:indent]:
+                raise ValueError(f"workflow uses tab indentation at line {number}")
+            content = raw_line[indent:]
+            while ancestors and ancestors[-1][0] >= indent:
+                ancestors.pop()
+            path = tuple(label for _level, label in ancestors)
+            effective_indent = indent
+            if content.startswith("- "):
+                sequence_key = (path, indent)
+                sequence_numbers[sequence_key] = sequence_numbers.get(sequence_key, 0) + 1
+                marker = f"[{sequence_numbers[sequence_key]}]"
+                ancestors.append((indent, marker))
+                path = (*path, marker)
+                content = content[2:]
+                effective_indent += 2
+            match = key_pattern.match(content)
+            if match is None:
+                continue
+            key = match.group(1).strip()
+            identity = (path, effective_indent, key)
+            if identity in seen:
+                raise ValueError(f"duplicate workflow key {key!r} at line {number}")
+            seen.add(identity)
+            if not content[match.end():].strip():
+                ancestors.append((effective_indent, key))
+
+
 class MacWinMigrationDocumentationTests(unittest.TestCase):
     DOCUMENT = ROOT / "docs/migration/macwin-portable-assets.md"
     DOCUMENT_SHA256 = "a89a2cbd56d2a27284dc2ac6d991ef3456d0e2b343cf6695ad59409813dec56f"
