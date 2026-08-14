@@ -8,7 +8,7 @@ import ctypes
 import hashlib
 import ipaddress
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
 import stat
@@ -3624,135 +3624,251 @@ def _validate_conversion_record_field_types(record: ConversionRecord) -> None:
         _fail("conversion result record path is invalid")
 
 
-def _patch_review_json_value(value: object) -> object:
-    if type(value) is dict:
-        return {
-            key.split("_")[0]
-            + "".join(part.title() for part in key.split("_")[1:]):
-            _patch_review_json_value(item)
-            for key, item in value.items()
-        }
-    if type(value) in {list, tuple}:
-        return [_patch_review_json_value(item) for item in value]
-    return value
+def _bounded_review_model_string(value: object, maximum_bytes: int) -> bool:
+    if type(value) is not str or len(value) > maximum_bytes:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= maximum_bytes
+    except UnicodeEncodeError:
+        return False
 
 
-def _patch_review_value_from_model(
+def _bounded_optional_review_model_string(
+    value: object, maximum_bytes: int
+) -> bool:
+    return value is None or _bounded_review_model_string(value, maximum_bytes)
+
+
+def _preflight_patch_review_model(
     review: PatchReviewLedger, source_pack: SourcePack
-) -> dict[str, object]:
-    del source_pack
+) -> None:
     if (
         type(review) is not PatchReviewLedger
         or type(review.source) is not PatchReviewSourceIdentity
         or type(review.schema_version) is not str
         or type(review.record_count) is not int
         or type(review.records) is not tuple
+        or review.schema_version != "1"
+        or review.record_count != PATCH_REVIEW_RECORD_COUNT
+        or len(review.records) != PATCH_REVIEW_RECORD_COUNT
     ):
         _fail("patch review evidence is invalid")
     source = review.source
-    if any(
-        type(value) is not str
-        for value in (
-            source.repository,
-            source.source_tag,
-            source.source_tag_object,
-            source.source_commit,
-            source.inventory_commit,
-            source.source_index_sha256,
-            source.digest_algorithm,
-        )
+    source_values = (
+        source.repository,
+        source.source_tag,
+        source.source_tag_object,
+        source.source_commit,
+        source.inventory_commit,
+        source.source_index_sha256,
+        source.digest_algorithm,
+    )
+    if (
+        any(type(value) is not str for value in source_values)
+        or source_values != APPROVED_PATCH_REVIEW_SOURCE
+        or source.repository != source_pack.repository
+        or source.source_tag != source_pack.source_tag
+        or source.source_tag_object != source_pack.source_tag_object
+        or source.source_commit != source_pack.source_commit
+        or source.inventory_commit != source_pack.inventory_commit
+        or source.digest_algorithm != source_pack.digest_algorithm
     ):
         _fail("patch review evidence is invalid")
+
     for record in review.records:
         if (
             type(record) is not PatchReviewRecord
-            or type(record.source_path) is not str
-            or type(record.source_sha256) is not str
-            or type(record.git_blob_oid) is not str
-            or type(record.git_mode) is not str
-            or type(record.byte_size) is not int
-            or record.subject is not None
-            and type(record.subject) is not str
-            or type(record.purpose) is not str
-            or not _is_exact_string_tuple(record.affected_applications)
             or type(record.upstream) is not PatchUpstream
-            or type(record.preimages) is not tuple
             or type(record.patch_author) is not PatchAuthor
             or type(record.project_license) is not PatchProjectLicense
             or type(record.patch_license) is not PatchLicense
+            or type(record.affected_applications) is not tuple
+            or not 1 <= len(record.affected_applications) <= 32
+            or type(record.preimages) is not tuple
+            or not 1 <= len(record.preimages) <= 128
             or type(record.evidence_and_dependencies) is not tuple
-            or type(record.upstream_status) is not str
-            or type(record.review_disposition) is not str
-            or record.reason is not None
-            and type(record.reason) is not str
-            or record.release_condition is not None
-            and type(record.release_condition) is not str
-            or not _is_exact_string_tuple(record.regression_probe_ids)
+            or len(record.evidence_and_dependencies) > 128
+            or type(record.regression_probe_ids) is not tuple
+            or len(record.regression_probe_ids) > 32
+        ):
+            _fail("patch review evidence is invalid")
+
+    patch_assets = tuple(
+        asset for asset in source_pack.assets if asset.category == "patches"
+    )
+    if len(patch_assets) != PATCH_REVIEW_RECORD_COUNT:
+        _fail("patch review evidence is invalid")
+    for record, asset in zip(review.records, patch_assets, strict=True):
+        if (
+            not _bounded_review_model_string(record.source_path, 1024)
+            or not _bounded_review_model_string(record.source_sha256, 64)
+            or not _bounded_review_model_string(record.git_blob_oid, 40)
+            or not _bounded_review_model_string(record.git_mode, 6)
+            or type(record.byte_size) is not int
+            or not _bounded_optional_review_model_string(record.subject, 256)
+            or not _bounded_review_model_string(record.purpose, 2048)
+            or not _bounded_review_model_string(record.upstream_status, 32)
+            or not _bounded_review_model_string(record.review_disposition, 32)
+            or not _bounded_optional_review_model_string(record.reason, 32)
+            or not _bounded_optional_review_model_string(
+                record.release_condition, 512
+            )
+            or any(
+                not _bounded_review_model_string(value, 128)
+                for value in record.affected_applications
+            )
+            or any(
+                not _bounded_review_model_string(value, 128)
+                for value in record.regression_probe_ids
+            )
+            or record.source_path != asset.source_path
+            or record.source_sha256 != asset.sha256
+            or record.git_blob_oid != asset.git_blob_oid
+            or record.git_mode != asset.git_mode
+            or record.byte_size != asset.byte_size
         ):
             _fail("patch review evidence is invalid")
         upstream = record.upstream
         if (
-            type(upstream.repository) is not str
-            or type(upstream.reference_kind) is not str
-            or type(upstream.reference) is not str
-            or upstream.tag_object is not None
-            and type(upstream.tag_object) is not str
-            or type(upstream.commit) is not str
+            not _bounded_review_model_string(upstream.repository, 2048)
+            or not _bounded_review_model_string(upstream.reference_kind, 16)
+            or not _bounded_review_model_string(upstream.reference, 256)
+            or not _bounded_optional_review_model_string(upstream.tag_object, 40)
+            or not _bounded_review_model_string(upstream.commit, 40)
         ):
             _fail("patch review evidence is invalid")
         for item in record.preimages:
             if (
                 type(item) is not PatchPreimageEvidence
-                or type(item.path) is not str
-                or item.patch_old_blob is not None
-                and type(item.patch_old_blob) is not str
-                or item.upstream_blob_oid is not None
-                and type(item.upstream_blob_oid) is not str
-                or type(item.result) is not str
+                or not _bounded_review_model_string(item.path, 1024)
+                or not _bounded_optional_review_model_string(
+                    item.patch_old_blob, 40
+                )
+                or not _bounded_optional_review_model_string(
+                    item.upstream_blob_oid, 40
+                )
+                or not _bounded_review_model_string(item.result, 16)
             ):
                 _fail("patch review evidence is invalid")
         author = record.patch_author
         if (
-            type(author.status) is not str
-            or author.display_name is not None
-            and type(author.display_name) is not str
-            or author.email is not None
-            and type(author.email) is not str
-            or author.evidence is not None
-            and type(author.evidence) is not str
+            not _bounded_review_model_string(author.status, 16)
+            or not _bounded_optional_review_model_string(author.display_name, 256)
+            or not _bounded_optional_review_model_string(author.email, 254)
+            or not _bounded_optional_review_model_string(author.evidence, 256)
         ):
             _fail("patch review evidence is invalid")
         project_license = record.project_license
         if (
-            type(project_license.spdx_expression) is not str
-            or type(project_license.evidence_locator) is not str
+            not _bounded_review_model_string(
+                project_license.spdx_expression, 256
+            )
+            or not _bounded_review_model_string(
+                project_license.evidence_locator, 2048
+            )
             or type(project_license.context_only) is not bool
         ):
             _fail("patch review evidence is invalid")
         patch_license = record.patch_license
         if (
-            type(patch_license.status) is not str
-            or patch_license.spdx_expression is not None
-            and type(patch_license.spdx_expression) is not str
+            not _bounded_review_model_string(patch_license.status, 16)
+            or not _bounded_optional_review_model_string(
+                patch_license.spdx_expression, 256
+            )
         ):
             _fail("patch review evidence is invalid")
         for item in record.evidence_and_dependencies:
             if (
                 type(item) is not PatchEvidenceDependency
-                or type(item.kind) is not str
-                or type(item.value) is not str
+                or not _bounded_review_model_string(item.kind, 32)
+                or not _bounded_review_model_string(item.value, 2048)
             ):
                 _fail("patch review evidence is invalid")
-    value = _patch_review_json_value(asdict(review))
-    for record in value["records"]:
-        author = record["patchAuthor"]
-        for field in ("displayName", "email", "evidence"):
-            if author[field] is None:
-                del author[field]
-        patch_license = record["patchLicense"]
-        if patch_license["spdxExpression"] is None:
-            del patch_license["spdxExpression"]
-    return value
+
+
+def _patch_review_json_value(review: PatchReviewLedger) -> dict[str, object]:
+    source = review.source
+    records: list[dict[str, object]] = []
+    for record in review.records:
+        author: dict[str, object] = {"status": record.patch_author.status}
+        if record.patch_author.display_name is not None:
+            author["displayName"] = record.patch_author.display_name
+        if record.patch_author.email is not None:
+            author["email"] = record.patch_author.email
+        if record.patch_author.evidence is not None:
+            author["evidence"] = record.patch_author.evidence
+        patch_license: dict[str, object] = {
+            "status": record.patch_license.status
+        }
+        if record.patch_license.spdx_expression is not None:
+            patch_license["spdxExpression"] = (
+                record.patch_license.spdx_expression
+            )
+        records.append(
+            {
+                "sourcePath": record.source_path,
+                "sourceSha256": record.source_sha256,
+                "gitBlobOid": record.git_blob_oid,
+                "gitMode": record.git_mode,
+                "byteSize": record.byte_size,
+                "subject": record.subject,
+                "purpose": record.purpose,
+                "affectedApplications": list(record.affected_applications),
+                "upstream": {
+                    "repository": record.upstream.repository,
+                    "referenceKind": record.upstream.reference_kind,
+                    "reference": record.upstream.reference,
+                    "tagObject": record.upstream.tag_object,
+                    "commit": record.upstream.commit,
+                },
+                "preimages": [
+                    {
+                        "path": item.path,
+                        "patchOldBlob": item.patch_old_blob,
+                        "upstreamBlobOid": item.upstream_blob_oid,
+                        "result": item.result,
+                    }
+                    for item in record.preimages
+                ],
+                "patchAuthor": author,
+                "projectLicense": {
+                    "spdxExpression": record.project_license.spdx_expression,
+                    "evidenceLocator": record.project_license.evidence_locator,
+                    "contextOnly": record.project_license.context_only,
+                },
+                "patchLicense": patch_license,
+                "evidenceAndDependencies": [
+                    {"kind": item.kind, "value": item.value}
+                    for item in record.evidence_and_dependencies
+                ],
+                "upstreamStatus": record.upstream_status,
+                "reviewDisposition": record.review_disposition,
+                "reason": record.reason,
+                "releaseCondition": record.release_condition,
+                "regressionProbeIds": list(record.regression_probe_ids),
+            }
+        )
+    return {
+        "schemaVersion": review.schema_version,
+        "source": {
+            "repository": source.repository,
+            "sourceTag": source.source_tag,
+            "sourceTagObject": source.source_tag_object,
+            "sourceCommit": source.source_commit,
+            "inventoryCommit": source.inventory_commit,
+            "sourceIndexSha256": source.source_index_sha256,
+            "digestAlgorithm": source.digest_algorithm,
+        },
+        "recordCount": review.record_count,
+        "records": records,
+    }
+
+
+def _patch_review_value_from_model(
+    review: PatchReviewLedger, source_pack: SourcePack
+) -> dict[str, object]:
+    _preflight_patch_review_model(review, source_pack)
+    return _patch_review_json_value(review)
 
 
 def _validate_patch_review_model(

@@ -2790,6 +2790,132 @@ class MacWinConversionModelTests(unittest.TestCase):
                     dataclasses.replace(self.result, patch_review=mutant)
                 )
 
+    def test_patch_review_preflight_rejects_unbounded_models_before_reconstruction(
+        self,
+    ) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+        first = review.records[0]
+        evidence_record = next(
+            record for record in review.records if record.evidence_and_dependencies
+        )
+
+        def replace_record(record, replacement):
+            return dataclasses.replace(
+                review,
+                records=tuple(
+                    replacement if item is record else item
+                    for item in review.records
+                ),
+            )
+
+        mutants = {
+            "twelve-records": dataclasses.replace(
+                review,
+                record_count=12,
+                records=(first,) * 12,
+            ),
+            "ten-thousand-records": dataclasses.replace(
+                review,
+                record_count=10_000,
+                records=(first,) * 10_000,
+            ),
+            "reordered-records": dataclasses.replace(
+                review,
+                records=tuple(reversed(review.records)),
+            ),
+            "affected-applications": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    affected_applications=("application",) * 33,
+                ),
+            ),
+            "preimages": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    preimages=(first.preimages[0],) * 129,
+                ),
+            ),
+            "evidence-and-dependencies": replace_record(
+                evidence_record,
+                dataclasses.replace(
+                    evidence_record,
+                    evidence_and_dependencies=(
+                        evidence_record.evidence_and_dependencies[0],
+                    )
+                    * 129,
+                ),
+            ),
+            "regression-probes": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    regression_probe_ids=("probe",) * 33,
+                ),
+            ),
+            "purpose-code-points": replace_record(
+                first,
+                dataclasses.replace(first, purpose="a" * 2049),
+            ),
+            "purpose-utf8-bytes": replace_record(
+                first,
+                dataclasses.replace(
+                    first,
+                    purpose="\N{LATIN SMALL LETTER E WITH ACUTE}" * 2048,
+                ),
+            ),
+        }
+        with mock.patch.object(
+            converter,
+            "_patch_review_json_value",
+            side_effect=AssertionError("deep reconstruction reached"),
+        ) as reconstruction:
+            for name, mutant in mutants.items():
+                reconstruction.reset_mock()
+                with self.subTest(mutant=name), self.assertRaisesRegex(
+                    converter.ConversionError,
+                    r"\Apatch review evidence is invalid\Z",
+                ):
+                    converter.classify_source_pack(self.source_pack, mutant)
+                reconstruction.assert_not_called()
+
+    def test_patch_review_preflight_has_bounded_repeated_record_amplification(
+        self,
+    ) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+        mutant = dataclasses.replace(
+            review,
+            record_count=500,
+            records=(review.records[0],) * 500,
+        )
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.classify_source_pack(self.source_pack, mutant)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_patch_review_model_reconstructs_the_exact_approved_bytes(self) -> None:
+        converter = self.converter
+        value = converter._patch_review_value_from_model(
+            self.result.patch_review,
+            self.source_pack,
+        )
+        raw = converter._COMMON.canonical_json_bytes(value)
+        self.assertEqual(len(raw), 35_368)
+        self.assertEqual(
+            raw,
+            (ROOT / "migration/macwin/reviewed/patches.json").read_bytes(),
+        )
+
     def test_converter_import_is_lazy_and_preserves_bytecode_policy(self) -> None:
         previous = sys.dont_write_bytecode
         try:
