@@ -10197,6 +10197,25 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             text.replace(command, f"{command} || echo ignored", 1),
             text.replace(command, f"{command}; exit 0", 1),
             text.replace(command, "run: echo $(python -V)", 1),
+            text.replace(command, "run: echo ${{ matrix.os }}", 1),
+            text.replace(command, "run: echo $RUNNER_TEMP", 1),
+            text.replace(command, "run: echo $env:RUNNER_TEMP", 1),
+            text.replace(
+                command,
+                "run: Invoke-RestMethod https`:`/`/invalid.example/",
+                1,
+            ),
+            text.replace(command, f"{command}; true", 1),
+            text.replace(
+                command,
+                "run: migration/macwin/generated/fixtures/payload.exe",
+                1,
+            ),
+            text.replace(
+                command,
+                "run: node migration/macwin/source/objects/sha256/aa/payload",
+                1,
+            ),
         )
         for mutant in mutants:
             changed = next(
@@ -10208,7 +10227,13 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 or "source/index" in line
                 or "||" in line
                 or "; exit 0" in line
+                or "; true" in line
                 or "$(" in line
+                or "RUNNER_TEMP" in line
+                or "Invoke-RestMethod" in line
+                or "generated/fixtures" in line
+                or "run: node" in line
+                or "run: echo ${{ matrix.os }}" in line
             )
             with self.subTest(command=changed), self.assertRaises(ValueError):
                 self._assert_no_forbidden_operations(mutant)
@@ -10221,6 +10246,7 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             "curl ",
             "wget ",
             "invoke-webrequest",
+            "invoke-restmethod",
             "urllib.request",
             "urlopen(",
             "urlretrieve(",
@@ -10230,23 +10256,26 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             "https://",
             "continue-on-error",
             "||",
-            "; exit 0",
             "set +e",
             "if: always()",
             "$(",
+            "`",
         ):
             if forbidden in lowered:
                 raise ValueError(f"forbidden workflow operation: {forbidden}")
-        expressions = re.findall(r"\$\{\{.*?\}\}", text)
-        if any(expression != "${{ matrix.os }}" for expression in expressions):
-            raise ValueError("workflow uses an unapproved expression")
+        if re.search(r"(?im);\s*(?:true|exit\s+0)(?:\s|$)", text):
+            raise ValueError("workflow masks a command failure")
+        for line in text.splitlines():
+            if "${{" in line and line.strip() != "runs-on: ${{ matrix.os }}":
+                raise ValueError("workflow interpolates an expression into a command")
+        variables = re.findall(r"\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*", text)
+        if any(variable != "$PWD" for variable in variables):
+            raise ValueError("workflow uses an unapproved shell variable")
         if re.search(
-            r"(?im)^(?=[^\r\n]*(?:migration[\\/]macwin[\\/]source|examples[\\/]bottles))"
-            r"(?=[^\r\n]*\b(?:python(?:3|\.exe)?|bash|sh|powershell|pwsh|cmd(?:\.exe)?)\b)"
-            r"[^\r\n]*$",
+            r"(?i)(?:migration[\\/]macwin[\\/](?:source|generated)|examples[\\/]bottles)",
             text,
         ):
-            raise ValueError("workflow executes a governed asset")
+            raise ValueError("workflow directly references a governed asset")
 
     def _workflow_text(self) -> str:
         raw = self.WORKFLOW.read_bytes()
