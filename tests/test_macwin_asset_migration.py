@@ -10104,6 +10104,21 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
             text.replace("permissions:\n", "permissions:\npermissions:\n", 1),
             text.replace("  contracts:\n", "  contracts:\n  contracts:\n", 1),
             text.replace("    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    runs-on: macos-latest\n", 1),
+            text.replace(
+                "    runs-on: ubuntu-latest\n",
+                '    runs-on: ubuntu-latest\n    "runs-on": macos-latest\n',
+                1,
+            ),
+            text.replace(
+                "    runs-on: ubuntu-latest\n",
+                '    runs-on: ubuntu-latest\n    "runs-\\u006fn": macos-latest\n',
+                1,
+            ),
+            text.replace(
+                "permissions:\n  contents: read\n",
+                "permissions: {contents: read, contents: write}\n",
+                1,
+            ),
             re.sub(
                 r"(?m)^(        run: .+)$",
                 r"\1\n        run: echo hidden",
@@ -10202,13 +10217,20 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
         ancestors: list[tuple[int, str]] = []
         sequence_numbers: dict[tuple[tuple[str, ...], int], int] = {}
         seen: set[tuple[tuple[str, ...], int, str]] = set()
-        key_pattern = re.compile(r"^([^:#][^:]*):(?:\s|$)")
+        block_scalar_indent: int | None = None
+        key_pattern = re.compile(
+            r'^("(?:\\.|[^"\\])*"|\'(?:\'\'|[^\'])*\'|[^:#][^:]*):(?:\s|$)'
+        )
         for number, raw_line in enumerate(text.splitlines(), 1):
             if not raw_line.strip() or raw_line.lstrip().startswith("#"):
                 continue
             indent = len(raw_line) - len(raw_line.lstrip(" "))
             if "\t" in raw_line[:indent]:
                 raise ValueError(f"workflow uses tab indentation at line {number}")
+            if block_scalar_indent is not None:
+                if indent > block_scalar_indent:
+                    continue
+                block_scalar_indent = None
             content = raw_line[indent:]
             while ancestors and ancestors[-1][0] >= indent:
                 ancestors.pop()
@@ -10222,16 +10244,42 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 path = (*path, marker)
                 content = content[2:]
                 effective_indent += 2
+            if content.startswith("{"):
+                raise ValueError(f"workflow flow mappings are not permitted at line {number}")
             match = key_pattern.match(content)
             if match is None:
+                if content.startswith(('"', "'", "? ")):
+                    raise ValueError(f"unsupported workflow mapping key at line {number}")
                 continue
-            key = match.group(1).strip()
+            key = MacWinMigrationWorkflowTests._decode_mapping_key(match.group(1), number)
             identity = (path, effective_indent, key)
             if identity in seen:
                 raise ValueError(f"duplicate workflow key {key!r} at line {number}")
             seen.add(identity)
-            if not content[match.end():].strip():
+            value = content[match.end():].strip()
+            if value.startswith("{"):
+                raise ValueError(f"workflow flow mappings are not permitted at line {number}")
+            if value in {"|", ">", "|-", ">-", "|+", ">+"}:
+                block_scalar_indent = effective_indent
+            if not value:
                 ancestors.append((effective_indent, key))
+
+    @staticmethod
+    def _decode_mapping_key(raw_key: str, number: int) -> str:
+        key = raw_key.strip()
+        if key.startswith('"'):
+            try:
+                decoded = json.loads(key)
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                raise ValueError(f"invalid quoted workflow key at line {number}") from error
+            if not isinstance(decoded, str):
+                raise ValueError(f"workflow key is not a string at line {number}")
+            return decoded
+        if key.startswith("'"):
+            if not key.endswith("'"):
+                raise ValueError(f"invalid quoted workflow key at line {number}")
+            return key[1:-1].replace("''", "'")
+        return key
 
 
 class MacWinMigrationDocumentationTests(unittest.TestCase):
