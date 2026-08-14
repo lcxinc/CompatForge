@@ -897,6 +897,21 @@ class MigrationSchemaTests(unittest.TestCase):
             if isinstance(item_schema, dict):
                 for item in value:
                     cls._assert_schema_instance_valid(item, item_schema, root)
+            contains_schema = schema.get("contains")
+            if isinstance(contains_schema, dict):
+                match_count = sum(
+                    cls._schema_matches(item, contains_schema, root) for item in value
+                )
+                minimum = schema.get("minContains", 1)
+                maximum = schema.get("maxContains")
+                if type(minimum) is not int or minimum < 0:
+                    raise AssertionError("minContains contract is malformed")
+                if maximum is not None and (type(maximum) is not int or maximum < 0):
+                    raise AssertionError("maxContains contract is malformed")
+                if match_count < minimum or (
+                    maximum is not None and match_count > maximum
+                ):
+                    raise AssertionError("array contains count is invalid")
         elif isinstance(value, dict):
             required = schema.get("required", [])
             if any(field not in value for field in required):
@@ -1119,6 +1134,17 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["records"]["maxItems"], 11)
         self.assertEqual(schema["$defs"]["preimages"]["maxItems"], 128)
         self.assertEqual(schema["$defs"]["affectedApplications"]["maxItems"], 32)
+        self.assertEqual(schema["$defs"]["evidenceAndDependencies"]["maxItems"], 128)
+        evidence_entry = schema["$defs"]["evidenceOrDependency"]
+        self.assertFalse(evidence_entry["additionalProperties"])
+        self.assertEqual(
+            set(evidence_entry["properties"]["kind"]["enum"]),
+            {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            },
+        )
         self.assertEqual(schema["$defs"]["regressionProbeIds"]["maxItems"], 32)
 
     def test_patch_review_covers_the_exact_source_slice(self) -> None:
@@ -1138,6 +1164,28 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             self.assertEqual(record["gitBlobOid"], asset["gitBlobOid"])
             self.assertEqual(record["gitMode"], asset["gitMode"])
             self.assertEqual(record["byteSize"], asset["byteSize"])
+            self.assertEqual(
+                [
+                    item["value"]
+                    for item in record["evidenceAndDependencies"]
+                    if item["kind"] == "external-dependency"
+                ],
+                asset["externalRefs"],
+            )
+            self.assertEqual(
+                [
+                    item["value"]
+                    for item in record["evidenceAndDependencies"]
+                    if item["kind"] == "development-dependency"
+                ],
+                asset["developmentDependencies"],
+            )
+            self.assertFalse(
+                any(
+                    item["kind"] == "patch-license"
+                    for item in record["evidenceAndDependencies"]
+                )
+            )
 
     def test_patch_review_records_approved_upstreams_and_initial_policy(self) -> None:
         review = self._strict_json(self.REVIEW_RELATIVE)
@@ -1235,8 +1283,6 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                 self.assertEqual(record["upstreamStatus"], "unresolved")
                 for field in (
                     "affectedApplications",
-                    "developmentDependencies",
-                    "externalDependencies",
                     "regressionProbeIds",
                 ):
                     self.assertEqual(
@@ -1244,6 +1290,26 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                         sorted(record[field], key=lambda value: value.encode("ascii")),
                     )
                     self.assertEqual(len(record[field]), len(set(record[field])))
+                evidence_and_dependencies = record["evidenceAndDependencies"]
+                self.assertEqual(
+                    evidence_and_dependencies,
+                    sorted(
+                        evidence_and_dependencies,
+                        key=lambda item: (
+                            item["kind"].encode("ascii"),
+                            item["value"].encode("ascii"),
+                        ),
+                    ),
+                )
+                self.assertEqual(
+                    len(evidence_and_dependencies),
+                    len(
+                        {
+                            (item["kind"], item["value"])
+                            for item in evidence_and_dependencies
+                        }
+                    ),
+                )
                 self.assertEqual(
                     [item["path"] for item in record["preimages"]],
                     sorted(
@@ -1283,10 +1349,15 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             == "patches/wine-windowscodecs-bilinear-scaler.patch"
         )
         retained_record["patchLicense"] = {
-            "evidenceLocators": ["https://example.invalid/patch-license"],
             "spdxExpression": "LicenseRef-Reviewed-Patch",
             "status": "reviewed",
         }
+        retained_record["evidenceAndDependencies"] = [
+            {
+                "kind": "patch-license",
+                "value": "https://example.invalid/patch-license",
+            }
+        ]
         retained_record["reason"] = None
         retained_record["regressionProbeIds"] = ["wine-scaler-review-probe"]
         retained_record["releaseCondition"] = None
@@ -1296,6 +1367,20 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
         retained_record["regressionProbeIds"] = []
         with self.assertRaises(AssertionError):
             MigrationSchemaTests._assert_schema_instance_valid(retained, schema, schema)
+
+        def reviewed_without_evidence(value: dict[str, object]) -> None:
+            value["records"][0]["patchLicense"] = {
+                "spdxExpression": "LicenseRef-Reviewed-Patch",
+                "status": "reviewed",
+            }
+
+        def unresolved_with_license_evidence(value: dict[str, object]) -> None:
+            value["records"][0]["evidenceAndDependencies"] = [
+                {
+                    "kind": "patch-license",
+                    "value": "https://example.invalid/patch-license",
+                }
+            ]
 
         mutants = {
             "unknown-field": lambda value: value["records"][0].__setitem__(
@@ -1308,6 +1393,8 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             "reviewed-without-spdx": lambda value: value["records"][0].__setitem__(
                 "patchLicense", {"status": "reviewed"}
             ),
+            "reviewed-without-license-evidence": reviewed_without_evidence,
+            "unresolved-with-license-evidence": unresolved_with_license_evidence,
             "reviewed-author-with-null-evidence": lambda value: value["records"][
                 0
             ].__setitem__(
@@ -1334,6 +1421,40 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                     MigrationSchemaTests._assert_schema_instance_valid(
                         mutant, schema, schema
                     )
+
+    def test_patch_review_combined_evidence_and_dependencies_are_bounded(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        record = next(
+            item
+            for item in review["records"]
+            if item["sourcePath"]
+            == "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        record["patchLicense"] = {
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        record["evidenceAndDependencies"] = [
+            {
+                "kind": "patch-license",
+                "value": f"https://example.invalid/patch-license/{index:03d}",
+            }
+            for index in range(128)
+        ]
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        record["evidenceAndDependencies"].append(
+            {"kind": "external-dependency", "value": "one-more-dependency"}
+        )
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        weakened_schema = copy.deepcopy(schema)
+        weakened_schema["$defs"]["evidenceAndDependencies"]["maxItems"] = 129
+        MigrationSchemaTests._assert_schema_instance_valid(
+            review, weakened_schema, weakened_schema
+        )
 
 
 class MacWinConversionModelTests(unittest.TestCase):

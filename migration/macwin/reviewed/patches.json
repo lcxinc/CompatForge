@@ -6,8 +6,7 @@
         "jasp-desktop"
       ],
       "byteSize": 3150,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "d857ab8951738192873ebd328af7ff298685dc7b",
       "gitMode": "100644",
       "patchAuthor": {
@@ -60,8 +59,7 @@
         "jasp-desktop"
       ],
       "byteSize": 2818,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "15b1f3265d99dfd1c755f4599e007a84a6bd942e",
       "gitMode": "100644",
       "patchAuthor": {
@@ -114,8 +112,7 @@
         "jasp-desktop"
       ],
       "byteSize": 1564,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "410baebe054d53769e695b524d8ac05c7f8b39c5",
       "gitMode": "100644",
       "patchAuthor": {
@@ -163,12 +160,19 @@
         "jasp-desktop"
       ],
       "byteSize": 6232,
-      "developmentDependencies": [
-        "MACWIN_JASP_LIBARCHIVE_PREFIX",
-        "MACWIN_JASP_RENV_PACKAGE"
-      ],
-      "externalDependencies": [
-        "https://packagemanager.posit.co/cran/latest"
+      "evidenceAndDependencies": [
+        {
+          "kind": "development-dependency",
+          "value": "MACWIN_JASP_LIBARCHIVE_PREFIX"
+        },
+        {
+          "kind": "development-dependency",
+          "value": "MACWIN_JASP_RENV_PACKAGE"
+        },
+        {
+          "kind": "external-dependency",
+          "value": "https://packagemanager.posit.co/cran/latest"
+        }
       ],
       "gitBlobOid": "34859d87080d72400b31c8362b86bfb27c18f682",
       "gitMode": "100644",
@@ -226,8 +230,7 @@
         "winui"
       ],
       "byteSize": 252039,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "9eee08ae4986a426e306867d0d29376a9caa43f1",
       "gitMode": "100644",
       "patchAuthor": {
@@ -470,8 +473,7 @@
         "wine"
       ],
       "byteSize": 56127,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "f2b1b9c2aa3500fc7a990ea1ca6f76e81918c643",
       "gitMode": "100644",
       "patchAuthor": {
@@ -576,8 +578,7 @@
         "wine"
       ],
       "byteSize": 7601,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "2a08ba06f6355b7ca947ea86c4d3a17b727466f1",
       "gitMode": "100644",
       "patchAuthor": {
@@ -646,8 +647,7 @@
         "wine"
       ],
       "byteSize": 38643,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "8c4bde813e0edfe37f0e66df54590f5deb527fc8",
       "gitMode": "100644",
       "patchAuthor": {
@@ -716,8 +716,7 @@
         "wine"
       ],
       "byteSize": 84027,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "edbae962c02e6b9adbf16078c9cf8304745878db",
       "gitMode": "100644",
       "patchAuthor": {
@@ -792,8 +791,7 @@
         "wine"
       ],
       "byteSize": 6696,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "3578a77a8a6a51fb88ad9674914907e01b2b9e02",
       "gitMode": "100644",
       "patchAuthor": {
@@ -844,8 +842,7 @@
         "winui"
       ],
       "byteSize": 46781,
-      "developmentDependencies": [],
-      "externalDependencies": [],
+      "evidenceAndDependencies": [],
       "gitBlobOid": "e800f7d3600455aba870119697e184f212a6610b",
       "gitMode": "100644",
       "patchAuthor": {

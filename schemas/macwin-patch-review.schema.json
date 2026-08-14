@@ -9,13 +9,51 @@
       "type": "array",
       "uniqueItems": true
     },
-    "dependencies": {
+    "evidenceAndDependencies": {
       "items": {
-        "$ref": "#/$defs/evidenceText"
+        "$ref": "#/$defs/evidenceOrDependency"
       },
       "maxItems": 128,
       "type": "array",
       "uniqueItems": true
+    },
+    "evidenceOrDependency": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "patch-license"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/httpsEvidence"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "patch-license",
+            "external-dependency",
+            "development-dependency"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/evidenceText"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
     },
     "evidenceText": {
       "maxLength": 2048,
@@ -156,16 +194,12 @@
           },
           "then": {
             "properties": {
-              "evidenceLocators": {
-                "minItems": 1
-              },
               "spdxExpression": {
                 "$ref": "#/$defs/spdxExpression"
               }
             },
             "required": [
-              "spdxExpression",
-              "evidenceLocators"
+              "spdxExpression"
             ]
           }
         },
@@ -179,9 +213,6 @@
           },
           "then": {
             "properties": {
-              "evidenceLocators": {
-                "maxItems": 0
-              },
               "spdxExpression": {
                 "const": null
               }
@@ -190,14 +221,6 @@
         }
       ],
       "properties": {
-        "evidenceLocators": {
-          "items": {
-            "$ref": "#/$defs/httpsEvidence"
-          },
-          "maxItems": 128,
-          "type": "array",
-          "uniqueItems": true
-        },
         "spdxExpression": {
           "maxLength": 256,
           "minLength": 1,
@@ -345,11 +368,14 @@
           },
           "then": {
             "properties": {
-              "developmentDependencies": {
-                "maxItems": 0
-              },
-              "externalDependencies": {
-                "maxItems": 0
+              "evidenceAndDependencies": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "const": "patch-license"
+                    }
+                  }
+                }
               },
               "patchLicense": {
                 "properties": {
@@ -411,6 +437,61 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "patchLicense": {
+                "properties": {
+                  "status": {
+                    "const": "reviewed"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidenceAndDependencies": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "patch-license"
+                    }
+                  }
+                },
+                "minContains": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "patchLicense": {
+                "properties": {
+                  "status": {
+                    "const": "unresolved"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidenceAndDependencies": {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "const": "patch-license"
+                    }
+                  }
+                },
+                "maxContains": 0,
+                "minContains": 0
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -422,11 +503,8 @@
           "minimum": 1,
           "type": "integer"
         },
-        "developmentDependencies": {
-          "$ref": "#/$defs/dependencies"
-        },
-        "externalDependencies": {
-          "$ref": "#/$defs/dependencies"
+        "evidenceAndDependencies": {
+          "$ref": "#/$defs/evidenceAndDependencies"
         },
         "gitBlobOid": {
           "$ref": "#/$defs/gitOid"
@@ -525,8 +603,7 @@
         "patchAuthor",
         "projectLicense",
         "patchLicense",
-        "externalDependencies",
-        "developmentDependencies",
+        "evidenceAndDependencies",
         "upstreamStatus",
         "reviewDisposition",
         "reason",
