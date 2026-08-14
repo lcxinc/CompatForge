@@ -860,9 +860,11 @@ class MigrationSchemaTests(unittest.TestCase):
             cls._assert_schema_instance_valid(value, target, root)
             return
 
-        if "const" in schema and value != schema["const"]:
+        if "const" in schema and not cls._json_values_equal(value, schema["const"]):
             raise AssertionError("const mismatch")
-        if "enum" in schema and value not in schema["enum"]:
+        if "enum" in schema and not any(
+            cls._json_values_equal(value, candidate) for candidate in schema["enum"]
+        ):
             raise AssertionError("enum mismatch")
 
         declared_type = schema.get("type")
@@ -953,6 +955,41 @@ class MigrationSchemaTests(unittest.TestCase):
         except AssertionError:
             return False
         return True
+
+    @classmethod
+    def _json_values_equal(cls, left: object, right: object) -> bool:
+        if left is None or right is None:
+            return left is right
+        if type(left) is bool or type(right) is bool:
+            return type(left) is bool and type(right) is bool and left is right
+        if type(left) in (int, float) or type(right) in (int, float):
+            return (
+                type(left) in (int, float)
+                and type(right) in (int, float)
+                and left == right
+            )
+        if type(left) is str or type(right) is str:
+            return type(left) is str and type(right) is str and left == right
+        if type(left) is list or type(right) is list:
+            return (
+                type(left) is list
+                and type(right) is list
+                and len(left) == len(right)
+                and all(
+                    cls._json_values_equal(left_item, right_item)
+                    for left_item, right_item in zip(left, right, strict=True)
+                )
+            )
+        if type(left) is dict or type(right) is dict:
+            return (
+                type(left) is dict
+                and type(right) is dict
+                and left.keys() == right.keys()
+                and all(
+                    cls._json_values_equal(left[key], right[key]) for key in left
+                )
+            )
+        return False
 
     @staticmethod
     def _matches_json_type(value: object, declared: object) -> bool:
@@ -1107,6 +1144,9 @@ class MigrationSchemaTests(unittest.TestCase):
 
 
 class MacWinPatchProvenanceTests(unittest.TestCase):
+    APPROVED_PATCH_REVIEW_SHA256 = (
+        "38c54730634616bdc0b6a82aa5a5b57bb1c0d6da17d429897cd8da2414bc7783"
+    )
     REVIEW_RELATIVE = PurePosixPath("migration/macwin/reviewed/patches.json")
     SCHEMA_RELATIVE = PurePosixPath("schemas/macwin-patch-review.schema.json")
 
@@ -1116,6 +1156,263 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
             (ROOT / relative).read_bytes(),
             label="Mac-Win patch review",
         )
+
+    def _assert_approved_review_seal(self, raw: bytes) -> None:
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(), self.APPROVED_PATCH_REVIEW_SHA256
+        )
+
+    def _retained_review(
+        self, source_path: str
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        record = next(
+            item for item in review["records"] if item["sourcePath"] == source_path
+        )
+        record["evidenceAndDependencies"] = [
+            *record["evidenceAndDependencies"],
+            {
+                "kind": "patch-license",
+                "value": "https://example.invalid/patch-license",
+            },
+        ]
+        record["patchLicense"] = {
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        record["reason"] = None
+        record["regressionProbeIds"] = ["reviewed-patch-probe"]
+        record["releaseCondition"] = None
+        record["reviewDisposition"] = "retained"
+        record["upstreamStatus"] = "local-only"
+        return review, schema, record
+
+    def test_patch_review_has_literal_seal_and_casefold_unique_paths(self) -> None:
+        common = _load_macwin_asset_common()
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        review = common.parse_json_bytes(raw, label="Mac-Win patch review")
+        self._assert_approved_review_seal(raw)
+
+        source_paths = [record["sourcePath"] for record in review["records"]]
+        self.assertEqual(
+            len(source_paths), len({path.casefold() for path in source_paths})
+        )
+        for record in review["records"]:
+            preimage_paths = [item["path"] for item in record["preimages"]]
+            self.assertEqual(
+                len(preimage_paths),
+                len({path.casefold() for path in preimage_paths}),
+                record["sourcePath"],
+            )
+
+        def mutate_source_oid(value: dict[str, object]) -> None:
+            value["records"][0]["gitBlobOid"] = "f" * 40
+
+        def mutate_upstream_oid(value: dict[str, object]) -> None:
+            value["records"][0]["upstream"]["commit"] = "0" * 40
+
+        def mutate_source_path_case(value: dict[str, object]) -> None:
+            value["records"][0]["sourcePath"] = value["records"][0][
+                "sourcePath"
+            ].upper()
+
+        def target_preimage(value: dict[str, object]) -> dict[str, object]:
+            record = next(
+                item
+                for item in value["records"]
+                if item["sourcePath"]
+                == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+            )
+            return record["preimages"][0]
+
+        def mutate_preimage_path(value: dict[str, object]) -> None:
+            preimage = target_preimage(value)
+            preimage["path"] = preimage["path"].upper()
+
+        def mutate_preimage_oid(value: dict[str, object]) -> None:
+            target_preimage(value)["upstreamBlobOid"] = "f" * 40
+
+        def mutate_preimage_result(value: dict[str, object]) -> None:
+            target_preimage(value)["result"] = "unproven"
+
+        def mutate_tag_object(value: dict[str, object]) -> None:
+            wine = next(
+                item
+                for item in value["records"]
+                if item["sourcePath"].startswith("patches/wine-")
+            )
+            wine["upstream"]["tagObject"] = "0" * 40
+
+        for name, mutate in {
+            "source-oid": mutate_source_oid,
+            "upstream-oid": mutate_upstream_oid,
+            "source-path-case": mutate_source_path_case,
+            "preimage-path-case": mutate_preimage_path,
+            "preimage-oid": mutate_preimage_oid,
+            "preimage-result": mutate_preimage_result,
+            "tag-object": mutate_tag_object,
+        }.items():
+            mutant = copy.deepcopy(review)
+            mutate(mutant)
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    self._assert_approved_review_seal(common.canonical_json_bytes(mutant))
+
+    def test_retained_review_preserves_typed_dependencies(self) -> None:
+        review, schema, record = self._retained_review(
+            "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        self.assertEqual(
+            {item["kind"] for item in record["evidenceAndDependencies"]},
+            {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            },
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_retained_review_accepts_only_proven_existing_or_added_preimages(
+        self,
+    ) -> None:
+        review, schema, _record = self._retained_review(
+            "patches/wine-windows-graphics-imaging.patch"
+        )
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        for result in ("mismatched", "unproven"):
+            mutant = copy.deepcopy(review)
+            record = next(
+                item
+                for item in mutant["records"]
+                if item["sourcePath"]
+                == "patches/wine-windows-graphics-imaging.patch"
+            )
+            record["preimages"][0]["result"] = result
+            with self.subTest(result=result):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_project_license_boolean_rejects_integer(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        review["records"][0]["projectLicense"]["contextOnly"] = 1
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+    def test_schema_oracle_const_and_enum_use_json_equality(self) -> None:
+        cases = (
+            (True, True, True),
+            (False, False, True),
+            (True, 1, False),
+            (False, 0, False),
+            (1, 1.0, True),
+            ([True], [1], False),
+            ({"nested": False}, {"nested": 0}, False),
+            ({"a": [1, True]}, {"a": [1.0, True]}, True),
+            ([1, 2], [2, 1], False),
+        )
+        for left, right, expected in cases:
+            with self.subTest(left=left, right=right):
+                self.assertIs(
+                    MigrationSchemaTests._json_values_equal(left, right), expected
+                )
+
+    def test_https_evidence_rejects_unsafe_locators(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        invalid = (
+            "https:///missing-host",
+            "https://user@example.com/path",
+            "https://example.com\\backslash",
+            "https://example.com/white space",
+            "https://example.com/\x7f",
+            "https://example.com/\x1b",
+            "https://example.com/\u202eoverride",
+            "https:// example.com/path",
+        )
+        for locator in invalid:
+            mutant = copy.deepcopy(review)
+            mutant["records"][0]["upstream"]["repository"] = locator
+            with self.subTest(locator=repr(locator)):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+        external = copy.deepcopy(review)
+        external_record = next(
+            record
+            for record in external["records"]
+            if record["sourcePath"]
+            == "patches/jasp-0.97.1-local-macos-build-configure.patch"
+        )
+        external_entry = next(
+            item
+            for item in external_record["evidenceAndDependencies"]
+            if item["kind"] == "external-dependency"
+        )
+        external_entry["value"] = "https:///missing-host"
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(
+                external, schema, schema
+            )
+
+    def test_narratives_reject_controls_and_non_ascii(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        mutations = (
+            ("purpose", "unsafe \x1b[31m purpose"),
+            ("purpose", "unsafe \u202e purpose"),
+            ("releaseCondition", "unsafe \x1b[31m release"),
+            ("releaseCondition", "unsafe\nrelease"),
+        )
+        for field, value in mutations:
+            mutant = copy.deepcopy(review)
+            mutant["records"][0][field] = value
+            with self.subTest(field=field, value=repr(value)):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_upstream_reference_kind_binds_tag_object(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        mutants = []
+        jasp = copy.deepcopy(review)
+        jasp["records"][0]["upstream"]["tagObject"] = "f" * 40
+        mutants.append(("plain-tag-with-object", jasp))
+        wine = copy.deepcopy(review)
+        wine_record = next(
+            record
+            for record in wine["records"]
+            if record["sourcePath"].startswith("patches/wine-")
+        )
+        wine_record["upstream"]["tagObject"] = None
+        mutants.append(("annotated-tag-without-object", wine))
+        for name, mutant in mutants:
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
+
+    def test_project_license_evidence_uses_commit_permalinks(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        expected = {
+            "jasp": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
+            "wine": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
+        }
+        for record in review["records"]:
+            family = "jasp" if record["sourcePath"].startswith("patches/jasp-") else "wine"
+            with self.subTest(sourcePath=record["sourcePath"]):
+                self.assertEqual(
+                    record["projectLicense"]["evidenceLocator"], expected[family]
+                )
 
     def test_patch_review_schema_is_closed_and_bounded(self) -> None:
         schema = self._strict_json(self.SCHEMA_RELATIVE)
@@ -1445,7 +1742,10 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
         MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
 
         record["evidenceAndDependencies"].append(
-            {"kind": "external-dependency", "value": "one-more-dependency"}
+            {
+                "kind": "external-dependency",
+                "value": "https://example.invalid/one-more-dependency",
+            }
         )
         with self.assertRaises(AssertionError):
             MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)

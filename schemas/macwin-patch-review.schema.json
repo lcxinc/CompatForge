@@ -24,7 +24,10 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "patch-license"
+                "enum": [
+                  "patch-license",
+                  "external-dependency"
+                ]
               }
             }
           },
@@ -75,14 +78,20 @@
     },
     "httpsEvidence": {
       "maxLength": 2048,
-      "minLength": 9,
-      "pattern": "^https://[^\\s\\x00-\\x1f]{1,2040}(?![\\s\\S])",
+      "minLength": 12,
+      "pattern": "^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@%+-]+)+/?)?(?![\\s\\S])",
       "type": "string"
     },
     "identifier": {
       "maxLength": 128,
       "minLength": 1,
       "pattern": "^[a-z0-9][a-z0-9._-]{0,127}(?![\\s\\S])",
+      "type": "string"
+    },
+    "narrative": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "pattern": "^[\\x20-\\x7e]{1,2048}(?![\\s\\S])",
       "type": "string"
     },
     "patchAuthor": {
@@ -368,15 +377,6 @@
           },
           "then": {
             "properties": {
-              "evidenceAndDependencies": {
-                "items": {
-                  "properties": {
-                    "kind": {
-                      "const": "patch-license"
-                    }
-                  }
-                }
-              },
               "patchLicense": {
                 "properties": {
                   "status": {
@@ -388,7 +388,10 @@
                 "items": {
                   "properties": {
                     "result": {
-                      "const": "matched"
+                      "enum": [
+                        "matched",
+                        "added"
+                      ]
                     }
                   }
                 },
@@ -528,9 +531,7 @@
           "$ref": "#/$defs/projectLicense"
         },
         "purpose": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string"
+          "$ref": "#/$defs/narrative"
         },
         "reason": {
           "enum": [
@@ -551,6 +552,7 @@
         "releaseCondition": {
           "maxLength": 512,
           "minLength": 1,
+          "pattern": "^[\\x20-\\x7e]{1,512}(?![\\s\\S])",
           "type": [
             "string",
             "null"
@@ -571,6 +573,7 @@
         "subject": {
           "maxLength": 256,
           "minLength": 1,
+          "pattern": "^[\\x20-\\x7e]{1,256}(?![\\s\\S])",
           "type": [
             "string",
             "null"
@@ -679,6 +682,40 @@
     },
     "upstreamIdentity": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "referenceKind": {
+                "const": "annotated-tag"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tagObject": {
+                "$ref": "#/$defs/gitOid"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "referenceKind": {
+                "const": "tag"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "tagObject": {
+                "const": null
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "commit": {
           "$ref": "#/$defs/gitOid"

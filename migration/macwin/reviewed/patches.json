@@ -34,7 +34,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
         "spdxExpression": "AGPL-3.0-or-later"
       },
       "purpose": "Avoid nested workspace resets while creating a JASP dataset.",
@@ -87,7 +87,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
         "spdxExpression": "AGPL-3.0-or-later"
       },
       "purpose": "Avoid nested model resets in JASP dataset proxy models.",
@@ -134,7 +134,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
         "spdxExpression": "AGPL-3.0-or-later"
       },
       "purpose": "Initialize JASP EngineSync IPC state before resetting a dataset.",
@@ -204,7 +204,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2/Docs/development/jasp-licensing.md",
         "spdxExpression": "AGPL-3.0-or-later"
       },
       "purpose": "Configure local macOS dependencies for the JASP build.",
@@ -447,7 +447,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Add Wine host-composition behavior needed by DirectComposition and WinUI.",
@@ -552,7 +552,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Integrate selected Wine dialogs with native macOS UI behavior.",
@@ -621,7 +621,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Add a Wine shell32 virtual desktop manager implementation.",
@@ -690,7 +690,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Expand Wine Windows.Data.Json behavior for modern applications.",
@@ -765,7 +765,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Add Wine Windows.Graphics.Imaging API behavior.",
@@ -816,7 +816,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Add bilinear scaling behavior to Wine WindowsCodecs.",
@@ -957,7 +957,7 @@
       ],
       "projectLicense": {
         "contextOnly": true,
-        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/f6c044e1890e84a4aa5e77e76ba7276a615630e1/LICENSE",
         "spdxExpression": "LGPL-2.1-or-later"
       },
       "purpose": "Expand Wine pointer-input behavior needed by WinUI applications.",
