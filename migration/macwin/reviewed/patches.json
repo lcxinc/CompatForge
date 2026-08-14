@@ -1,0 +1,994 @@
+{
+  "recordCount": 11,
+  "records": [
+    {
+      "affectedApplications": [
+        "jasp-desktop"
+      ],
+      "byteSize": 3150,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "d857ab8951738192873ebd328af7ff298685dc7b",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "displayName": "MacWin Compatibility Probe",
+        "email": "dev.local.macwin@local",
+        "evidence": "frozen-patch-mail-header",
+        "status": "reviewed"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": null,
+          "path": "Desktop/data/datasetpackage.cpp",
+          "result": "unproven",
+          "upstreamBlobOid": "8f02966eb6f4c26dd7c0d6a459916ee11527ba9b"
+        },
+        {
+          "patchOldBlob": null,
+          "path": "Desktop/data/datasetpackage.h",
+          "result": "unproven",
+          "upstreamBlobOid": "5cf8f7b95fb9e6124192dace356629a0e5bf3c64"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "spdxExpression": "AGPL-3.0-or-later"
+      },
+      "purpose": "Avoid nested workspace resets while creating a JASP dataset.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+      "sourceSha256": "c401642d2c4ba3a5a9994b596351f02ab077544c784c6fc33080b5caba66ccd3",
+      "subject": "[PATCH] Avoid nested workspace reset during dataset creation",
+      "upstream": {
+        "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+        "reference": "v0.97.1",
+        "referenceKind": "tag",
+        "repository": "https://github.com/jasp-stats/jasp-desktop",
+        "tagObject": null
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "jasp-desktop"
+      ],
+      "byteSize": 2818,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "15b1f3265d99dfd1c755f4599e007a84a6bd942e",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "displayName": "MacWin Compatibility Probe",
+        "email": "dev.local.macwin@local",
+        "evidence": "frozen-patch-mail-header",
+        "status": "reviewed"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": null,
+          "path": "Desktop/data/datasetpackagesubnodemodel.cpp",
+          "result": "unproven",
+          "upstreamBlobOid": "f6bcc9e033be9e6982b49a63345b69b819718b4f"
+        },
+        {
+          "patchOldBlob": null,
+          "path": "Desktop/data/datasetpackagesubnodemodel.h",
+          "result": "unproven",
+          "upstreamBlobOid": "5c077297244e9574d2e522b672ac97f4abe79ac3"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "spdxExpression": "AGPL-3.0-or-later"
+      },
+      "purpose": "Avoid nested model resets in JASP dataset proxy models.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/jasp-0.97.1-fix-proxy-model-reset.patch",
+      "sourceSha256": "d749fe893a8c43a933f1376d8aa988c80c4898e76c776fa61ad63323e1755bc9",
+      "subject": "[PATCH] Avoid nested resets in dataset proxy models",
+      "upstream": {
+        "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+        "reference": "v0.97.1",
+        "referenceKind": "tag",
+        "repository": "https://github.com/jasp-stats/jasp-desktop",
+        "tagObject": null
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "jasp-desktop"
+      ],
+      "byteSize": 1564,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "410baebe054d53769e695b524d8ac05c7f8b39c5",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "displayName": "MacWin Compatibility Probe",
+        "email": "dev.local.macwin@local",
+        "evidence": "frozen-patch-mail-header",
+        "status": "reviewed"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "0000000",
+          "path": "Desktop/engine/enginesync.cpp",
+          "result": "unproven",
+          "upstreamBlobOid": "8970f66da071f803e1e37b6ef6ad7407817ae771"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "spdxExpression": "AGPL-3.0-or-later"
+      },
+      "purpose": "Initialize JASP EngineSync IPC state before resetting a dataset.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch",
+      "sourceSha256": "be720e3e37b63e996c8971fc86d9eff407dbedf56ee569292f055fa167d3e5cd",
+      "subject": "[PATCH] Initialize EngineSync IPC state before dataset reset",
+      "upstream": {
+        "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+        "reference": "v0.97.1",
+        "referenceKind": "tag",
+        "repository": "https://github.com/jasp-stats/jasp-desktop",
+        "tagObject": null
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "jasp-build",
+        "jasp-desktop"
+      ],
+      "byteSize": 6232,
+      "developmentDependencies": [
+        "MACWIN_JASP_LIBARCHIVE_PREFIX",
+        "MACWIN_JASP_RENV_PACKAGE"
+      ],
+      "externalDependencies": [
+        "https://packagemanager.posit.co/cran/latest"
+      ],
+      "gitBlobOid": "34859d87080d72400b31c8362b86bfb27c18f682",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "6003f48",
+          "path": "Modules/install-renv.R.in",
+          "result": "matched",
+          "upstreamBlobOid": "6003f481c7ec35f98cecdbf0a09de9171fd9b2c1"
+        },
+        {
+          "patchOldBlob": "28ca3e2",
+          "path": "Modules/install-tools.R.in",
+          "result": "matched",
+          "upstreamBlobOid": "28ca3e2141c5be3ddde989ff6e716f31748a17ea"
+        },
+        {
+          "patchOldBlob": "9a34b9f",
+          "path": "Tools/CMake/R.cmake",
+          "result": "matched",
+          "upstreamBlobOid": "9a34b9f97c30b353982eefffa4ecc83ef9bf0d33"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-licensing.md",
+        "spdxExpression": "AGPL-3.0-or-later"
+      },
+      "purpose": "Configure local macOS dependencies for the JASP build.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/jasp-0.97.1-local-macos-build-configure.patch",
+      "sourceSha256": "bd2f4f8a2376775ba8274027b1c3ee0563bef94cbd726faff486a49ef56266e1",
+      "subject": null,
+      "upstream": {
+        "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+        "reference": "v0.97.1",
+        "referenceKind": "tag",
+        "repository": "https://github.com/jasp-stats/jasp-desktop",
+        "tagObject": null
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "wine",
+        "winui"
+      ],
+      "byteSize": 252039,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "9eee08ae4986a426e306867d0d29376a9caa43f1",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "c6ab60c1bc4",
+          "path": "dlls/d2d1/bitmap.c",
+          "result": "matched",
+          "upstreamBlobOid": "c6ab60c1bc4593e5911efe8d406323751763fc8e"
+        },
+        {
+          "patchOldBlob": "d8a3678562a",
+          "path": "dlls/d2d1/d2d1_private.h",
+          "result": "mismatched",
+          "upstreamBlobOid": "9c78aaf92e2fafac4099fd1b18874da1a72045ae"
+        },
+        {
+          "patchOldBlob": "5e28bf2c162",
+          "path": "dlls/d2d1/device.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "b3560f09c126717801f69097f82ab77548092754"
+        },
+        {
+          "patchOldBlob": "680e17c02d3",
+          "path": "dlls/d2d1/private_iface.idl",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "d9cb912a034",
+          "path": "dlls/d3d11/d3d11_private.h",
+          "result": "matched",
+          "upstreamBlobOid": "d9cb912a0348300e4049a63cc9dc29dcbe0f201c"
+        },
+        {
+          "patchOldBlob": "b70681792ab",
+          "path": "dlls/d3d11/device.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "e1a846698e6739e571227d35df10ca6e92c7912a"
+        },
+        {
+          "patchOldBlob": "f5c259191b4",
+          "path": "dlls/d3dcompiler_43/compiler.c",
+          "result": "matched",
+          "upstreamBlobOid": "f5c259191b4d14e4ea3c039a4c1fc545b738b7e4"
+        },
+        {
+          "patchOldBlob": "e6a527820c9",
+          "path": "dlls/d3dcompiler_43/d3dcompiler_private.h",
+          "result": "matched",
+          "upstreamBlobOid": "e6a527820c9a4773192c9a7d64ea55add74c15b4"
+        },
+        {
+          "patchOldBlob": "ddc953b0017",
+          "path": "dlls/d3dcompiler_43/linker.c",
+          "result": "matched",
+          "upstreamBlobOid": "ddc953b0017cafce71474bdd18e7bc6634c204fe"
+        },
+        {
+          "patchOldBlob": "087bcc22da2",
+          "path": "dlls/d3dcompiler_43/tests/hlsl_d3d11.c",
+          "result": "matched",
+          "upstreamBlobOid": "087bcc22da2f90256efa07e2d09915d90783ba61"
+        },
+        {
+          "patchOldBlob": "d6eb1675290",
+          "path": "dlls/dcomp/dcomp.spec",
+          "result": "mismatched",
+          "upstreamBlobOid": "2120ce8b6f6292ad9f1d8391728de749c6c7cf2d"
+        },
+        {
+          "patchOldBlob": "6d7b1a5d109",
+          "path": "dlls/dcomp/dcomp_private.h",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "3f67e6dbfb8",
+          "path": "dlls/dcomp/dcomp_private_iface.idl",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "00426a74d25",
+          "path": "dlls/dcomp/device.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "2744d758e918871a666e57e30cfd401f35aad351"
+        },
+        {
+          "patchOldBlob": "b38c61bfbfa",
+          "path": "dlls/dcomp/surface.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "5442a29976c",
+          "path": "dlls/dcomp/target.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "251587de15b",
+          "path": "dlls/dcomp/tests/dcomp.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "0159be1d385",
+          "path": "dlls/dcomp/visual.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "48e32e950e9",
+          "path": "dlls/dxgi/resource.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "67921de005b259265ffbb279dbea21d64f23d42a"
+        },
+        {
+          "patchOldBlob": "c6021dde98f",
+          "path": "dlls/win32u/bitblt.c",
+          "result": "matched",
+          "upstreamBlobOid": "c6021dde98fbb3711936749f415218415b269a1c"
+        },
+        {
+          "patchOldBlob": "1b33976f333",
+          "path": "dlls/win32u/d3dkmt.c",
+          "result": "matched",
+          "upstreamBlobOid": "1b33976f333e79b6aa588695cace200dbf90d298"
+        },
+        {
+          "patchOldBlob": "7a33089b73b",
+          "path": "dlls/win32u/tests/d3dkmt.c",
+          "result": "matched",
+          "upstreamBlobOid": "7a33089b73b1a8af6317d2e742186174215459a2"
+        },
+        {
+          "patchOldBlob": "0b4078118da",
+          "path": "dlls/windows.ui/classes.idl",
+          "result": "mismatched",
+          "upstreamBlobOid": "0f79fdc8f6139d35aa599266354dc41fc6a49674"
+        },
+        {
+          "patchOldBlob": "a8414ac7364",
+          "path": "dlls/windows.ui/composition.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "6ca9fa7faf4",
+          "path": "dlls/windows.ui/main.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "9c766610dd6996ecb109a5f27d7cfb1255882e3e"
+        },
+        {
+          "patchOldBlob": "7132c2d0aa1",
+          "path": "dlls/windows.ui/private.h",
+          "result": "mismatched",
+          "upstreamBlobOid": "64566fd053ca54923be00430fceafd88200981d7"
+        },
+        {
+          "patchOldBlob": "c494f813b1b",
+          "path": "dlls/windows.ui/tests/composition.c",
+          "result": "unproven",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "9614c179dd3",
+          "path": "dlls/windows.ui/tests/uisettings.c",
+          "result": "matched",
+          "upstreamBlobOid": "9614c179dd327c76ad3cb65b5aa82295fbc09e83"
+        },
+        {
+          "patchOldBlob": "c816ed83d20",
+          "path": "dlls/windows.ui/uisettings.c",
+          "result": "matched",
+          "upstreamBlobOid": "c816ed83d20a806b3fd9f629effdcfd72f81ed24"
+        },
+        {
+          "patchOldBlob": "7801fb70dcc",
+          "path": "dlls/windows.ui/windows.ui.spec",
+          "result": "matched",
+          "upstreamBlobOid": "7801fb70dcc9127094a3c2e0418f8b6f677ec8ba"
+        },
+        {
+          "patchOldBlob": "9904d947843",
+          "path": "dlls/winemac.drv/cocoa_window.m",
+          "result": "mismatched",
+          "upstreamBlobOid": "6b0ab117cd12f84d1133f0dd53772449bfab7c97"
+        },
+        {
+          "patchOldBlob": "a849918dfa7",
+          "path": "dlls/winemac.drv/surface.c",
+          "result": "matched",
+          "upstreamBlobOid": "a849918dfa75bd9c88e45cccc5bbb1e16889a8f7"
+        },
+        {
+          "patchOldBlob": "a4da022e9aa",
+          "path": "include/ddk/d3dkmthk.h",
+          "result": "matched",
+          "upstreamBlobOid": "a4da022e9aa5b6edbeba3fbca32f1e0255a9a9ed"
+        },
+        {
+          "patchOldBlob": "55379b4ed4d",
+          "path": "include/windows.ui.composition.idl",
+          "result": "mismatched",
+          "upstreamBlobOid": "0eb7e4321c0e47e9ca38e38454d45b259ba87b49"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Add Wine host-composition behavior needed by DirectComposition and WinUI.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-dcomp-winui-host-composition.patch",
+      "sourceSha256": "16ee92f121822f065fc04dc5fff5bde0ba5db6011be8d1ad14651274a7c48155",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "macos-driver",
+        "wine"
+      ],
+      "byteSize": 56127,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "f2b1b9c2aa3500fc7a990ea1ca6f76e81918c643",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "5018eb01ed4",
+          "path": "dlls/comctl32_v6/taskdialog.c",
+          "result": "matched",
+          "upstreamBlobOid": "5018eb01ed413e6daf23c3df39e87e37d4086051"
+        },
+        {
+          "patchOldBlob": "9d573759445",
+          "path": "dlls/comdlg32/filedlg.c",
+          "result": "matched",
+          "upstreamBlobOid": "9d573759445a40619626ca2f31f6c50834c72de6"
+        },
+        {
+          "patchOldBlob": "6e47cb12ca5",
+          "path": "dlls/comdlg32/itemdlg.c",
+          "result": "matched",
+          "upstreamBlobOid": "6e47cb12ca5ee979329ba2cb13d39e8840a47ad2"
+        },
+        {
+          "patchOldBlob": "009f3858c60",
+          "path": "dlls/user32/msgbox.c",
+          "result": "matched",
+          "upstreamBlobOid": "009f3858c608d0915a3c8fa451832a32c8f23fc3"
+        },
+        {
+          "patchOldBlob": "2b38ea732ac",
+          "path": "dlls/win32u/sysparams.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "f0cff127b26cd6747512fe0648168500a1562907"
+        },
+        {
+          "patchOldBlob": "576a2fbd0c5",
+          "path": "dlls/winemac.drv/Makefile.in",
+          "result": "matched",
+          "upstreamBlobOid": "576a2fbd0c5c012f2a9717d5189993afc369794a"
+        },
+        {
+          "patchOldBlob": "00000000000",
+          "path": "dlls/winemac.drv/cocoa_native_ui.m",
+          "result": "added",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "a0f314234b9",
+          "path": "dlls/winemac.drv/gdi.c",
+          "result": "matched",
+          "upstreamBlobOid": "a0f314234b970a3f314cd9a77114d2c9d1118f82"
+        },
+        {
+          "patchOldBlob": "9a91edbe8e3",
+          "path": "dlls/winemac.drv/macdrv_cocoa.h",
+          "result": "matched",
+          "upstreamBlobOid": "9a91edbe8e31aaba42bb054fe242c17e1e272396"
+        },
+        {
+          "patchOldBlob": "96168242cc2",
+          "path": "dlls/winemac.drv/macdrv_main.c",
+          "result": "matched",
+          "upstreamBlobOid": "96168242cc2e86cfe1dedad3ef99e24aa2a913d8"
+        },
+        {
+          "patchOldBlob": "d09ddfaaa63",
+          "path": "include/ntuser.h",
+          "result": "mismatched",
+          "upstreamBlobOid": "2bbf77a4cf1e5040547956d00ffb3324f7480e98"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Integrate selected Wine dialogs with native macOS UI behavior.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-macos-native-ui-integration.patch",
+      "sourceSha256": "6f637c94de14fccce36d0ef2c0a5d8f9c199b86b4fc96b6267a5e5508c285193",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "shell32",
+        "wine"
+      ],
+      "byteSize": 7601,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "2a08ba06f6355b7ca947ea86c4d3a17b727466f1",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "84615e29e3e",
+          "path": "dlls/shell32/Makefile.in",
+          "result": "matched",
+          "upstreamBlobOid": "84615e29e3e1443092201474dc63033c0e16a4b3"
+        },
+        {
+          "patchOldBlob": "877be6bc814",
+          "path": "dlls/shell32/shell32.rgs",
+          "result": "matched",
+          "upstreamBlobOid": "877be6bc814bc0d85b96268202a9d74c7dd847c4"
+        },
+        {
+          "patchOldBlob": "299fc1978fe",
+          "path": "dlls/shell32/shell32_main.h",
+          "result": "matched",
+          "upstreamBlobOid": "299fc1978fe94920478a97fde51b6dbea959df31"
+        },
+        {
+          "patchOldBlob": "fc3f6b032cd",
+          "path": "dlls/shell32/shellole.c",
+          "result": "matched",
+          "upstreamBlobOid": "fc3f6b032cd97f6496b31b0b32e92aa22e713da2"
+        },
+        {
+          "patchOldBlob": "00000000000",
+          "path": "dlls/shell32/virtualdesktop.c",
+          "result": "added",
+          "upstreamBlobOid": null
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Add a Wine shell32 virtual desktop manager implementation.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-shell32-virtual-desktop-manager.patch",
+      "sourceSha256": "aa5c8821a49fe0ef5d9c5bf29ee4061049f8c0457c466f75b134eed287f415fc",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "windows-data-json",
+        "wine"
+      ],
+      "byteSize": 38643,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "8c4bde813e0edfe37f0e66df54590f5deb527fc8",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "1e3890de86d",
+          "path": "dlls/windows.web/json_array.c",
+          "result": "matched",
+          "upstreamBlobOid": "1e3890de86d877d8761994f57005ad58ea55f2d5"
+        },
+        {
+          "patchOldBlob": "a765d5cfd6c",
+          "path": "dlls/windows.web/json_object.c",
+          "result": "matched",
+          "upstreamBlobOid": "a765d5cfd6c126649e72809d879cb7ce84ef8310"
+        },
+        {
+          "patchOldBlob": "857d3630312",
+          "path": "dlls/windows.web/json_value.c",
+          "result": "matched",
+          "upstreamBlobOid": "857d36303120713cfdbcc073faff5858cf85f26d"
+        },
+        {
+          "patchOldBlob": "a023319e909",
+          "path": "dlls/windows.web/tests/web.c",
+          "result": "matched",
+          "upstreamBlobOid": "a023319e909d27542bc05c8fad630ff787dbd4dd"
+        },
+        {
+          "patchOldBlob": "4dfe36d095a",
+          "path": "include/windows.data.json.idl",
+          "result": "matched",
+          "upstreamBlobOid": "4dfe36d095ab61f7ae767910ed49d8bb41a8683d"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Expand Wine Windows.Data.Json behavior for modern applications.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-windows-data-json-modern-apps.patch",
+      "sourceSha256": "4e92cacc906195d0d36b769cce6f0c14297ee6e745151d26fdc1803cc307349f",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "windows-graphics-imaging",
+        "wine"
+      ],
+      "byteSize": 84027,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "edbae962c02e6b9adbf16078c9cf8304745878db",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "ce91ff8f53e",
+          "path": "dlls/windows.graphics/Makefile.in",
+          "result": "matched",
+          "upstreamBlobOid": "ce91ff8f53ed348ba201cd2dd9c4d05494aa99bb"
+        },
+        {
+          "patchOldBlob": "82ab26f70c5",
+          "path": "dlls/windows.graphics/classes.idl",
+          "result": "matched",
+          "upstreamBlobOid": "82ab26f70c5395f380ca58389e2dfefd9d802908"
+        },
+        {
+          "patchOldBlob": "00000000000",
+          "path": "dlls/windows.graphics/imaging.c",
+          "result": "added",
+          "upstreamBlobOid": null
+        },
+        {
+          "patchOldBlob": "25a571975e5",
+          "path": "dlls/windows.graphics/main.c",
+          "result": "matched",
+          "upstreamBlobOid": "25a571975e5c981013d5719624649d107abc86c1"
+        },
+        {
+          "patchOldBlob": "64e2920bb40",
+          "path": "dlls/windows.graphics/private.h",
+          "result": "matched",
+          "upstreamBlobOid": "64e2920bb4045cffb2b38b4fd5882226d4dc3441"
+        },
+        {
+          "patchOldBlob": "5409481f043",
+          "path": "include/windows.graphics.imaging.idl",
+          "result": "matched",
+          "upstreamBlobOid": "5409481f043fa0a59135f8bda236f6e130c2068a"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Add Wine Windows.Graphics.Imaging API behavior.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-windows-graphics-imaging.patch",
+      "sourceSha256": "df6dfeb4a5f6ccb276958243e82bb9ee99afc34bd1e2a2c67897d6cd4d7351c9",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "windowscodecs",
+        "wine"
+      ],
+      "byteSize": 6696,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "3578a77a8a6a51fb88ad9674914907e01b2b9e02",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "3710944c400",
+          "path": "dlls/windowscodecs/scaler.c",
+          "result": "matched",
+          "upstreamBlobOid": "3710944c400f0f7fd4687ffcad7bcd4b9a722d14"
+        },
+        {
+          "patchOldBlob": "b73c0bc740c",
+          "path": "dlls/windowscodecs/tests/bitmap.c",
+          "result": "matched",
+          "upstreamBlobOid": "b73c0bc740c8591b0773eb8ae4c98e4f153c6be5"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Add bilinear scaling behavior to Wine WindowsCodecs.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-windowscodecs-bilinear-scaler.patch",
+      "sourceSha256": "eb33346fd5eb20efceb15385d7156e8b3bfb3181760bcf4e73eb324e871734f8",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    },
+    {
+      "affectedApplications": [
+        "wine",
+        "winui"
+      ],
+      "byteSize": 46781,
+      "developmentDependencies": [],
+      "externalDependencies": [],
+      "gitBlobOid": "e800f7d3600455aba870119697e184f212a6610b",
+      "gitMode": "100644",
+      "patchAuthor": {
+        "status": "unresolved"
+      },
+      "patchLicense": {
+        "status": "unresolved"
+      },
+      "preimages": [
+        {
+          "patchOldBlob": "37ed9428561",
+          "path": "dlls/dinput/tests/device8.c",
+          "result": "matched",
+          "upstreamBlobOid": "37ed942856141b642593e9603962ef62c58c6ab6"
+        },
+        {
+          "patchOldBlob": "48b38166b75",
+          "path": "dlls/user32/input.c",
+          "result": "matched",
+          "upstreamBlobOid": "48b38166b75e6bf4ffdfce1020b4276370a86f38"
+        },
+        {
+          "patchOldBlob": "6333fcb48b4",
+          "path": "dlls/user32/misc.c",
+          "result": "matched",
+          "upstreamBlobOid": "6333fcb48b4e130741bdb8927745f130cb247606"
+        },
+        {
+          "patchOldBlob": "6ad01e82978",
+          "path": "dlls/user32/tests/input.c",
+          "result": "matched",
+          "upstreamBlobOid": "6ad01e829783f08cf8724b34016a7cc1190bd35b"
+        },
+        {
+          "patchOldBlob": "75c1cfd1999",
+          "path": "dlls/user32/user32.spec",
+          "result": "mismatched",
+          "upstreamBlobOid": "fe41f9cb2e70ba1977fbd636189ec91548d4785c"
+        },
+        {
+          "patchOldBlob": "b8c092bf7b8",
+          "path": "dlls/win32u/input.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "733eb604fdcc3e66f9159a137a60dd67e51e485b"
+        },
+        {
+          "patchOldBlob": "edb1d98b3f0",
+          "path": "dlls/win32u/main.c",
+          "result": "matched",
+          "upstreamBlobOid": "edb1d98b3f0a19ded6b5955e51c0bc8a83b33be2"
+        },
+        {
+          "patchOldBlob": "b6cdd3efa0e",
+          "path": "dlls/win32u/message.c",
+          "result": "matched",
+          "upstreamBlobOid": "b6cdd3efa0eafc535d89f7ea427f3e7935a3c94b"
+        },
+        {
+          "patchOldBlob": "978700a37aa",
+          "path": "dlls/win32u/ntuser_private.h",
+          "result": "matched",
+          "upstreamBlobOid": "978700a37aaae8d4cab83a1adfe7144a39665be3"
+        },
+        {
+          "patchOldBlob": "e9f36bdd32b",
+          "path": "dlls/win32u/syscall.c",
+          "result": "matched",
+          "upstreamBlobOid": "e9f36bdd32b29efea3a79a2bb9ca32e37a8b8fbd"
+        },
+        {
+          "patchOldBlob": "79555a271ca",
+          "path": "dlls/win32u/sysparams.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "f0cff127b26cd6747512fe0648168500a1562907"
+        },
+        {
+          "patchOldBlob": "c227f621bb8",
+          "path": "dlls/win32u/tests/win32u.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "4481ffa1b3202985b95dc57427594cae41e6cc2b"
+        },
+        {
+          "patchOldBlob": "12b06a7f36f",
+          "path": "dlls/win32u/win32syscalls.h",
+          "result": "mismatched",
+          "upstreamBlobOid": "3e631c74da1e1bdf9d4c19982f31f1a75dfd7461"
+        },
+        {
+          "patchOldBlob": "6ee409af1d6",
+          "path": "dlls/win32u/win32u.spec",
+          "result": "mismatched",
+          "upstreamBlobOid": "a58fda6af9c23755a0ea75788b04d7446ad3f133"
+        },
+        {
+          "patchOldBlob": "be303ae4d13",
+          "path": "dlls/win32u/win32u_private.h",
+          "result": "matched",
+          "upstreamBlobOid": "be303ae4d131a9898d693f294a52f81130ae1ff0"
+        },
+        {
+          "patchOldBlob": "547cbb9e4c5",
+          "path": "dlls/wow64win/user.c",
+          "result": "mismatched",
+          "upstreamBlobOid": "61c2da3e22861c6253cec59a7c68ec558cb5471b"
+        },
+        {
+          "patchOldBlob": "8955369af8d",
+          "path": "include/ntuser.h",
+          "result": "mismatched",
+          "upstreamBlobOid": "2bbf77a4cf1e5040547956d00ffb3324f7480e98"
+        }
+      ],
+      "projectLicense": {
+        "contextOnly": true,
+        "evidenceLocator": "https://gitlab.winehq.org/wine/wine/-/blob/wine-11.11/LICENSE",
+        "spdxExpression": "LGPL-2.1-or-later"
+      },
+      "purpose": "Expand Wine pointer-input behavior needed by WinUI applications.",
+      "reason": "missing-license",
+      "regressionProbeIds": [],
+      "releaseCondition": "Record patch-specific license evidence and repeat review.",
+      "reviewDisposition": "quarantined",
+      "sourcePath": "patches/wine-winui-pointer-input.patch",
+      "sourceSha256": "cd9cb5da0fddace39c52e5d2d365e4d1366364284b334e58f11067e80e396b70",
+      "subject": null,
+      "upstream": {
+        "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+        "reference": "wine-11.11",
+        "referenceKind": "annotated-tag",
+        "repository": "https://gitlab.winehq.org/wine/wine/",
+        "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e"
+      },
+      "upstreamStatus": "unresolved"
+    }
+  ],
+  "schemaVersion": "1",
+  "source": {
+    "digestAlgorithm": "sha256",
+    "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+    "repository": "a1112/Mac-Win",
+    "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+    "sourceIndexSha256": "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+    "sourceTag": "mw-migration-baseline-db12d5e",
+    "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f"
+  }
+}

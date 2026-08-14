@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import collections
 import concurrent.futures
 import contextlib
 import copy
@@ -390,6 +391,7 @@ class MigrationJsonBoundaryTests(unittest.TestCase):
 class MigrationSchemaTests(unittest.TestCase):
     SCHEMA_NAMES = (
         "macwin-source-pack.schema.json",
+        "macwin-patch-review.schema.json",
         "migration-record.schema.json",
         "quarantine.schema.json",
         "portable-probe.schema.json",
@@ -482,6 +484,11 @@ class MigrationSchemaTests(unittest.TestCase):
         mutations = {
             "macwin-source-pack.schema.json": lambda value: value.__setitem__(
                 "sourceTag", value["sourceTag"] + "\n"
+            ),
+            "macwin-patch-review.schema.json": lambda value: value["records"][
+                0
+            ]["upstream"].__setitem__(
+                "repository", value["records"][0]["upstream"]["repository"] + "\n"
             ),
             "migration-record.schema.json": lambda value: value["records"][0].__setitem__(
                 "sourcePath", value["records"][0]["sourcePath"] + "\n"
@@ -950,6 +957,18 @@ class MigrationSchemaTests(unittest.TestCase):
             return "safe/path.txt"
         if location.endswith("/objectPath"):
             return "objects/sha256/aa/" + ("a" * 62)
+        if location.endswith("/gitOid"):
+            return "a" * 40
+        if location.endswith("/gitObjectPrefix"):
+            return "a" * 7
+        if location.endswith("/zeroGitObjectPrefix"):
+            return "0" * 7
+        if location.endswith("/patchOldBlob"):
+            return "a" * 7
+        if location.endswith(("/upstreamBlobOid", "/tagObject")):
+            return "a" * 40
+        if location.endswith("/httpsEvidence"):
+            return "https://example.invalid/evidence"
         if "sourceCommit" in location or location.endswith("/commit"):
             return "a" * 40
         if "Sha256" in location or location.endswith("/sha256"):
@@ -1061,12 +1080,260 @@ class MigrationSchemaTests(unittest.TestCase):
                 },
                 "assets": [copy.deepcopy(asset) for _ in range(90)],
             },
+            "macwin-patch-review.schema.json": json.loads(
+                (ROOT / "migration/macwin/reviewed/patches.json").read_bytes()
+            ),
             "migration-record.schema.json": {"schemaVersion": "1", "records": [deferred]},
             "quarantine.schema.json": {"schemaVersion": "1", "records": [quarantine]},
             "portable-probe.schema.json": portable,
             "portable-fixture.schema.json": {**copy.deepcopy(portable), "kind": "source"},
             "recipe.schema.json": recipe,
         }
+
+
+class MacWinPatchProvenanceTests(unittest.TestCase):
+    REVIEW_RELATIVE = PurePosixPath("migration/macwin/reviewed/patches.json")
+    SCHEMA_RELATIVE = PurePosixPath("schemas/macwin-patch-review.schema.json")
+
+    def _strict_json(self, relative: PurePosixPath) -> object:
+        common = _load_macwin_asset_common()
+        return common.parse_json_bytes(
+            (ROOT / relative).read_bytes(),
+            label="Mac-Win patch review",
+        )
+
+    def test_patch_review_schema_is_closed_and_bounded(self) -> None:
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            set(schema["properties"]),
+            {"schemaVersion", "source", "recordCount", "records"},
+        )
+        self.assertEqual(
+            set(schema["required"]),
+            {"schemaVersion", "source", "recordCount", "records"},
+        )
+        self.assertEqual(schema["properties"]["recordCount"], {"const": 11})
+        self.assertEqual(schema["properties"]["records"]["minItems"], 11)
+        self.assertEqual(schema["properties"]["records"]["maxItems"], 11)
+        self.assertEqual(schema["$defs"]["preimages"]["maxItems"], 128)
+        self.assertEqual(schema["$defs"]["affectedApplications"]["maxItems"], 32)
+        self.assertEqual(schema["$defs"]["regressionProbeIds"]["maxItems"], 32)
+
+    def test_patch_review_covers_the_exact_source_slice(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        source = self._strict_json(PurePosixPath("migration/macwin/source/index.json"))
+        expected = sorted(
+            (asset for asset in source["assets"] if asset["category"] == "patches"),
+            key=lambda asset: asset["sourcePath"].encode("ascii"),
+        )
+        self.assertEqual(review["recordCount"], 11)
+        self.assertEqual(
+            [record["sourcePath"] for record in review["records"]],
+            [asset["sourcePath"] for asset in expected],
+        )
+        for record, asset in zip(review["records"], expected, strict=True):
+            self.assertEqual(record["sourceSha256"], asset["sha256"])
+            self.assertEqual(record["gitBlobOid"], asset["gitBlobOid"])
+            self.assertEqual(record["gitMode"], asset["gitMode"])
+            self.assertEqual(record["byteSize"], asset["byteSize"])
+
+    def test_patch_review_records_approved_upstreams_and_initial_policy(self) -> None:
+        review = self._strict_json(self.REVIEW_RELATIVE)
+        self.assertEqual(
+            review["source"],
+            {
+                "digestAlgorithm": "sha256",
+                "inventoryCommit": "97f8423094d25325d8f864eb6f49a9e8628dbb93",
+                "repository": "a1112/Mac-Win",
+                "sourceCommit": "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527",
+                "sourceIndexSha256": "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
+                "sourceTag": "mw-migration-baseline-db12d5e",
+                "sourceTagObject": "9f10d003382ce7ffbb269376c03477e17516302f",
+            },
+        )
+        expected_preimages = {
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch": {
+                "unproven": 2
+            },
+            "patches/jasp-0.97.1-fix-proxy-model-reset.patch": {"unproven": 2},
+            "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch": {
+                "unproven": 1
+            },
+            "patches/jasp-0.97.1-local-macos-build-configure.patch": {"matched": 3},
+            "patches/wine-dcomp-winui-host-composition.patch": {
+                "matched": 14,
+                "mismatched": 11,
+                "unproven": 9,
+            },
+            "patches/wine-macos-native-ui-integration.patch": {
+                "added": 1,
+                "matched": 8,
+                "mismatched": 2,
+            },
+            "patches/wine-shell32-virtual-desktop-manager.patch": {
+                "added": 1,
+                "matched": 4,
+            },
+            "patches/wine-windows-data-json-modern-apps.patch": {"matched": 5},
+            "patches/wine-windows-graphics-imaging.patch": {
+                "added": 1,
+                "matched": 5,
+            },
+            "patches/wine-windowscodecs-bilinear-scaler.patch": {"matched": 2},
+            "patches/wine-winui-pointer-input.patch": {
+                "matched": 9,
+                "mismatched": 8,
+            },
+        }
+        mail_authored = {
+            "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch",
+            "patches/jasp-0.97.1-fix-proxy-model-reset.patch",
+            "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch",
+        }
+        for record in review["records"]:
+            with self.subTest(sourcePath=record["sourcePath"]):
+                upstream = record["upstream"]
+                if record["sourcePath"].startswith("patches/jasp-"):
+                    self.assertEqual(
+                        upstream,
+                        {
+                            "commit": "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+                            "reference": "v0.97.1",
+                            "referenceKind": "tag",
+                            "repository": "https://github.com/jasp-stats/jasp-desktop",
+                            "tagObject": None,
+                        },
+                    )
+                else:
+                    self.assertEqual(
+                        upstream,
+                        {
+                            "commit": "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+                            "reference": "wine-11.11",
+                            "referenceKind": "annotated-tag",
+                            "repository": "https://gitlab.winehq.org/wine/wine/",
+                            "tagObject": "b08651f36865a3e1d9300d792df322d2ee8a807e",
+                        },
+                    )
+                counts = collections.Counter(item["result"] for item in record["preimages"])
+                self.assertEqual(dict(sorted(counts.items())), expected_preimages[record["sourcePath"]])
+                for item in record["preimages"]:
+                    if item["result"] == "matched":
+                        self.assertTrue(item["upstreamBlobOid"].startswith(item["patchOldBlob"]))
+                    elif item["result"] == "mismatched":
+                        self.assertFalse(item["upstreamBlobOid"].startswith(item["patchOldBlob"]))
+                    elif item["result"] == "added":
+                        self.assertIsInstance(item["patchOldBlob"], str)
+                        self.assertEqual(set(item["patchOldBlob"]), {"0"})
+                        self.assertIsNone(item["upstreamBlobOid"])
+                self.assertEqual(record["patchLicense"], {"status": "unresolved"})
+                self.assertEqual(record["reviewDisposition"], "quarantined")
+                self.assertEqual(record["reason"], "missing-license")
+                self.assertEqual(record["regressionProbeIds"], [])
+                self.assertEqual(record["upstreamStatus"], "unresolved")
+                for field in (
+                    "affectedApplications",
+                    "developmentDependencies",
+                    "externalDependencies",
+                    "regressionProbeIds",
+                ):
+                    self.assertEqual(
+                        record[field],
+                        sorted(record[field], key=lambda value: value.encode("ascii")),
+                    )
+                    self.assertEqual(len(record[field]), len(set(record[field])))
+                self.assertEqual(
+                    [item["path"] for item in record["preimages"]],
+                    sorted(
+                        (item["path"] for item in record["preimages"]),
+                        key=lambda value: value.encode("ascii"),
+                    ),
+                )
+                if record["sourcePath"] in mail_authored:
+                    self.assertEqual(
+                        record["patchAuthor"],
+                        {
+                            "displayName": "MacWin Compatibility Probe",
+                            "email": "dev.local.macwin@local",
+                            "evidence": "frozen-patch-mail-header",
+                            "status": "reviewed",
+                        },
+                    )
+                    self.assertTrue(record["subject"].startswith("[PATCH] "))
+                else:
+                    self.assertEqual(record["patchAuthor"], {"status": "unresolved"})
+                    self.assertIsNone(record["subject"])
+
+    def test_patch_review_is_canonical_and_schema_mutants_fail_closed(self) -> None:
+        common = _load_macwin_asset_common()
+        raw = (ROOT / self.REVIEW_RELATIVE).read_bytes()
+        review = common.parse_json_bytes(raw, label="Mac-Win patch review")
+        schema = self._strict_json(self.SCHEMA_RELATIVE)
+        self.assertLessEqual(len(raw), 1024 * 1024)
+        self.assertEqual(raw, common.canonical_json_bytes(review))
+        MigrationSchemaTests._assert_schema_instance_valid(review, schema, schema)
+
+        retained = copy.deepcopy(review)
+        retained_record = next(
+            record
+            for record in retained["records"]
+            if record["sourcePath"]
+            == "patches/wine-windowscodecs-bilinear-scaler.patch"
+        )
+        retained_record["patchLicense"] = {
+            "evidenceLocators": ["https://example.invalid/patch-license"],
+            "spdxExpression": "LicenseRef-Reviewed-Patch",
+            "status": "reviewed",
+        }
+        retained_record["reason"] = None
+        retained_record["regressionProbeIds"] = ["wine-scaler-review-probe"]
+        retained_record["releaseCondition"] = None
+        retained_record["reviewDisposition"] = "retained"
+        retained_record["upstreamStatus"] = "local-only"
+        MigrationSchemaTests._assert_schema_instance_valid(retained, schema, schema)
+        retained_record["regressionProbeIds"] = []
+        with self.assertRaises(AssertionError):
+            MigrationSchemaTests._assert_schema_instance_valid(retained, schema, schema)
+
+        mutants = {
+            "unknown-field": lambda value: value["records"][0].__setitem__(
+                "extra", True
+            ),
+            "wrong-count": lambda value: value.__setitem__("recordCount", 12),
+            "bad-path": lambda value: value["records"][0].__setitem__(
+                "sourcePath", "../patch"
+            ),
+            "reviewed-without-spdx": lambda value: value["records"][0].__setitem__(
+                "patchLicense", {"status": "reviewed"}
+            ),
+            "reviewed-author-with-null-evidence": lambda value: value["records"][
+                0
+            ].__setitem__(
+                "patchAuthor",
+                {
+                    "displayName": None,
+                    "email": None,
+                    "evidence": None,
+                    "status": "reviewed",
+                },
+            ),
+            "quarantined-with-probe": lambda value: value["records"][0].__setitem__(
+                "regressionProbeIds", ["unapproved-probe"]
+            ),
+            "retained-without-probe": lambda value: value["records"][0].__setitem__(
+                "reviewDisposition", "retained"
+            ),
+        }
+        for name, mutate in mutants.items():
+            mutant = copy.deepcopy(review)
+            mutate(mutant)
+            with self.subTest(case=name):
+                with self.assertRaises(AssertionError):
+                    MigrationSchemaTests._assert_schema_instance_valid(
+                        mutant, schema, schema
+                    )
 
 
 class MacWinConversionModelTests(unittest.TestCase):
