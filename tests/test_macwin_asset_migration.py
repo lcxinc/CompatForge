@@ -2644,6 +2644,152 @@ class MacWinConversionModelTests(unittest.TestCase):
             ):
                 converter.render_documents(forged)
 
+    def test_public_apis_reject_forged_approved_patch_review_models(self) -> None:
+        converter = self.converter
+        review = self.result.patch_review
+
+        def replace_preimage(record, original, replacement):
+            return dataclasses.replace(
+                record,
+                preimages=tuple(
+                    replacement if item is original else item
+                    for item in record.preimages
+                ),
+            )
+
+        def replace_record(record, replacement):
+            return dataclasses.replace(
+                review,
+                records=tuple(
+                    replacement if item is record else item
+                    for item in review.records
+                ),
+            )
+
+        matched_record = next(
+            record
+            for record in review.records
+            if any(item.result == "matched" for item in record.preimages)
+        )
+        matched = next(
+            item for item in matched_record.preimages if item.result == "matched"
+        )
+        mismatched_record = next(
+            record
+            for record in review.records
+            if any(item.result == "mismatched" for item in record.preimages)
+        )
+        mismatched = next(
+            item
+            for item in mismatched_record.preimages
+            if item.result == "mismatched"
+        )
+        added_record = next(
+            record
+            for record in review.records
+            if any(item.result == "added" for item in record.preimages)
+        )
+        added = next(
+            item for item in added_record.preimages if item.result == "added"
+        )
+        unproven_record = next(
+            record
+            for record in review.records
+            if any(item.result == "unproven" for item in record.preimages)
+        )
+        unproven = next(
+            item
+            for item in unproven_record.preimages
+            if item.result == "unproven"
+        )
+        shared_prefix_oid = matched.patch_old_blob + "f" * (
+            40 - len(matched.patch_old_blob)
+        )
+        if shared_prefix_oid == matched.upstream_blob_oid:
+            shared_prefix_oid = matched.patch_old_blob + "e" * (
+                40 - len(matched.patch_old_blob)
+            )
+
+        mutants = {
+            "upstream-commit": replace_record(
+                review.records[0],
+                dataclasses.replace(
+                    review.records[0],
+                    upstream=dataclasses.replace(
+                        review.records[0].upstream,
+                        commit="f" * 40,
+                    ),
+                ),
+            ),
+            "different-full-oid-with-approved-prefix": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(
+                        matched,
+                        upstream_blob_oid=shared_prefix_oid,
+                    ),
+                ),
+            ),
+            "matched-to-mismatched": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(matched, result="mismatched"),
+                ),
+            ),
+            "mismatched-to-matched": replace_record(
+                mismatched_record,
+                replace_preimage(
+                    mismatched_record,
+                    mismatched,
+                    dataclasses.replace(mismatched, result="matched"),
+                ),
+            ),
+            "added-to-unproven": replace_record(
+                added_record,
+                replace_preimage(
+                    added_record,
+                    added,
+                    dataclasses.replace(added, result="unproven"),
+                ),
+            ),
+            "unproven-to-added": replace_record(
+                unproven_record,
+                replace_preimage(
+                    unproven_record,
+                    unproven,
+                    dataclasses.replace(unproven, result="added"),
+                ),
+            ),
+            "preimage-path-case": replace_record(
+                matched_record,
+                replace_preimage(
+                    matched_record,
+                    matched,
+                    dataclasses.replace(
+                        matched,
+                        path=matched.path[0].swapcase() + matched.path[1:],
+                    ),
+                ),
+            ),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(api="classify", mutant=name), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.classify_source_pack(self.source_pack, mutant)
+            with self.subTest(api="render", mutant=name), self.assertRaisesRegex(
+                converter.ConversionError,
+                r"\Apatch review evidence is invalid\Z",
+            ):
+                converter.render_documents(
+                    dataclasses.replace(self.result, patch_review=mutant)
+                )
+
     def test_converter_import_is_lazy_and_preserves_bytecode_policy(self) -> None:
         previous = sys.dont_write_bytecode
         try:

@@ -50,6 +50,20 @@ APPROVED_PATCH_REVIEW_SOURCE = (
     APPROVED_SOURCE_INDEX_SHA256,
     "sha256",
 )
+APPROVED_JASP_PATCH_UPSTREAM = (
+    "https://github.com/jasp-stats/jasp-desktop",
+    "tag",
+    "v0.97.1",
+    None,
+    "28be3fee5c7ce2119f1945acd0254eb4fb8cb6e2",
+)
+APPROVED_WINE_PATCH_UPSTREAM = (
+    "https://gitlab.winehq.org/wine/wine/",
+    "annotated-tag",
+    "wine-11.11",
+    "b08651f36865a3e1d9300d792df322d2ee8a807e",
+    "f6c044e1890e84a4aa5e77e76ba7276a615630e1",
+)
 MAX_PATCH_REVIEW_BYTES = 1024 * 1024
 PATCH_REVIEW_RECORD_COUNT = 11
 
@@ -1371,18 +1385,34 @@ def _validate_patch_review_semantics(
                 and _PATCH_REVIEW_GIT_PREFIX.fullmatch(old) is None
                 or upstream_oid is not None
                 and not _review_git_oid(upstream_oid)
-                or result in {"matched", "mismatched"}
-                and (
-                    old is None
-                    or _PATCH_REVIEW_ZERO_PREFIX.fullmatch(old) is not None
-                    or upstream_oid is None
-                )
-                or result == "added"
-                and (
-                    old is None
-                    or _PATCH_REVIEW_ZERO_PREFIX.fullmatch(old) is None
-                    or upstream_oid is not None
-                )
+            ):
+                raise ValueError
+            zero_old = (
+                old is not None
+                and _PATCH_REVIEW_ZERO_PREFIX.fullmatch(old) is not None
+            )
+            if result == "matched" and (
+                old is None
+                or zero_old
+                or upstream_oid is None
+                or not upstream_oid.startswith(old)
+            ):
+                raise ValueError
+            if result == "mismatched" and (
+                old is None
+                or zero_old
+                or upstream_oid is None
+                or upstream_oid.startswith(old)
+            ):
+                raise ValueError
+            if result == "added" and (
+                old is None or not zero_old or upstream_oid is not None
+            ):
+                raise ValueError
+            if result == "unproven" and not (
+                (old is None and upstream_oid is not None)
+                or (zero_old and upstream_oid is not None)
+                or (old is not None and not zero_old and upstream_oid is None)
             ):
                 raise ValueError
         author = record["patchAuthor"]
@@ -1498,6 +1528,30 @@ def _validate_patch_review_semantics(
             raise ValueError
 
 
+def _validate_approved_patch_upstreams(value: dict[str, object]) -> None:
+    for record in value["records"]:
+        expected = (
+            APPROVED_JASP_PATCH_UPSTREAM
+            if record["sourcePath"].startswith("patches/jasp-")
+            else APPROVED_WINE_PATCH_UPSTREAM
+            if record["sourcePath"].startswith("patches/wine-")
+            else None
+        )
+        upstream = record["upstream"]
+        actual = tuple(
+            upstream[field]
+            for field in (
+                "repository",
+                "referenceKind",
+                "reference",
+                "tagObject",
+                "commit",
+            )
+        )
+        if actual != expected:
+            raise ValueError
+
+
 def _patch_review_model(value: dict[str, object]) -> PatchReviewLedger:
     source = value["source"]
     records: list[PatchReviewRecord] = []
@@ -1593,6 +1647,7 @@ def load_patch_review(
         value = _parse_patch_review_bytes(leaf.raw)
         typed_value = _require_patch_review_exact_types(value)
         _validate_patch_review_semantics(typed_value, source_pack)
+        _validate_approved_patch_upstreams(typed_value)
         ledger = _patch_review_model(typed_value)
         _verify_patch_review_leaf(held_directories[-1], leaf)
         for directory in held_directories:
@@ -3688,7 +3743,16 @@ def _patch_review_value_from_model(
                 or type(item.value) is not str
             ):
                 _fail("patch review evidence is invalid")
-    return _patch_review_json_value(asdict(review))
+    value = _patch_review_json_value(asdict(review))
+    for record in value["records"]:
+        author = record["patchAuthor"]
+        for field in ("displayName", "email", "evidence"):
+            if author[field] is None:
+                del author[field]
+        patch_license = record["patchLicense"]
+        if patch_license["spdxExpression"] is None:
+            del patch_license["spdxExpression"]
+    return value
 
 
 def _validate_patch_review_model(
@@ -3698,6 +3762,13 @@ def _validate_patch_review_model(
         value = _patch_review_value_from_model(review, source_pack)
         typed_value = _require_patch_review_exact_types(value)
         _validate_patch_review_semantics(typed_value, source_pack)
+        _validate_approved_patch_upstreams(typed_value)
+        raw = _COMMON.canonical_json_bytes(typed_value)
+        if (
+            len(raw) > MAX_PATCH_REVIEW_BYTES
+            or hashlib.sha256(raw).hexdigest() != APPROVED_PATCH_REVIEW_SHA256
+        ):
+            raise ValueError
     except ConversionError:
         raise
     except BaseException:
