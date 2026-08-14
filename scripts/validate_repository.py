@@ -124,6 +124,50 @@ PATCH_UPSTREAM_WINE = {
 PATCH_MISSING_LICENSE_RELEASE = (
     "Record patch-specific license evidence and repeat review."
 )
+PATCH_APPLICATIONS = {
+    "patches/jasp-0.97.1-avoid-nested-workspace-reset.patch": (
+        "jasp-desktop",
+    ),
+    "patches/jasp-0.97.1-fix-proxy-model-reset.patch": ("jasp-desktop",),
+    "patches/jasp-0.97.1-initialize-enginesync-before-reset.patch": (
+        "jasp-desktop",
+    ),
+    "patches/jasp-0.97.1-local-macos-build-configure.patch": (
+        "jasp-build",
+        "jasp-desktop",
+    ),
+    "patches/wine-dcomp-winui-host-composition.patch": ("wine", "winui"),
+    "patches/wine-macos-native-ui-integration.patch": ("macos-driver", "wine"),
+    "patches/wine-shell32-virtual-desktop-manager.patch": ("shell32", "wine"),
+    "patches/wine-windows-data-json-modern-apps.patch": (
+        "windows-data-json",
+        "wine",
+    ),
+    "patches/wine-windows-graphics-imaging.patch": (
+        "windows-graphics-imaging",
+        "wine",
+    ),
+    "patches/wine-windowscodecs-bilinear-scaler.patch": (
+        "windowscodecs",
+        "wine",
+    ),
+    "patches/wine-winui-pointer-input.patch": ("wine", "winui"),
+}
+PATCH_GIT_OID = re.compile(r"^(?!0{40}$)[0-9a-f]{40}$")
+PATCH_GIT_PREFIX = re.compile(r"^(?!0{7,40}$)[0-9a-f]{7,40}$")
+PATCH_ANY_GIT_PREFIX = re.compile(r"^[0-9a-f]{7,40}$")
+PATCH_ZERO_GIT_PREFIX = re.compile(r"^0{7,40}$")
+PATCH_IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+PATCH_HTTPS_EVIDENCE = re.compile(
+    r"^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))+"
+    r"(?:/|(?:/[A-Za-z0-9._~!$&'()*+,;=:@+-]+)+/?)?$"
+)
+PATCH_MAIL_AUTHOR = re.compile(r"^([^<>\r\n]{1,256}) <([^<>\s]{3,254})>$")
+PATCH_RESERVED_SEGMENT = re.compile(
+    r"^(?:conin\$|conout\$|con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$",
+    re.IGNORECASE,
+)
 TASK5_SOURCE_REPOSITORY = "a1112/Mac-Win"
 TASK5_SOURCE_COMMIT = "db12d5ebc5ba0d5a29c9464d07c1a86ffbc47527"
 TASK5_CATALOG_ROOT = "MacWinManager/Sources/MacWinManagerApp/Resources/Catalog"
@@ -963,6 +1007,212 @@ def _canonical_patch_review_json(raw: bytes) -> dict[str, object]:
     return value
 
 
+def _independent_patch_text(value: object, maximum: int) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= maximum
+        and all(32 <= ord(character) <= 126 for character in value)
+    )
+
+
+def _independent_patch_relative_path(value: object) -> bool:
+    if (
+        not _independent_patch_text(value, 1024)
+        or value.startswith("/")
+        or "\\" in value
+        or any(character in '<>:"|?*' for character in value)
+    ):
+        return False
+    segments = value.split("/")
+    for segment in segments:
+        if (
+            not segment
+            or len(segment) > 255
+            or segment in {".", ".."}
+            or segment[-1] in {" ", "."}
+        ):
+            return False
+        reserved_stem = segment.split(".", 1)[0].rstrip(" ")
+        if PATCH_RESERVED_SEGMENT.fullmatch(reserved_stem):
+            return False
+    return True
+
+
+def _independent_patch_mail_identity(
+    source_binding: object, asset: dict[str, object]
+) -> tuple[str | None, dict[str, object]]:
+    object_path = asset.get("objectPath")
+    if type(object_path) is not str:
+        raise ValueError("patch source object identity is invalid")
+    raw = source_binding.verify_path(
+        source_binding.root / PurePosixPath(object_path)
+    )
+    if type(raw) is not bytes or len(raw) != asset.get("byteSize"):
+        raise ValueError("patch source object identity is invalid")
+    if not raw.startswith(b"From "):
+        return None, {"status": "unresolved"}
+    header_end = raw.find(b"\n\n")
+    if not 0 < header_end <= 16 * 1024 or b"\r" in raw[:header_end]:
+        raise ValueError("patch source mail identity is invalid")
+    try:
+        lines = raw[:header_end].decode("ascii", errors="strict").split("\n")
+    except UnicodeDecodeError:
+        raise ValueError("patch source mail identity is invalid") from None
+    if not lines or re.fullmatch(
+        r"From [0-9a-f]{40} Mon Sep 17 00:00:00 2001", lines[0]
+    ) is None:
+        raise ValueError("patch source mail identity is invalid")
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ": " not in line:
+            raise ValueError("patch source mail identity is invalid")
+        key, value = line.split(": ", 1)
+        if key in headers:
+            raise ValueError("patch source mail identity is invalid")
+        headers[key] = value
+    if set(headers) != {"From", "Date", "Subject"}:
+        raise ValueError("patch source mail identity is invalid")
+    subject = headers["Subject"]
+    author_match = PATCH_MAIL_AUTHOR.fullmatch(headers["From"])
+    if (
+        not _independent_patch_text(subject, 256)
+        or not _independent_patch_text(headers["Date"], 128)
+        or author_match is None
+    ):
+        raise ValueError("patch source mail identity is invalid")
+    return subject, {
+        "displayName": author_match.group(1),
+        "email": author_match.group(2),
+        "evidence": "frozen-patch-mail-header",
+        "status": "reviewed",
+    }
+
+
+def _independent_patch_author(author: object) -> bool:
+    if type(author) is not dict or not {"status"}.issubset(author):
+        return False
+    status = author.get("status")
+    if status == "reviewed":
+        return (
+            set(author) == {"displayName", "email", "evidence", "status"}
+            and type(author.get("displayName")) is str
+            and 1 <= len(author["displayName"]) <= 256
+            and type(author.get("email")) is str
+            and 3 <= len(author["email"]) <= 254
+            and author.get("evidence") == "frozen-patch-mail-header"
+        )
+    if status == "unresolved":
+        return set(author).issubset(
+            {"displayName", "email", "evidence", "status"}
+        ) and all(
+            author.get(optional) is None
+            for optional in ("displayName", "email", "evidence")
+            if optional in author
+        )
+    return False
+
+
+def _independent_patch_dependencies(
+    dependencies: object, asset: dict[str, object]
+) -> list[dict[str, str]]:
+    if type(dependencies) is not list or len(dependencies) > 128:
+        raise ValueError("patch review dependency evidence is invalid")
+    keys: list[tuple[str, str]] = []
+    for dependency in dependencies:
+        if (
+            type(dependency) is not dict
+            or set(dependency) != {"kind", "value"}
+            or dependency.get("kind")
+            not in {
+                "patch-license",
+                "external-dependency",
+                "development-dependency",
+            }
+            or not _independent_patch_text(dependency.get("value"), 2048)
+            or (
+                dependency["kind"] in {"patch-license", "external-dependency"}
+                and PATCH_HTTPS_EVIDENCE.fullmatch(dependency["value"]) is None
+            )
+        ):
+            raise ValueError("patch review dependency evidence is invalid")
+        keys.append((dependency["kind"], dependency["value"]))
+    if keys != sorted(set(keys)):
+        raise ValueError("patch review dependency evidence is invalid")
+    external_refs = asset.get("externalRefs")
+    development_dependencies = asset.get("developmentDependencies")
+    if type(external_refs) is not list or type(development_dependencies) is not list:
+        raise ValueError("patch source dependency evidence is invalid")
+    expected = [
+        {"kind": "development-dependency", "value": value}
+        for value in development_dependencies
+    ] + [
+        {"kind": "external-dependency", "value": value}
+        for value in external_refs
+    ]
+    expected.sort(key=lambda item: (item["kind"], item["value"]))
+    if dependencies != expected:
+        raise ValueError("patch source dependency evidence is invalid")
+    return expected
+
+
+def _independent_patch_preimages(preimages: object) -> dict[str, int]:
+    if type(preimages) is not list or not 1 <= len(preimages) <= 128:
+        raise ValueError("patch review base evidence is invalid")
+    paths: list[str] = []
+    counts = {"matched": 0, "mismatched": 0, "added": 0, "unproven": 0}
+    for preimage in preimages:
+        if (
+            type(preimage) is not dict
+            or set(preimage)
+            != {"path", "patchOldBlob", "upstreamBlobOid", "result"}
+            or not _independent_patch_relative_path(preimage.get("path"))
+            or preimage.get("result") not in counts
+        ):
+            raise ValueError("patch review base evidence is invalid")
+        path = preimage["path"]
+        result = preimage["result"]
+        patch_old = preimage["patchOldBlob"]
+        upstream = preimage["upstreamBlobOid"]
+        if result in {"matched", "mismatched"}:
+            if (
+                type(patch_old) is not str
+                or PATCH_GIT_PREFIX.fullmatch(patch_old) is None
+                or type(upstream) is not str
+                or PATCH_GIT_OID.fullmatch(upstream) is None
+                or (result == "matched") != upstream.startswith(patch_old)
+            ):
+                raise ValueError("patch review base evidence is invalid")
+        elif result == "added":
+            if (
+                type(patch_old) is not str
+                or PATCH_ZERO_GIT_PREFIX.fullmatch(patch_old) is None
+                or upstream is not None
+            ):
+                raise ValueError("patch review base evidence is invalid")
+        elif (
+            patch_old is not None
+            and (
+                type(patch_old) is not str
+                or PATCH_ANY_GIT_PREFIX.fullmatch(patch_old) is None
+            )
+        ) or (
+            upstream is not None
+            and (
+                type(upstream) is not str
+                or PATCH_GIT_OID.fullmatch(upstream) is None
+            )
+        ):
+            raise ValueError("patch review base evidence is invalid")
+        paths.append(path)
+        counts[result] += 1
+    if (
+        paths != sorted(paths, key=lambda value: value.encode("ascii"))
+        or len({path.casefold() for path in paths}) != len(paths)
+    ):
+        raise ValueError("patch review base evidence is invalid")
+    return counts
+
+
 def _independent_patch_review_oracle(
     source_binding: object,
     review_raw: bytes,
@@ -1003,13 +1253,16 @@ def _independent_patch_review_oracle(
     )
     if len(patch_assets) != 11:
         raise ValueError("patch review source evidence is invalid")
-    review_paths = [record.get("sourcePath") for record in review_records if type(record) is dict]
+    if any(type(record) is not dict for record in review_records):
+        raise ValueError("patch review coverage is invalid")
+    review_paths = [record.get("sourcePath") for record in review_records]
     expected_paths = [asset["sourcePath"] for asset in patch_assets]
     if (
-        len(review_paths) != 11
+        any(type(path) is not str for path in review_paths)
         or review_paths != expected_paths
         or review_paths != sorted(review_paths, key=lambda value: value.encode("ascii"))
         or len({path.casefold() for path in review_paths}) != 11
+        or set(PATCH_APPLICATIONS) != set(expected_paths)
     ):
         raise ValueError("patch review coverage is invalid")
 
@@ -1045,9 +1298,9 @@ def _independent_patch_review_oracle(
             or record.get("gitBlobOid") != asset.get("gitBlobOid")
             or record.get("gitMode") != asset.get("gitMode")
             or record.get("byteSize") != asset.get("byteSize")
-            or type(record.get("purpose")) is not str
-            or not 1 <= len(record["purpose"]) <= 2048
-            or any(ord(character) < 32 or ord(character) > 126 for character in record["purpose"])
+            or type(record.get("byteSize")) is not int
+            or not 1 <= record["byteSize"] <= 1024 * 1024
+            or not _independent_patch_text(record.get("purpose"), 2048)
             or record.get("upstreamStatus") != "unresolved"
             or record.get("reviewDisposition") != "quarantined"
             or record.get("reason") != "missing-license"
@@ -1065,61 +1318,36 @@ def _independent_patch_review_oracle(
         )
         if expected_upstream is None or record.get("upstream") != expected_upstream:
             raise ValueError("patch review upstream evidence is invalid")
+        expected_subject, expected_author = _independent_patch_mail_identity(
+            source_binding, asset
+        )
+        subject = record.get("subject")
+        if (
+            subject != expected_subject
+            or (
+                subject is not None
+                and not _independent_patch_text(subject, 256)
+            )
+        ):
+            raise ValueError("patch review subject evidence is invalid")
+        author = record.get("patchAuthor")
+        if not _independent_patch_author(author) or author != expected_author:
+            raise ValueError("patch review author evidence is invalid")
         applications = record.get("affectedApplications")
+        expected_applications = PATCH_APPLICATIONS.get(path)
         if (
             type(applications) is not list
             or not 1 <= len(applications) <= 32
-            or any(type(item) is not str or not item for item in applications)
+            or any(
+                type(item) is not str or PATCH_IDENTIFIER.fullmatch(item) is None
+                for item in applications
+            )
             or applications
             != sorted(set(applications), key=lambda value: value.encode("ascii"))
+            or tuple(applications) != expected_applications
         ):
             raise ValueError("patch review application evidence is invalid")
-        preimages = record.get("preimages")
-        if type(preimages) is not list or not 1 <= len(preimages) <= 128:
-            raise ValueError("patch review base evidence is invalid")
-        preimage_paths: list[str] = []
-        base_counts = {
-            "matched": 0,
-            "mismatched": 0,
-            "added": 0,
-            "unproven": 0,
-        }
-        for preimage in preimages:
-            if (
-                type(preimage) is not dict
-                or set(preimage)
-                != {"path", "patchOldBlob", "upstreamBlobOid", "result"}
-                or type(preimage.get("path")) is not str
-                or not preimage["path"]
-                or preimage.get("result") not in base_counts
-                or (
-                    preimage.get("patchOldBlob") is not None
-                    and type(preimage.get("patchOldBlob")) is not str
-                )
-                or (
-                    preimage.get("upstreamBlobOid") is not None
-                    and type(preimage.get("upstreamBlobOid")) is not str
-                )
-            ):
-                raise ValueError("patch review base evidence is invalid")
-            preimage_paths.append(preimage["path"])
-            base_counts[preimage["result"]] += 1
-        if (
-            preimage_paths
-            != sorted(preimage_paths, key=lambda value: value.encode("ascii"))
-            or len({path.casefold() for path in preimage_paths}) != len(preimage_paths)
-        ):
-            raise ValueError("patch review base evidence is invalid")
-        author = record.get("patchAuthor")
-        if (
-            type(author) is not dict
-            or not {"status"}.issubset(author)
-            or not set(author).issubset(
-                {"status", "displayName", "email", "evidence"}
-            )
-            or author.get("status") not in {"reviewed", "unresolved"}
-        ):
-            raise ValueError("patch review author evidence is invalid")
+        base_counts = _independent_patch_preimages(record.get("preimages"))
         project_license = record.get("projectLicense")
         expected_project_license = (
             {
@@ -1143,28 +1371,9 @@ def _independent_patch_review_oracle(
         )
         if project_license != expected_project_license:
             raise ValueError("patch review project license is invalid")
-        dependencies = record.get("evidenceAndDependencies")
-        if type(dependencies) is not list or len(dependencies) > 128:
-            raise ValueError("patch review dependency evidence is invalid")
-        dependency_keys: list[tuple[str, str]] = []
-        for dependency in dependencies:
-            if (
-                type(dependency) is not dict
-                or set(dependency) != {"kind", "value"}
-                or dependency.get("kind")
-                not in {
-                    "patch-license",
-                    "external-dependency",
-                    "development-dependency",
-                }
-                or type(dependency.get("value")) is not str
-                or not dependency["value"]
-                or dependency.get("kind") == "patch-license"
-            ):
-                raise ValueError("patch review dependency evidence is invalid")
-            dependency_keys.append((dependency["kind"], dependency["value"]))
-        if dependency_keys != sorted(set(dependency_keys)):
-            raise ValueError("patch review dependency evidence is invalid")
+        dependencies = _independent_patch_dependencies(
+            record.get("evidenceAndDependencies"), asset
+        )
         expected_mapping.append(
             {
                 "sourceRepository": TASK5_SOURCE_REPOSITORY,

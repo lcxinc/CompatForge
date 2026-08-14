@@ -2895,6 +2895,348 @@ class MacWinPatchProvenanceTests(unittest.TestCase):
                     source_binding, forged_review, task6_documents
                 )
 
+    def test_independent_patch_oracle_rejects_unmapped_review_shape_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-shape-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+
+            def invalid_subject(review):
+                review["records"][0]["subject"] = 7
+
+            def invalid_upstream_blob_oid(review):
+                review["records"][0]["preimages"][0][
+                    "upstreamBlobOid"
+                ] = "not-a-git-oid"
+
+            for name, mutate in (
+                ("subject-integer", invalid_subject),
+                ("upstream-blob-invalid-oid", invalid_upstream_blob_oid),
+            ):
+                review = copy.deepcopy(original)
+                mutate(review)
+                review_raw = common.canonical_json_bytes(review)
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, documents
+                    )
+
+    def test_independent_patch_oracle_rejects_self_consistent_ledger_mutants(
+        self,
+    ) -> None:
+        validator = MigrationLayoutTests._load_repository_validator()
+        common = _load_macwin_asset_common()
+        with tempfile.TemporaryDirectory(
+            prefix=".macwin-patch-review-ledger-", dir=ROOT
+        ) as directory:
+            temporary_root = Path(directory)
+            MacWinRecipeConversionTests._copy_validator_fixture(temporary_root)
+            validator.ROOT = temporary_root
+            source_binding, errors = validator._validated_macwin_source_pack_binding()
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(source_binding)
+            original_review = common.parse_json_bytes(
+                (temporary_root / self.REVIEW_RELATIVE).read_bytes(),
+                label="patch review",
+            )
+            documents = {
+                relative: (temporary_root / PurePosixPath(relative)).read_bytes()
+                for relative in validator.TASK6_EVIDENCE_PATHS
+            }
+            mapping_path = "migration/macwin/generated/mappings/patches.json"
+            original_mapping = common.parse_json_bytes(
+                documents[mapping_path], label="patch mapping"
+            )
+
+            def records_for(review, mapping, source_path):
+                review_record = next(
+                    item
+                    for item in review["records"]
+                    if item["sourcePath"] == source_path
+                )
+                mapping_record = next(
+                    item
+                    for item in mapping["records"]
+                    if item["sourcePath"] == source_path
+                )
+                return review_record, mapping_record
+
+            def wrong_subject(review, _mapping):
+                review["records"][0]["subject"] = "[PATCH] Forged subject"
+
+            def overlong_subject(review, _mapping):
+                review["records"][0]["subject"] = "x" * 257
+
+            def incomplete_reviewed_author(review, mapping):
+                review_record = review["records"][0]
+                mapping_record = mapping["records"][0]
+                review_record["patchAuthor"] = {"status": "reviewed"}
+                mapping_record["patchAuthor"] = {"status": "reviewed"}
+
+            def populated_unresolved_author(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                author = {"status": "unresolved", "displayName": "Forged"}
+                review_record["patchAuthor"] = author
+                mapping_record["patchAuthor"] = copy.deepcopy(author)
+
+            def overlong_reviewed_author(review, mapping):
+                author = copy.deepcopy(review["records"][0]["patchAuthor"])
+                author["displayName"] = "x" * 257
+                review["records"][0]["patchAuthor"] = author
+                mapping["records"][0]["patchAuthor"] = copy.deepcopy(author)
+
+            def unknown_application(review, mapping):
+                applications = ["forged-app"]
+                review["records"][0]["affectedApplications"] = applications
+                mapping["records"][0]["affectedApplications"] = applications
+
+            def overlong_application(review, mapping):
+                applications = ["a" * 129]
+                review["records"][0]["affectedApplications"] = applications
+                mapping["records"][0]["affectedApplications"] = applications
+
+            def non_https_external_dependency(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies[-1]["value"] = "not-an-https-locator"
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependency_not_in_source(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies.append(
+                    {"kind": "development-dependency", "value": "MACWIN_A"}
+                )
+                dependencies.sort(key=lambda item: (item["kind"], item["value"]))
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependency_value_overlong(review, mapping):
+                dependency = {
+                    "kind": "development-dependency",
+                    "value": "x" * 2049,
+                }
+                review["records"][0]["evidenceAndDependencies"] = [dependency]
+                mapping["records"][0]["evidenceAndDependencies"] = [
+                    copy.deepcopy(dependency)
+                ]
+
+            def unsafe_preimage_path(review, _mapping):
+                review["records"][2]["preimages"][0]["path"] = "../escape.c"
+
+            def overlong_preimage_path(review, _mapping):
+                review["records"][2]["preimages"][0]["path"] = "a" * 1025
+
+            def invalid_patch_old_blob(review, _mapping):
+                review["records"][2]["preimages"][0][
+                    "patchOldBlob"
+                ] = "not-a-git-prefix"
+
+            def matched_without_old_blob(review, _mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    _mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"][0]["patchOldBlob"] = None
+
+            def mismatched_without_upstream_blob(review, mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/wine-dcomp-winui-host-composition.patch",
+                )
+                preimage = next(
+                    item
+                    for item in review_record["preimages"]
+                    if item["result"] == "mismatched"
+                )
+                preimage["upstreamBlobOid"] = None
+
+            def added_with_nonzero_objects(review, mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/wine-macos-native-ui-integration.patch",
+                )
+                preimage = next(
+                    item
+                    for item in review_record["preimages"]
+                    if item["result"] == "added"
+                )
+                preimage["patchOldBlob"] = "1234567"
+                preimage["upstreamBlobOid"] = "1" * 40
+
+            def matched_oid_marked_mismatched(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"][0]["result"] = "mismatched"
+                mapping_record["baseEvidence"]["matched"] -= 1
+                mapping_record["baseEvidence"]["mismatched"] += 1
+
+            def wrong_source_identity(review, _mapping):
+                review["source"]["inventoryCommit"] = "f" * 40
+
+            def wrong_upstream_identity(review, mapping):
+                review["records"][0]["upstream"]["reference"] = "v0.97.2"
+                mapping["records"][0]["upstream"]["reference"] = "v0.97.2"
+
+            def applications_unsorted(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["affectedApplications"].reverse()
+                mapping_record["affectedApplications"].reverse()
+
+            def dependencies_duplicated(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                dependencies = copy.deepcopy(
+                    review_record["evidenceAndDependencies"]
+                )
+                dependencies.append(copy.deepcopy(dependencies[0]))
+                dependencies.sort(key=lambda item: (item["kind"], item["value"]))
+                review_record["evidenceAndDependencies"] = dependencies
+                mapping_record["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def dependencies_over_maximum(review, mapping):
+                dependencies = [
+                    {
+                        "kind": "development-dependency",
+                        "value": f"MACWIN_DEP_{index:03d}",
+                    }
+                    for index in range(129)
+                ]
+                review["records"][0]["evidenceAndDependencies"] = dependencies
+                mapping["records"][0]["evidenceAndDependencies"] = copy.deepcopy(
+                    dependencies
+                )
+
+            def preimages_unsorted(review, _mapping):
+                review_record, _mapping_record = records_for(
+                    review,
+                    _mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                review_record["preimages"].reverse()
+
+            def preimages_duplicated(review, mapping):
+                review_record, mapping_record = records_for(
+                    review,
+                    mapping,
+                    "patches/jasp-0.97.1-local-macos-build-configure.patch",
+                )
+                preimages = review_record["preimages"]
+                preimages.append(copy.deepcopy(preimages[0]))
+                preimages.sort(key=lambda item: item["path"])
+                mapping_record["baseEvidence"]["matched"] += 1
+
+            def preimages_over_maximum(review, mapping):
+                review_record = review["records"][2]
+                template = review_record["preimages"][0]
+                review_record["preimages"] = [
+                    {**template, "path": f"bounded/file-{index:03d}.c"}
+                    for index in range(129)
+                ]
+                mapping["records"][2]["baseEvidence"]["unproven"] = 129
+
+            for name, mutate in (
+                ("subject-wrong-source-value", wrong_subject),
+                ("subject-overlong", overlong_subject),
+                ("reviewed-author-missing-optionals", incomplete_reviewed_author),
+                ("unresolved-author-populated", populated_unresolved_author),
+                ("reviewed-author-overlong", overlong_reviewed_author),
+                ("application-not-approved", unknown_application),
+                ("application-overlong", overlong_application),
+                ("external-dependency-not-https", non_https_external_dependency),
+                ("dependency-not-in-source", dependency_not_in_source),
+                ("dependency-value-overlong", dependency_value_overlong),
+                ("preimage-path-unsafe", unsafe_preimage_path),
+                ("preimage-path-overlong", overlong_preimage_path),
+                ("patch-old-blob-invalid", invalid_patch_old_blob),
+                ("matched-without-old-blob", matched_without_old_blob),
+                ("mismatched-without-upstream-blob", mismatched_without_upstream_blob),
+                ("added-with-nonzero-objects", added_with_nonzero_objects),
+                ("matched-oid-marked-mismatched", matched_oid_marked_mismatched),
+                ("source-identity", wrong_source_identity),
+                ("upstream-identity", wrong_upstream_identity),
+                ("applications-unsorted", applications_unsorted),
+                ("dependencies-duplicated", dependencies_duplicated),
+                ("dependencies-over-maximum", dependencies_over_maximum),
+                ("preimages-unsorted", preimages_unsorted),
+                ("preimages-duplicated", preimages_duplicated),
+                ("preimages-over-maximum", preimages_over_maximum),
+            ):
+                review = copy.deepcopy(original_review)
+                mapping = copy.deepcopy(original_mapping)
+                mutate(review, mapping)
+                review_raw = common.canonical_json_bytes(review)
+                mapping_raw = common.canonical_json_bytes(mapping)
+                forged_documents = {**documents, mapping_path: mapping_raw}
+                with self.subTest(case=name), mock.patch.object(
+                    validator,
+                    "PATCH_REVIEW_DOCUMENT_SHA256",
+                    hashlib.sha256(review_raw).hexdigest(),
+                ), mock.patch.dict(
+                    validator.TASK6_DOCUMENT_SHA256,
+                    {mapping_path: hashlib.sha256(mapping_raw).hexdigest()},
+                ), self.assertRaises(ValueError):
+                    validator._independent_patch_review_oracle(
+                        source_binding, review_raw, forged_documents
+                    )
+
     def test_repository_oracle_rejects_unsafe_or_extra_reviewed_tree_entries(self) -> None:
         cases = (
             "missing-leaf",
