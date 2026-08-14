@@ -2,6 +2,7 @@ import ast
 import copy
 import json
 import re
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -127,7 +128,12 @@ class BottleMigrationSchemaTests(unittest.TestCase):
 
             if "relativePath" in schema["$defs"]:
                 path_contract = schema["$defs"]["relativePath"]
-                for value in ("manifest.json", "drive_c/Public/example.txt"):
+                for value in (
+                    "manifest.json",
+                    "drive_c/Public/example.txt",
+                    "drive_c/应用/example.exe",
+                    "café/file",
+                ):
                     self._assert_valid(value, path_contract, schema)
                 for value in (
                     "",
@@ -142,7 +148,6 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                     "folder/NUL.txt",
                     "folder/name.",
                     "folder/name ",
-                    "café/file",
                 ):
                     with self.assertRaises(AssertionError, msg=(name, value)):
                         self._assert_valid(value, path_contract, schema)
@@ -156,6 +161,88 @@ class BottleMigrationSchemaTests(unittest.TestCase):
                 for value in ("", "engine/slash", "engine\\slash", "engine\n"):
                     with self.assertRaises(AssertionError, msg=(name, value)):
                         self._assert_valid(value, engine_id, schema)
+
+    def test_portable_paths_use_utf8_byte_component_and_total_bounds(self) -> None:
+        ascii_total_max = "/".join(
+            (["a" * 255] * 15) + ["b" * 127, "c" * 128]
+        )
+        ascii_total_over = ascii_total_max + "c"
+        multibyte_component_max = ("é" * 127) + "a"
+        multibyte_component_over = "é" * 128
+        multibyte_total_max = "/".join(
+            ([multibyte_component_max] * 15)
+            + [("é" * 63) + "a", "é" * 64]
+        )
+        multibyte_total_over = multibyte_total_max + "a"
+
+        self.assertEqual(len(ascii_total_max.encode("utf-8")), 4096)
+        self.assertEqual(len(ascii_total_over.encode("utf-8")), 4097)
+        self.assertEqual(len(multibyte_component_max.encode("utf-8")), 255)
+        self.assertEqual(len(multibyte_component_over.encode("utf-8")), 256)
+        self.assertEqual(len(multibyte_total_max.encode("utf-8")), 4096)
+        self.assertEqual(len(multibyte_total_over.encode("utf-8")), 4097)
+
+        for name in (
+            "bottle-snapshot.schema.json",
+            "bottle-migration-plan.schema.json",
+        ):
+            schema = self._schema(name)
+            contract = schema["$defs"]["relativePath"]
+            for value in (
+                "a" * 255,
+                ascii_total_max,
+                multibyte_component_max,
+                multibyte_total_max,
+            ):
+                with self.subTest(
+                    schema=name,
+                    case="max",
+                    bytes=len(value.encode("utf-8")),
+                ):
+                    self._assert_valid(value, contract, schema)
+            for value in (
+                "a" * 256,
+                ascii_total_over,
+                multibyte_component_over,
+                multibyte_total_over,
+            ):
+                with self.subTest(
+                    schema=name,
+                    case="over",
+                    bytes=len(value.encode("utf-8")),
+                ), self.assertRaises(AssertionError):
+                    self._assert_valid(value, contract, schema)
+
+    def test_portable_paths_require_nfc_unicode_scalars(self) -> None:
+        invalid_paths = (
+            "cafe\u0301/file",
+            "folder/\ud800/file",
+            "folder/\u0085/file",
+        )
+        for name in (
+            "bottle-snapshot.schema.json",
+            "bottle-migration-plan.schema.json",
+        ):
+            schema = self._schema(name)
+            contract = schema["$defs"]["relativePath"]
+            self._assert_valid("café/应用.exe", contract, schema)
+            for value in invalid_paths:
+                with self.subTest(schema=name, value=repr(value)), self.assertRaises(
+                    AssertionError
+                ):
+                    self._assert_valid(value, contract, schema)
+
+    def test_snapshot_paths_reject_casefold_collisions(self) -> None:
+        name = "bottle-snapshot.schema.json"
+        collision = copy.deepcopy(self._instances()[name])
+        collision["entries"] = [
+            {"path": "Drive", "kind": "directory"},
+            {"path": "drive", "kind": "directory"},
+        ]
+        collision["entryCount"] = 2
+        collision["totalFileBytes"] = 0
+        with self.assertRaises(AssertionError):
+            self._assert_document_valid(name, collision, self._schema(name))
 
     def test_complete_instances_and_closed_type_mutants(self) -> None:
         for name, instance in self._instances().items():
@@ -250,6 +337,13 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 self._assert_document_valid(plan_name, plan, self._schema(plan_name))
 
+    def test_launcher_bottle_id_must_match_embedded_bottle(self) -> None:
+        name = "bottle-migration-plan.schema.json"
+        plan = copy.deepcopy(self._instances()[name])
+        plan["launchers"][0]["bottleId"] = "bottle-2"
+        with self.assertRaises(AssertionError):
+            self._assert_document_valid(name, plan, self._schema(name))
+
     def test_oracle_uses_only_the_python_standard_library(self) -> None:
         tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         imported = {
@@ -289,6 +383,7 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         if name == "bottle-snapshot.schema.json":
             entries = value["entries"]
             cls._assert_sorted_unique(entries, "path")
+            cls._assert_casefold_unique(entry["path"] for entry in entries)
             if value["entryCount"] != len(entries):
                 raise AssertionError("snapshot entry count mismatch")
             file_bytes = sum(
@@ -304,6 +399,8 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             cls._assert_sorted_unique(value["launchers"], "id")
             cls._assert_sorted_unique(value["bottle"].get("recipes", []), "id")
             for launcher in value["launchers"]:
+                if launcher["bottleId"] != value["bottle"]["id"]:
+                    raise AssertionError("launcher Bottle binding mismatch")
                 cls._assert_sorted_unique(launcher["environment"], "name")
 
     @staticmethod
@@ -311,6 +408,54 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         values = [record[key] for record in records]
         if values != sorted(values) or len(values) != len(set(values)):
             raise AssertionError(f"records are not sorted and unique by {key}")
+
+    @staticmethod
+    def _assert_casefold_unique(paths) -> None:
+        folded = [unicodedata.normalize("NFC", path.casefold()) for path in paths]
+        if len(folded) != len(set(folded)):
+            raise AssertionError("paths collide after Unicode case folding")
+
+    @staticmethod
+    def _assert_portable_path(value: str) -> None:
+        try:
+            encoded = value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as error:
+            raise AssertionError("path is not valid Unicode") from error
+        if len(encoded) > 4096:
+            raise AssertionError("path exceeds the UTF-8 byte limit")
+        if unicodedata.normalize("NFC", value) != value:
+            raise AssertionError("path is not NFC")
+
+        components = value.split("/")
+        if not 1 <= len(components) <= 128:
+            raise AssertionError("path depth is invalid")
+        reserved = {
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            "conin$",
+            "conout$",
+            *(f"com{index}" for index in range(1, 10)),
+            *(f"lpt{index}" for index in range(1, 10)),
+        }
+        forbidden = set('<>:"\\|?*')
+        for component in components:
+            if not component or component in (".", ".."):
+                raise AssertionError("path component is ambiguous")
+            if len(component.encode("utf-8")) > 255:
+                raise AssertionError("path component exceeds the UTF-8 byte limit")
+            if component.endswith((".", " ")):
+                raise AssertionError("path component has an ambiguous suffix")
+            if any(
+                character in forbidden
+                or unicodedata.category(character).startswith("C")
+                for character in component
+            ):
+                raise AssertionError("path component contains an unsafe scalar")
+            device_stem = component.split(".", 1)[0].rstrip(" ").casefold()
+            if device_stem in reserved:
+                raise AssertionError("path component is a reserved device name")
 
     @classmethod
     def _assert_valid(
@@ -344,6 +489,9 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         declared_type = schema.get("type")
         if declared_type is not None and not cls._matches_type(value, declared_type):
             raise AssertionError("type mismatch")
+
+        if schema is root.get("$defs", {}).get("relativePath"):
+            cls._assert_portable_path(value)
 
         if isinstance(value, str):
             if len(value) < schema.get("minLength", 0):
