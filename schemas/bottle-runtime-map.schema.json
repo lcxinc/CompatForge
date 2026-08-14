@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "digest": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 2,
+      "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])",
+      "type": "string"
+    },
+    "legacyEngineId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(?![\\s\\S])",
+      "type": "string"
+    },
+    "mapping": {
+      "additionalProperties": false,
+      "properties": {
+        "legacyEngineId": {
+          "$ref": "#/$defs/legacyEngineId"
+        },
+        "runtimePackDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "runtimePackId": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "legacyEngineId",
+        "runtimePackId",
+        "runtimePackDigest"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/bottle-runtime-map.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "mappings": {
+      "items": {
+        "$ref": "#/$defs/mapping"
+      },
+      "maxItems": 4096,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schemaVersion": {
+      "const": "1"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "mappings"
+  ],
+  "title": "CompatForge Bottle Runtime Map",
+  "type": "object"
+}

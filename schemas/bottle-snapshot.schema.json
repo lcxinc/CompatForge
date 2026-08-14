@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "digest": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "directoryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "directory"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "fileEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "size": {
+          "maximum": 68719476736,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "size",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 2,
+      "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])",
+      "type": "string"
+    },
+    "linkEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "link"
+        },
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "target": {
+          "$ref": "#/$defs/relativePath"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "target"
+      ],
+      "type": "object"
+    },
+    "relativePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+(?:/(?=[^/]{1,255}(?:/|(?![\\s\\S])))[\\x20-\\x2E\\x30-\\x7E]+){0,127}(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/bottle-snapshot.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bottleId": {
+      "$ref": "#/$defs/id"
+    },
+    "entries": {
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/fileEntry"
+          },
+          {
+            "$ref": "#/$defs/directoryEntry"
+          },
+          {
+            "$ref": "#/$defs/linkEntry"
+          }
+        ]
+      },
+      "maxItems": 100000,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "entryCount": {
+      "maximum": 100000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "legacyFormat": {
+      "const": "macwin-bottle-v1"
+    },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "totalFileBytes": {
+      "maximum": 1099511627776,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "legacyFormat",
+    "bottleId",
+    "entries",
+    "entryCount",
+    "totalFileBytes"
+  ],
+  "title": "CompatForge Bottle Snapshot Manifest",
+  "type": "object"
+}
