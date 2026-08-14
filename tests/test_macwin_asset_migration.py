@@ -10243,6 +10243,26 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                 "run: iwr ('ht'+'tps'+':'+'//'+'invalid.example/')",
                 1,
             ),
+            text.replace(
+                self.MIGRATION_STEP,
+                self.MIGRATION_STEP
+                + "      - run: python -B tools/convert_macwin_assets.py  --write\n",
+                1,
+            ),
+            text.replace(
+                self.MIGRATION_STEP,
+                self.MIGRATION_STEP
+                + "      - name: hidden quoted run\n"
+                + '        "run": python -B tools/convert_macwin_assets.py  --write\n',
+                1,
+            ),
+            text.replace(
+                self.MIGRATION_STEP,
+                self.MIGRATION_STEP
+                + "      - name: hidden spaced run\n"
+                + "        run : python -B tools/convert_macwin_assets.py  --write\n",
+                1,
+            ),
         )
         for mutant in mutants:
             changed = next(
@@ -10318,6 +10338,10 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
     def _run_command_bytes(text: str) -> bytes:
         selected: list[str] = []
         block_indent: int | None = None
+        mapping_entry = re.compile(
+            r'^(\s*)(-\s+)?("(?:\\.|[^"\\])*"|\'(?:\'\'|[^\'])*\'|[^:#][^:]*?)'
+            r"\s*:\s*(.*)$"
+        )
         for line in text.splitlines():
             indent = len(line) - len(line.lstrip(" "))
             if block_indent is not None:
@@ -10325,12 +10349,19 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
                     selected.append(line)
                     continue
                 block_indent = None
-            match = re.match(r"^(\s*)run:\s*(.*)$", line)
+            match = mapping_entry.match(line)
             if match is None:
                 continue
+            raw_key = match.group(3).strip()
+            if raw_key.startswith(('"', "'")):
+                key = MacWinMigrationWorkflowTests._decode_mapping_key(raw_key, 0)
+            else:
+                key = raw_key
+            if key != "run":
+                continue
             selected.append(line)
-            if match.group(2) in {"|", ">", "|-", ">-", "|+", ">+"}:
-                block_indent = len(match.group(1))
+            if match.group(4) in {"|", ">", "|-", ">-", "|+", ">+"}:
+                block_indent = len(match.group(1)) + len(match.group(2) or "")
         return ("\n".join(selected) + "\n").encode("utf-8")
 
     def _workflow_text(self) -> str:
