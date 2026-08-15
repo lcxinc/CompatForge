@@ -2356,6 +2356,63 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
                 )
                 self.assertTrue(validator.validate_bottle_migration_repository(root))
 
+        runtime_install = (
+            "run: cargo run -p compatforge-cli --locked -- runtime install "
+            "target/runtime-store tests/fixtures/runtime-packs/basic-v1 manifest.json"
+        )
+        with self.subTest(name="runtime-verify-wrong-step"), tempfile.TemporaryDirectory(
+            prefix="compatforge-bottle-validator-"
+        ) as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            workflow = root / ".github" / "workflows" / "ci.yml"
+            content = workflow.read_text(encoding="utf-8")
+            self.assertIn(runtime_install, content)
+            self.assertIn(runtime_verify, content)
+            placeholder = "run: __compatforge_runtime_step_placeholder__"
+            content = content.replace(runtime_install, placeholder, 1)
+            content = content.replace(runtime_verify, runtime_install, 1)
+            content = content.replace(placeholder, runtime_verify, 1)
+            workflow.write_text(content, encoding="utf-8")
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+        receipt_mutations = {
+            "snapshot-wrong-assignment": (
+                "          snapshot_receipt=\"$(cargo run",
+                "          wrong_receipt=\"$(cargo run",
+            ),
+            "plan-wrong-assignment": (
+                "          plan_receipt=\"$(cargo run",
+                "          wrong_receipt=\"$(cargo run",
+            ),
+            "snapshot-assertion-before-assignment": (
+                snapshot_assertion,
+                "          snapshot_receipt=\"$(cargo run",
+            ),
+            "plan-assertion-before-assignment": (
+                plan_assertion,
+                "          plan_receipt=\"$(cargo run",
+            ),
+        }
+        for name, (expected, replacement) in receipt_mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-validator-"
+            ) as temporary:
+                root = self._copy_validation_tree(Path(temporary))
+                workflow = root / ".github" / "workflows" / "ci.yml"
+                content = workflow.read_text(encoding="utf-8")
+                self.assertIn(expected, content)
+                if name.endswith("before-assignment"):
+                    content = content.replace(expected, "", 1)
+                    content = content.replace(
+                        replacement,
+                        f"{expected}\n{replacement}",
+                        1,
+                    )
+                else:
+                    content = content.replace(expected, replacement, 1)
+                workflow.write_text(content, encoding="utf-8")
+                self.assertTrue(validator.validate_bottle_migration_repository(root))
+
     def test_validator_bounds_schema_directory_enumeration_before_sorting(self) -> None:
         validator = self._validator()
 

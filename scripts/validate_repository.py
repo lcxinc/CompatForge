@@ -1276,19 +1276,38 @@ def _bottle_require_ci_sequence(workflow_text: str) -> None:
         "run: cargo run -p compatforge-cli --locked -- runtime verify "
         f"target/runtime-store {BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST}"
     )
-    if not any(line.strip() == runtime_verify for _, line in active):
+    runtime_step_name = "- name: Verify Runtime Pack fixture v2"
+    runtime_steps = [
+        (position, len(line) - len(line.lstrip()))
+        for position, (_, line) in enumerate(active)
+        if line.strip() == runtime_step_name
+    ]
+    if len(runtime_steps) != 1:
+        raise ValueError("Bottle migration CI Runtime Pack verification step is missing")
+    runtime_step_position, runtime_step_indent = runtime_steps[0]
+    runtime_step_lines: list[str] = []
+    for _, line in active[runtime_step_position + 1 :]:
+        indent = len(line) - len(line.lstrip())
+        if indent <= runtime_step_indent:
+            break
+        if indent == runtime_step_indent + 2:
+            runtime_step_lines.append(line.strip())
+    if runtime_step_lines.count(runtime_verify) != 1:
         raise ValueError("Bottle migration CI Runtime Pack verification is missing")
 
     stripped_run_lines = [line.strip() for line in run_lines]
 
-    def require_adjacent_lines(expected: tuple[str, str], label: str) -> None:
-        if not any(
-            stripped_run_lines[index : index + len(expected)] == list(expected)
+    def require_adjacent_lines(expected: tuple[str, str], label: str) -> int:
+        positions = [
+            index
             for index in range(len(stripped_run_lines) - len(expected) + 1)
-        ):
+            if stripped_run_lines[index : index + len(expected)] == list(expected)
+        ]
+        if len(positions) != 1:
             raise ValueError(f"Bottle migration CI {label} assertion is missing")
+        return positions[0]
 
-    require_adjacent_lines(
+    snapshot_assertion = require_adjacent_lines(
         (
             'test "$(python -c \'import json,sys; print(json.load(sys.stdin)["snapshotDigest"])\' '
             '<<<"$snapshot_receipt")" = \\',
@@ -1296,7 +1315,7 @@ def _bottle_require_ci_sequence(workflow_text: str) -> None:
         ),
         "snapshot digest",
     )
-    require_adjacent_lines(
+    plan_assertion = require_adjacent_lines(
         (
             'test "$(python -c \'import json,sys; print(json.load(sys.stdin)["planDigest"])\' '
             '<<<"$plan_receipt")" = \\',
@@ -1304,6 +1323,21 @@ def _bottle_require_ci_sequence(workflow_text: str) -> None:
         ),
         "plan digest",
     )
+    receipt_assignments = {
+        "snapshot": 'snapshot_receipt="$(cargo run -p compatforge-cli --locked -- bottle snapshot \\',
+        "plan": 'plan_receipt="$(cargo run -p compatforge-cli --locked -- bottle plan \\',
+    }
+    for label, assertion_position in (
+        ("snapshot", snapshot_assertion),
+        ("plan", plan_assertion),
+    ):
+        assignment_positions = [
+            index
+            for index, line in enumerate(stripped_run_lines)
+            if line == receipt_assignments[label]
+        ]
+        if len(assignment_positions) != 1 or assignment_positions[0] >= assertion_position:
+            raise ValueError(f"Bottle migration CI {label} receipt assignment is missing")
 
 
 def _bottle_validate_docs_and_ci(root: Path) -> None:
