@@ -26,12 +26,6 @@ struct ObjectIdentity {
     attributes: u32,
 }
 
-pub(crate) fn bind_regular(path: &Path) -> io::Result<(File, FileIdentity)> {
-    let file = open_no_follow(path)?;
-    let identity = file_identity(&file)?;
-    Ok((file, identity))
-}
-
 pub(crate) fn bind_directory(path: &Path) -> io::Result<(File, FileIdentity)> {
     let file = open_directory_no_follow(path)?;
     let metadata = file.metadata()?;
@@ -40,15 +34,17 @@ pub(crate) fn bind_directory(path: &Path) -> io::Result<(File, FileIdentity)> {
     }
     let identity = FileIdentity {
         object: object_identity(&file, &metadata)?,
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
+        len: 0,
+        modified: None,
     };
     Ok((file, identity))
 }
 
 #[cfg(windows)]
 pub(crate) fn bind_regular_at(_parent: &File, _name: &OsStr, path: &Path) -> io::Result<(File, FileIdentity)> {
-    bind_regular(path)
+    let file = open_regular_no_follow(path)?;
+    let identity = file_identity(&file)?;
+    Ok((file, identity))
 }
 
 #[cfg(windows)]
@@ -81,8 +77,8 @@ pub(crate) fn bind_directory_at(parent: &File, name: &OsStr, _path: &Path) -> io
     }
     let identity = FileIdentity {
         object: object_identity(&file, &metadata)?,
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
+        len: 0,
+        modified: None,
     };
     Ok((file, identity))
 }
@@ -177,6 +173,7 @@ fn link_stat_at(parent: &File, name: &std::ffi::CStr) -> io::Result<FileIdentity
 }
 
 #[cfg(unix)]
+#[allow(clippy::useless_conversion)] // libc stat field widths differ across supported Unix targets.
 fn link_identity_from_stat(stat: &libc::stat) -> FileIdentity {
     FileIdentity {
         object: ObjectIdentity {
@@ -195,6 +192,135 @@ pub(crate) fn verify_regular(file: &File, expected: FileIdentity) -> io::Result<
     } else {
         Err(io::Error::new(io::ErrorKind::InvalidData, "source identity changed"))
     }
+}
+
+pub(crate) fn verify_directory(file: &File, expected: FileIdentity) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_dir() || metadata_is_link_or_reparse(&metadata) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "directory is unsafe"));
+    }
+    let actual = FileIdentity {
+        object: object_identity(file, &metadata)?,
+        len: 0,
+        modified: None,
+    };
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "directory identity changed"))
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn create_directory_at(parent: &File, name: &OsStr, _path: &Path) -> io::Result<(File, FileIdentity)> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: the held directory descriptor and NUL-terminated single child
+    // name are valid for the duration of the call.
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    bind_directory_at(parent, OsStr::from_bytes(name.to_bytes()), Path::new(""))
+}
+
+#[cfg(windows)]
+pub(crate) fn create_directory_at(parent: &File, name: &OsStr, path: &Path) -> io::Result<(File, FileIdentity)> {
+    std::fs::create_dir(path)?;
+    bind_directory_at(parent, name, path)
+}
+
+#[cfg(unix)]
+pub(crate) fn create_regular_at(parent: &File, name: &OsStr, _path: &Path) -> io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: the held directory descriptor and NUL-terminated name are
+    // valid; O_CREAT is accompanied by an explicit owner-only mode. A
+    // successful fresh descriptor is transferred to exactly one `File`.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: `openat` returned a fresh descriptor now uniquely owned.
+        Ok(unsafe { File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn create_regular_at(_parent: &File, _name: &OsStr, path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn hard_link_at(directory: &File, source: &OsStr, target: &OsStr, _path: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let source = std::ffi::CString::new(source.as_bytes())?;
+    let target = std::ffi::CString::new(target.as_bytes())?;
+    // SAFETY: both names are NUL-terminated single components relative to the
+    // same held directory descriptor.
+    if unsafe {
+        libc::linkat(
+            directory.as_raw_fd(),
+            source.as_ptr(),
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            0,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn hard_link_at(_directory: &File, source: &OsStr, target: &OsStr, path: &Path) -> io::Result<()> {
+    let source = path.join(source);
+    let target = path.join(target);
+    std::fs::hard_link(source, target)
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_file_at(directory: &File, name: &OsStr, _path: &Path) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: the held directory descriptor and NUL-terminated child name are
+    // valid; no directory-removal flag is supplied.
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_file_at(_directory: &File, name: &OsStr, path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path.join(name))
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_directory(directory: &File) -> io::Result<()> {
+    directory.sync_all()
+}
+
+#[cfg(windows)]
+pub(crate) fn sync_directory(_directory: &File) -> io::Result<()> {
+    Ok(())
 }
 
 fn file_identity(file: &File) -> io::Result<FileIdentity> {
@@ -272,16 +398,6 @@ fn object_identity(file: &File, metadata: &Metadata) -> io::Result<ObjectIdentit
 }
 
 #[cfg(unix)]
-fn open_no_follow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-}
-
-#[cfg(unix)]
 fn open_directory_no_follow(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -292,7 +408,7 @@ fn open_directory_no_follow(path: &Path) -> io::Result<File> {
 }
 
 #[cfg(windows)]
-fn open_no_follow(path: &Path) -> io::Result<File> {
+fn open_regular_no_follow(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt as _;
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;

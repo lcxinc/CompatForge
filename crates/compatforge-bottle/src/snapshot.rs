@@ -125,39 +125,58 @@ enum SourceEntry {
 #[derive(Debug)]
 struct OwnedTemporaryPath {
     path: PathBuf,
+    name: Option<std::ffi::OsString>,
+    directory: Option<File>,
     owned: bool,
 }
 
 #[derive(Debug)]
 struct SnapshotPublication {
-    target: PathBuf,
-    directory: PathBuf,
+    target_name: std::ffi::OsString,
     created: bool,
     identity: Option<FileIdentity>,
 }
 
 impl OwnedTemporaryPath {
+    #[cfg(test)]
     fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
+            name: None,
+            directory: None,
             owned: false,
         }
     }
 
+    fn new_bound(directory: &BoundDirectory, path: PathBuf) -> io::Result<Self> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("temporary file has no name"))?
+            .to_owned();
+        Ok(Self {
+            path,
+            name: Some(name),
+            directory: Some(directory.handle.try_clone()?),
+            owned: false,
+        })
+    }
+
     fn create_new(&mut self) -> io::Result<File> {
         debug_assert!(!self.owned);
-        let file = OpenOptions::new().write(true).create_new(true).open(&self.path)?;
+        let file = match (&self.directory, &self.name) {
+            (Some(directory), Some(name)) => platform::create_regular_at(directory, name, &self.path)?,
+            _ => OpenOptions::new().write(true).create_new(true).open(&self.path)?,
+        };
         self.owned = true;
         Ok(file)
     }
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
     fn remove(&mut self) -> io::Result<()> {
         debug_assert!(self.owned);
-        fs::remove_file(&self.path)?;
+        match (&self.directory, &self.name) {
+            (Some(directory), Some(name)) => platform::remove_file_at(directory, name, &self.path.with_file_name(""))?,
+            _ => fs::remove_file(&self.path)?,
+        }
         self.owned = false;
         Ok(())
     }
@@ -171,9 +190,379 @@ impl OwnedTemporaryPath {
 impl Drop for OwnedTemporaryPath {
     fn drop(&mut self) {
         if self.owned {
-            let _ = fs::remove_file(&self.path);
+            let _ = match (&self.directory, &self.name) {
+                (Some(directory), Some(name)) => {
+                    platform::remove_file_at(directory, name, &self.path.with_file_name(""))
+                }
+                _ => fs::remove_file(&self.path),
+            };
         }
     }
+}
+
+#[derive(Debug)]
+struct BoundDirectory {
+    path: PathBuf,
+    handle: File,
+    identity: FileIdentity,
+}
+
+impl BoundDirectory {
+    fn bind(path: PathBuf) -> io::Result<Self> {
+        let (handle, identity) = platform::bind_directory(&path)?;
+        Ok(Self { path, handle, identity })
+    }
+
+    fn verify(&self) -> io::Result<()> {
+        platform::verify_directory(&self.handle, self.identity)
+    }
+
+    fn bind_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        self.verify()?;
+        let path = self.path.join(name);
+        let (handle, identity) = platform::bind_directory_at(&self.handle, name, &path)?;
+        Ok(Self { path, handle, identity })
+    }
+
+    fn create_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        self.verify()?;
+        let path = self.path.join(name);
+        let (handle, identity) = platform::create_directory_at(&self.handle, name, &path)?;
+        Ok(Self { path, handle, identity })
+    }
+
+    fn bind_or_create_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        match self.bind_child(name) {
+            Ok(child) => Ok(child),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.create_child(name),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn bind_regular(&self, name: &std::ffi::OsStr) -> io::Result<(File, FileIdentity)> {
+        self.verify()?;
+        platform::bind_regular_at(&self.handle, name, &self.path.join(name))
+    }
+
+    fn hard_link(&self, source: &std::ffi::OsStr, target: &std::ffi::OsStr) -> io::Result<()> {
+        self.verify()?;
+        platform::hard_link_at(&self.handle, source, target, &self.path)
+    }
+
+    fn remove_file(&self, name: &std::ffi::OsStr) -> io::Result<()> {
+        self.verify()?;
+        platform::remove_file_at(&self.handle, name, &self.path)
+    }
+
+    fn sync(&self) -> Result<(), BottleMigrationError> {
+        self.verify().map_err(|_| transaction_failed())?;
+        platform::sync_directory(&self.handle).map_err(|_| transaction_failed())
+    }
+}
+
+#[derive(Debug)]
+struct PendingStoreRoot {
+    ancestor: BoundDirectory,
+    components: Vec<PendingStoreComponent>,
+    root: PathBuf,
+}
+
+#[derive(Debug)]
+struct PendingStoreComponent {
+    name: std::ffi::OsString,
+    existing_identity: Option<FileIdentity>,
+}
+
+#[derive(Debug)]
+struct SelectedSource {
+    parent_anchor: Option<(BoundDirectory, std::ffi::OsString)>,
+    parent: BoundDirectory,
+    name: std::ffi::OsString,
+    path: PathBuf,
+    root_handle: File,
+    root_identity: FileIdentity,
+}
+
+impl SelectedSource {
+    fn bind(source: &Path) -> Result<Self, BottleMigrationError> {
+        let source_name = source.file_name().ok_or_else(unsafe_entry)?.to_owned();
+        let source_parent = source
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let canonical_parent = fs::canonicalize(source_parent).map_err(|_| unsafe_entry())?;
+        let parent = BoundDirectory::bind(canonical_parent.clone()).map_err(|_| unsafe_entry())?;
+        let parent_anchor = canonical_parent.file_name().and_then(|parent_name| {
+            canonical_parent.parent().map(|grandparent| {
+                BoundDirectory::bind(grandparent.to_path_buf())
+                    .map(|bound| (bound, parent_name.to_owned()))
+                    .map_err(|_| unsafe_entry())
+            })
+        });
+        let parent_anchor = match parent_anchor {
+            Some(anchor) => Some(anchor?),
+            None => None,
+        };
+        let path = canonical_parent.join(&source_name);
+        let (root_handle, root_identity) =
+            platform::bind_directory_at(&parent.handle, &source_name, &path).map_err(|_| unsafe_entry())?;
+        Ok(Self {
+            parent_anchor,
+            parent,
+            name: source_name,
+            path,
+            root_handle,
+            root_identity,
+        })
+    }
+
+    fn verify(&self) -> Result<(), BottleMigrationError> {
+        if let Some((anchor, parent_name)) = &self.parent_anchor {
+            anchor.verify().map_err(|_| source_changed())?;
+            let (parent, identity) = platform::bind_directory_at(&anchor.handle, parent_name, &self.parent.path)
+                .map_err(|_| source_changed())?;
+            if identity != self.parent.identity {
+                return Err(source_changed());
+            }
+            drop(parent);
+        }
+        self.parent.verify().map_err(|_| source_changed())?;
+        let (root, identity) =
+            platform::bind_directory_at(&self.parent.handle, &self.name, &self.path).map_err(|_| source_changed())?;
+        if identity != self.root_identity {
+            return Err(source_changed());
+        }
+        platform::verify_directory(&self.root_handle, self.root_identity).map_err(|_| source_changed())?;
+        drop(root);
+        Ok(())
+    }
+}
+
+impl PendingStoreRoot {
+    fn bind(root: &Path) -> Result<Self, BottleMigrationError> {
+        if root.as_os_str().is_empty() {
+            return Err(unsafe_entry());
+        }
+        let absolute = if root.is_absolute() {
+            root.to_path_buf()
+        } else {
+            std::env::current_dir().map_err(|_| unsafe_entry())?.join(root)
+        };
+        let normalized = normalize_absolute_path(&absolute)?;
+        let mut existing = normalized.clone();
+        let mut missing = Vec::new();
+        loop {
+            match fs::symlink_metadata(&existing) {
+                Ok(metadata) => {
+                    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                        return Err(unsafe_entry());
+                    }
+                    if existing == normalized {
+                        let name = existing.file_name().ok_or_else(unsafe_entry)?.to_owned();
+                        let parent_path = existing.parent().ok_or_else(unsafe_entry)?;
+                        let resolved_parent = fs::canonicalize(parent_path).map_err(|_| unsafe_entry())?;
+                        let ancestor = BoundDirectory::bind(resolved_parent.clone()).map_err(|_| unsafe_entry())?;
+                        let child_path = resolved_parent.join(&name);
+                        let (_, existing_identity) = platform::bind_directory_at(&ancestor.handle, &name, &child_path)
+                            .map_err(|_| unsafe_entry())?;
+                        return Ok(Self {
+                            ancestor,
+                            components: vec![PendingStoreComponent {
+                                name,
+                                existing_identity: Some(existing_identity),
+                            }],
+                            root: child_path,
+                        });
+                    }
+                    let resolved = fs::canonicalize(&existing).map_err(|_| unsafe_entry())?;
+                    let ancestor = BoundDirectory::bind(resolved.clone()).map_err(|_| unsafe_entry())?;
+                    let mut bound_root = resolved;
+                    for component in missing.iter().rev() {
+                        bound_root.push(component);
+                    }
+                    return Ok(Self {
+                        ancestor,
+                        components: missing
+                            .into_iter()
+                            .rev()
+                            .map(|name| PendingStoreComponent {
+                                name,
+                                existing_identity: None,
+                            })
+                            .collect(),
+                        root: bound_root,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    missing.push(existing.file_name().ok_or_else(unsafe_entry)?.to_owned());
+                    if !existing.pop() {
+                        return Err(unsafe_entry());
+                    }
+                }
+                Err(_) => return Err(unsafe_entry()),
+            }
+        }
+    }
+
+    fn materialize(self) -> Result<StoreRootBinding, BottleMigrationError> {
+        let mut chain = vec![self.ancestor];
+        for component in self.components {
+            let parent = chain.last().expect("a store chain has an ancestor");
+            let child = if let Some(expected) = component.existing_identity {
+                let child = parent.bind_child(&component.name).map_err(|_| unsafe_entry())?;
+                if child.identity != expected {
+                    return Err(unsafe_entry());
+                }
+                child
+            } else {
+                parent.create_child(&component.name).map_err(|_| unsafe_entry())?
+            };
+            chain.push(child);
+        }
+        if chain.last().expect("a store chain has a root").path != self.root {
+            return Err(unsafe_entry());
+        }
+        Ok(StoreRootBinding { chain })
+    }
+}
+
+#[derive(Debug)]
+struct StoreRootBinding {
+    chain: Vec<BoundDirectory>,
+}
+
+impl StoreRootBinding {
+    fn root(&self) -> &BoundDirectory {
+        self.chain.last().expect("a bound store has a root")
+    }
+
+    fn verify(&self) -> Result<(), BottleMigrationError> {
+        for directory in &self.chain {
+            directory.verify().map_err(|_| unsafe_entry())?;
+        }
+        for pair in self.chain.windows(2) {
+            let parent = &pair[0];
+            let child = &pair[1];
+            let name = child.path.file_name().ok_or_else(unsafe_entry)?;
+            let (handle, identity) =
+                platform::bind_directory_at(&parent.handle, name, &child.path).map_err(|_| unsafe_entry())?;
+            if identity != child.identity {
+                return Err(unsafe_entry());
+            }
+            drop(handle);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SnapshotStoreBinding {
+    root: StoreRootBinding,
+    objects_parent: BoundDirectory,
+    objects: BoundDirectory,
+    snapshots_parent: Option<BoundDirectory>,
+    snapshots: Option<BoundDirectory>,
+}
+
+impl SnapshotStoreBinding {
+    fn materialize_objects(pending: PendingStoreRoot) -> Result<Self, BottleMigrationError> {
+        let root = pending.materialize()?;
+        root.verify()?;
+        let objects_parent = root
+            .root()
+            .bind_or_create_child(std::ffi::OsStr::new("objects"))
+            .map_err(|_| unsafe_entry())?;
+        let objects = objects_parent
+            .bind_or_create_child(std::ffi::OsStr::new("sha256"))
+            .map_err(|_| unsafe_entry())?;
+        let binding = Self {
+            root,
+            objects_parent,
+            objects,
+            snapshots_parent: None,
+            snapshots: None,
+        };
+        binding.verify()?;
+        Ok(binding)
+    }
+
+    fn bind_existing(path: &Path) -> Result<Self, BottleMigrationError> {
+        let pending = PendingStoreRoot::bind(path).map_err(|_| snapshot_corrupt())?;
+        if pending
+            .components
+            .iter()
+            .any(|component| component.existing_identity.is_none())
+        {
+            return Err(snapshot_corrupt());
+        }
+        let root = pending.materialize().map_err(|_| snapshot_corrupt())?;
+        let objects_parent = root
+            .root()
+            .bind_child(std::ffi::OsStr::new("objects"))
+            .map_err(|_| snapshot_corrupt())?;
+        let objects = objects_parent
+            .bind_child(std::ffi::OsStr::new("sha256"))
+            .map_err(|_| snapshot_corrupt())?;
+        let snapshots_parent = root
+            .root()
+            .bind_child(std::ffi::OsStr::new("snapshots"))
+            .map_err(|_| snapshot_corrupt())?;
+        let snapshots = snapshots_parent
+            .bind_child(std::ffi::OsStr::new("sha256"))
+            .map_err(|_| snapshot_corrupt())?;
+        Ok(Self {
+            root,
+            objects_parent,
+            objects,
+            snapshots_parent: Some(snapshots_parent),
+            snapshots: Some(snapshots),
+        })
+    }
+
+    fn materialize_snapshots(&mut self) -> Result<(), BottleMigrationError> {
+        if self.snapshots.is_some() {
+            return Ok(());
+        }
+        let snapshots_parent = self
+            .root
+            .root()
+            .bind_or_create_child(std::ffi::OsStr::new("snapshots"))
+            .map_err(|_| unsafe_entry())?;
+        let snapshots = snapshots_parent
+            .bind_or_create_child(std::ffi::OsStr::new("sha256"))
+            .map_err(|_| unsafe_entry())?;
+        self.snapshots_parent = Some(snapshots_parent);
+        self.snapshots = Some(snapshots);
+        self.verify()
+    }
+
+    fn snapshots(&self) -> Result<&BoundDirectory, BottleMigrationError> {
+        self.snapshots.as_ref().ok_or_else(unsafe_entry)
+    }
+
+    fn verify(&self) -> Result<(), BottleMigrationError> {
+        self.root.verify()?;
+        verify_bound_child(self.root.root(), &self.objects_parent)?;
+        verify_bound_child(&self.objects_parent, &self.objects)?;
+        if let (Some(parent), Some(snapshots)) = (&self.snapshots_parent, &self.snapshots) {
+            verify_bound_child(self.root.root(), parent)?;
+            verify_bound_child(parent, snapshots)?;
+        }
+        Ok(())
+    }
+}
+
+fn verify_bound_child(parent: &BoundDirectory, child: &BoundDirectory) -> Result<(), BottleMigrationError> {
+    parent.verify().map_err(|_| unsafe_entry())?;
+    child.verify().map_err(|_| unsafe_entry())?;
+    let name = child.path.file_name().ok_or_else(unsafe_entry)?;
+    let (handle, identity) =
+        platform::bind_directory_at(&parent.handle, name, &child.path).map_err(|_| unsafe_entry())?;
+    if identity != child.identity {
+        return Err(unsafe_entry());
+    }
+    drop(handle);
+    Ok(())
 }
 
 impl SourceEntry {
@@ -240,37 +629,22 @@ impl BottleStore {
     }
 
     pub fn snapshot(&self, source: &Path) -> Result<SnapshotReceipt, BottleMigrationError> {
-        let root_metadata = fs::symlink_metadata(source).map_err(|_| unsafe_entry())?;
-        if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
-            return Err(unsafe_entry());
-        }
-
-        let source_name = source.file_name().ok_or_else(unsafe_entry)?;
-        let source_parent = source
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let (selected_parent_handle, _) = platform::bind_directory(source_parent).map_err(|_| unsafe_entry())?;
-        let (_selected_root_handle, selected_root_identity) =
-            platform::bind_directory_at(&selected_parent_handle, source_name, source).map_err(|_| unsafe_entry())?;
+        let selected_source = SelectedSource::bind(source)?;
+        let pending_store = PendingStoreRoot::bind(&self.root)?;
         run_snapshot_test_hook(SnapshotTestStage::AfterRootBind, "");
-        let source_root = fs::canonicalize(source).map_err(|_| source_changed())?;
-        let (root_handle, root_identity) = platform::bind_directory(&source_root).map_err(|_| unsafe_entry())?;
-        if root_identity != selected_root_identity {
-            return Err(source_changed());
-        }
-        let store_root = resolve_store_root_without_writing(&self.root)?;
-        if store_root == source_root || store_root.starts_with(&source_root) || source_root.starts_with(&store_root) {
+        selected_source.verify()?;
+        let source_root = &selected_source.path;
+        let store_root = &pending_store.root;
+        if store_root == source_root || store_root.starts_with(source_root) || source_root.starts_with(store_root) {
             return Err(unsafe_entry());
         }
-        let store = Self { root: store_root };
 
         let mut source_entries = Vec::new();
         let mut total_file_bytes = 0_u64;
         collect_source_entries(
-            &source_root,
-            &source_root,
-            &root_handle,
+            source_root,
+            source_root,
+            &selected_source.root_handle,
             &mut source_entries,
             &mut total_file_bytes,
         )?;
@@ -278,6 +652,7 @@ impl BottleStore {
         validate_source_graph(&source_entries)?;
         let source_signatures = source_entries.iter().map(SourceSignature::from).collect::<Vec<_>>();
         run_snapshot_test_hook(SnapshotTestStage::AfterSourcePreflight, "");
+        selected_source.verify()?;
 
         let manifest_source = source_entries
             .iter_mut()
@@ -295,6 +670,7 @@ impl BottleStore {
         let manifest_json = std::str::from_utf8(&manifest_bytes).map_err(|_| invalid_manifest())?;
         let legacy_manifest = LegacyBottleManifest::from_json(manifest_json)?;
         validate_id("legacyBottle.id", &legacy_manifest.id).map_err(|_| invalid_manifest())?;
+        let mut store = SnapshotStoreBinding::materialize_objects(pending_store)?;
 
         let mut snapshot_entries = Vec::with_capacity(source_entries.len());
         for source_entry in &mut source_entries {
@@ -309,7 +685,7 @@ impl BottleStore {
                     target: target.clone(),
                 }),
                 SourceEntry::File(file) => {
-                    let digest = store.publish_object(file)?;
+                    let digest = self.publish_object(file, &store.objects)?;
                     snapshot_entries.push(SnapshotEntry::File {
                         path: file.relative_path.clone(),
                         size: file.size,
@@ -329,30 +705,35 @@ impl BottleStore {
         };
         snapshot.validate().map_err(|_| unsafe_entry())?;
         run_snapshot_test_hook(SnapshotTestStage::BeforeSourceRevalidation, "");
-        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
+        verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
         run_snapshot_test_hook(SnapshotTestStage::AfterSourceRevalidation, "");
-        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
-        store
-            .verify_legacy_manifest_object(&snapshot)
+        verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+        self.verify_legacy_manifest_object_at(&snapshot, &store.objects)
             .map_err(|_| source_changed())?;
 
         let published_size = measure_snapshot_json(&snapshot, snapshot_manifest_limit()).map_err(|_| unsafe_entry())?;
         run_snapshot_test_hook(SnapshotTestStage::AfterSnapshotManifestMeasurement, "");
         checked_snapshot_manifest_size(published_size).map_err(|_| unsafe_entry())?;
         let snapshot_digest = digest_snapshot_json(&snapshot).map_err(|_| transaction_failed())?;
-        verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
-        let publication = store.publish_snapshot(&snapshot_digest, &snapshot)?;
+        verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+        store.materialize_snapshots()?;
+        store.verify()?;
+        let publication = self.publish_snapshot(&snapshot_digest, &snapshot, store.snapshots()?)?;
         let post_publication = (|| {
             run_snapshot_test_hook(SnapshotTestStage::AfterSnapshotPublish, "");
-            verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
-            store.verify_snapshot(&snapshot_digest)?;
+            verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+            store.verify()?;
+            self.verify_snapshot_at(&snapshot_digest, store.snapshots()?, &store.objects)?;
+            store.verify()?;
             run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotReturn, "");
-            verify_source_tree(&source_root, root_identity, &source_signatures, total_file_bytes)?;
-            store.verify_snapshot(&snapshot_digest)?;
+            verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+            store.verify()?;
+            self.verify_snapshot_at(&snapshot_digest, store.snapshots()?, &store.objects)?;
+            store.verify()?;
             Ok(())
         })();
         if let Err(error) = post_publication {
-            store.rollback_snapshot(publication, &snapshot)?;
+            self.rollback_snapshot(publication, &snapshot, store.snapshots()?)?;
             return Err(error);
         }
 
@@ -365,20 +746,31 @@ impl BottleStore {
     }
 
     pub fn verify_snapshot(&self, digest: &str) -> Result<BottleSnapshot, BottleMigrationError> {
+        let store = SnapshotStoreBinding::bind_existing(&self.root)?;
+        store.verify().map_err(|_| snapshot_corrupt())?;
+        self.verify_snapshot_at(
+            digest,
+            store.snapshots().map_err(|_| snapshot_corrupt())?,
+            &store.objects,
+        )
+    }
+
+    fn verify_snapshot_at(
+        &self,
+        digest: &str,
+        snapshot_directory: &BoundDirectory,
+        object_directory: &BoundDirectory,
+    ) -> Result<BottleSnapshot, BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
-        let path = self
-            .root
-            .join("snapshots")
-            .join("sha256")
-            .join(format!("{digest_hex}.json"));
-        let metadata = fs::symlink_metadata(&path).map_err(|_| snapshot_corrupt())?;
-        if !metadata.file_type().is_file()
-            || metadata.file_type().is_symlink()
-            || metadata.len() > u64::try_from(MAX_SNAPSHOT_MANIFEST_BYTES).expect("manifest bound fits u64")
+        let name = std::ffi::OsString::from(format!("{digest_hex}.json"));
+        let (mut file, identity) = snapshot_directory.bind_regular(&name).map_err(|_| snapshot_corrupt())?;
+        if file.metadata().map_err(|_| snapshot_corrupt())?.len()
+            > u64::try_from(MAX_SNAPSHOT_MANIFEST_BYTES).expect("manifest bound fits u64")
         {
             return Err(snapshot_corrupt());
         }
-        let bytes = fs::read(&path).map_err(|_| snapshot_corrupt())?;
+        let bytes = read_bounded_file(&mut file, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
         let snapshot: BottleSnapshot = serde_json::from_slice(&bytes).map_err(|_| snapshot_corrupt())?;
         snapshot.validate()?;
 
@@ -391,17 +783,21 @@ impl BottleStore {
 
         for entry in &snapshot.entries {
             if let SnapshotEntry::File { size, digest, .. } = entry {
-                self.verify_object(digest, *size)?;
+                self.verify_object_at(object_directory, digest, *size)?;
             }
         }
-        self.verify_legacy_manifest_object(&snapshot)?;
+        self.verify_legacy_manifest_object_at(&snapshot, object_directory)?;
         Ok(snapshot)
     }
 
-    fn publish_object(&self, source: &mut SourceFile) -> Result<String, BottleMigrationError> {
-        let object_directory = self.root.join("objects").join("sha256");
-        fs::create_dir_all(&object_directory).map_err(|_| transaction_failed())?;
-        let mut temporary = OwnedTemporaryPath::new(temporary_path(&object_directory, "object"));
+    fn publish_object(
+        &self,
+        source: &mut SourceFile,
+        object_directory: &BoundDirectory,
+    ) -> Result<String, BottleMigrationError> {
+        let mut temporary =
+            OwnedTemporaryPath::new_bound(object_directory, temporary_path(&object_directory.path, "object"))
+                .map_err(|_| transaction_failed())?;
         (|| {
             platform::verify_regular(&source.file, source.identity).map_err(|_| source_changed())?;
             let mut output = temporary.create_new().map_err(|_| transaction_failed())?;
@@ -419,39 +815,59 @@ impl BottleStore {
             output.sync_all().map_err(|_| transaction_failed())?;
             drop(output);
             let digest_hex = digest_hex(&digest).ok_or_else(transaction_failed)?;
-            let target = object_directory.join(digest_hex);
-            if target.exists() {
-                self.verify_object(&digest, copied)?;
-                temporary.remove().map_err(|_| transaction_failed())?;
-                return Ok(digest);
+            let target_name = std::ffi::OsStr::new(digest_hex);
+            match object_directory.bind_regular(target_name) {
+                Ok((file, identity)) => {
+                    self.verify_object_handle(file, identity, &digest, copied)?;
+                    temporary.remove().map_err(|_| transaction_failed())?;
+                    return Ok(digest);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err(snapshot_corrupt()),
             }
             run_snapshot_test_hook(SnapshotTestStage::BeforeObjectPublish, &source.relative_path);
-            match fs::hard_link(temporary.path(), &target) {
+            let temporary_name = temporary.name.as_deref().ok_or_else(transaction_failed)?;
+            match object_directory.hard_link(temporary_name, target_name) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    self.verify_object(&digest, copied)?;
+                    self.verify_object_at(object_directory, &digest, copied)?;
                     temporary.remove().map_err(|_| transaction_failed())?;
                     return Ok(digest);
                 }
                 Err(_) => return Err(transaction_failed()),
             }
             temporary.remove().map_err(|_| transaction_failed())?;
-            sync_directory(&object_directory)?;
-            self.verify_object(&digest, copied)?;
+            object_directory.sync()?;
+            self.verify_object_at(object_directory, &digest, copied)?;
             Ok(digest)
         })()
     }
 
-    fn verify_object(&self, digest: &str, size: u64) -> Result<(), BottleMigrationError> {
+    fn verify_object_at(
+        &self,
+        directory: &BoundDirectory,
+        digest: &str,
+        size: u64,
+    ) -> Result<(), BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
-        let path = self.root.join("objects").join("sha256").join(digest_hex);
-        let metadata = fs::symlink_metadata(&path).map_err(|_| snapshot_corrupt())?;
-        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() != size {
+        let (file, identity) = directory
+            .bind_regular(std::ffi::OsStr::new(digest_hex))
+            .map_err(|_| snapshot_corrupt())?;
+        self.verify_object_handle(file, identity, digest, size)
+    }
+
+    fn verify_object_handle(
+        &self,
+        mut file: File,
+        identity: FileIdentity,
+        digest: &str,
+        size: u64,
+    ) -> Result<(), BottleMigrationError> {
+        if file.metadata().map_err(|_| snapshot_corrupt())?.len() != size {
             return Err(snapshot_corrupt());
         }
-        let mut file = File::open(path).map_err(|_| snapshot_corrupt())?;
         let (actual, actual_size) = digest_reader(&mut file).map_err(|_| snapshot_corrupt())?;
-        if actual != digest || actual_size != size {
+        if actual != digest || actual_size != size || platform::verify_regular(&file, identity).is_err() {
             return Err(snapshot_corrupt());
         }
         Ok(())
@@ -461,17 +877,15 @@ impl BottleStore {
         &self,
         digest: &str,
         snapshot: &BottleSnapshot,
+        directory: &BoundDirectory,
     ) -> Result<SnapshotPublication, BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(transaction_failed)?;
-        let directory = self.root.join("snapshots").join("sha256");
-        fs::create_dir_all(&directory).map_err(|_| transaction_failed())?;
-        let target = directory.join(format!("{digest_hex}.json"));
-        match fs::symlink_metadata(&target) {
-            Ok(_) => {
-                compare_existing_snapshot_model(&target, snapshot)?;
+        let target_name = std::ffi::OsString::from(format!("{digest_hex}.json"));
+        match directory.bind_regular(&target_name) {
+            Ok((file, identity)) => {
+                compare_existing_snapshot_model_handle(file, identity, snapshot)?;
                 return Ok(SnapshotPublication {
-                    target,
-                    directory,
+                    target_name,
                     created: false,
                     identity: None,
                 });
@@ -480,25 +894,28 @@ impl BottleStore {
             Err(_) => return Err(snapshot_corrupt()),
         }
 
-        let mut temporary = OwnedTemporaryPath::new(temporary_path(&directory, "snapshot"));
+        let mut temporary = OwnedTemporaryPath::new_bound(directory, temporary_path(&directory.path, "snapshot"))
+            .map_err(|_| transaction_failed())?;
         (|| {
             let mut file = temporary.create_new().map_err(|_| transaction_failed())?;
             render_snapshot_json(snapshot, true, &mut file).map_err(|_| transaction_failed())?;
             file.write_all(b"\n").map_err(|_| transaction_failed())?;
             file.sync_all().map_err(|_| transaction_failed())?;
             drop(file);
-            let (owned_handle, owned_identity) =
-                platform::bind_regular(temporary.path()).map_err(|_| transaction_failed())?;
+            let temporary_name = temporary.name.as_deref().ok_or_else(transaction_failed)?;
+            let (owned_handle, owned_identity) = directory
+                .bind_regular(temporary_name)
+                .map_err(|_| transaction_failed())?;
             run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotPublish, "");
-            match fs::hard_link(temporary.path(), &target) {
+            match directory.hard_link(temporary_name, &target_name) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    compare_existing_snapshot_model(&target, snapshot)?;
+                    let (file, identity) = directory.bind_regular(&target_name).map_err(|_| snapshot_corrupt())?;
+                    compare_existing_snapshot_model_handle(file, identity, snapshot)?;
                     drop(owned_handle);
                     temporary.remove().map_err(|_| transaction_failed())?;
                     return Ok(SnapshotPublication {
-                        target,
-                        directory,
+                        target_name,
                         created: false,
                         identity: None,
                     });
@@ -507,10 +924,9 @@ impl BottleStore {
             }
             drop(owned_handle);
             temporary.remove().map_err(|_| transaction_failed())?;
-            sync_directory(&directory)?;
+            directory.sync()?;
             Ok(SnapshotPublication {
-                target,
-                directory,
+                target_name,
                 created: true,
                 identity: Some(owned_identity),
             })
@@ -521,12 +937,13 @@ impl BottleStore {
         &self,
         publication: SnapshotPublication,
         snapshot: &BottleSnapshot,
+        directory: &BoundDirectory,
     ) -> Result<(), BottleMigrationError> {
         if !publication.created {
             return Ok(());
         }
         let expected_identity = publication.identity.ok_or_else(snapshot_corrupt)?;
-        let (mut target, actual_identity) = match platform::bind_regular(&publication.target) {
+        let (mut target, actual_identity) = match directory.bind_regular(&publication.target_name) {
             Ok(bound) => bound,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(_) => return Err(snapshot_corrupt()),
@@ -540,11 +957,17 @@ impl BottleStore {
             return Err(snapshot_corrupt());
         }
         drop(target);
-        fs::remove_file(&publication.target).map_err(|_| snapshot_corrupt())?;
-        sync_directory(&publication.directory)
+        directory
+            .remove_file(&publication.target_name)
+            .map_err(|_| snapshot_corrupt())?;
+        directory.sync()
     }
 
-    fn verify_legacy_manifest_object(&self, snapshot: &BottleSnapshot) -> Result<(), BottleMigrationError> {
+    fn verify_legacy_manifest_object_at(
+        &self,
+        snapshot: &BottleSnapshot,
+        object_directory: &BoundDirectory,
+    ) -> Result<(), BottleMigrationError> {
         let (size, digest) = snapshot
             .entries
             .iter()
@@ -557,11 +980,11 @@ impl BottleStore {
             return Err(snapshot_corrupt());
         }
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
-        let bytes = read_bounded(
-            &self.root.join("objects").join("sha256").join(digest_hex),
-            MAX_MANIFEST_BYTES,
-        )
-        .map_err(|_| snapshot_corrupt())?;
+        let (mut file, identity) = object_directory
+            .bind_regular(std::ffi::OsStr::new(digest_hex))
+            .map_err(|_| snapshot_corrupt())?;
+        let bytes = read_bounded_file(&mut file, MAX_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
         let json = std::str::from_utf8(&bytes).map_err(|_| snapshot_corrupt())?;
         let manifest = LegacyBottleManifest::from_json(json).map_err(|_| snapshot_corrupt())?;
         if manifest.id != snapshot.bottle_id {
@@ -698,62 +1121,29 @@ fn validate_source_graph(entries: &[SourceEntry]) -> Result<(), BottleMigrationE
 }
 
 fn verify_source_tree(
-    root: &Path,
-    expected_root: FileIdentity,
+    selected: &SelectedSource,
     expected_entries: &[SourceSignature],
     expected_total: u64,
 ) -> Result<(), BottleMigrationError> {
-    let (_root_handle, actual_root) = platform::bind_directory(root).map_err(|_| source_changed())?;
-    if actual_root != expected_root {
-        return Err(source_changed());
-    }
+    selected.verify()?;
     let mut entries = Vec::new();
     let mut total = 0;
-    collect_source_entries(root, root, &_root_handle, &mut entries, &mut total).map_err(|_| source_changed())?;
+    collect_source_entries(
+        &selected.path,
+        &selected.path,
+        &selected.root_handle,
+        &mut entries,
+        &mut total,
+    )
+    .map_err(|_| source_changed())?;
     entries.sort_by(|left, right| left.path().cmp(right.path()));
     validate_source_graph(&entries).map_err(|_| source_changed())?;
     let actual = entries.iter().map(SourceSignature::from).collect::<Vec<_>>();
     if actual != expected_entries || total != expected_total {
         return Err(source_changed());
     }
+    selected.verify()?;
     Ok(())
-}
-
-fn resolve_store_root_without_writing(root: &Path) -> Result<PathBuf, BottleMigrationError> {
-    if root.as_os_str().is_empty() {
-        return Err(unsafe_entry());
-    }
-    let absolute = if root.is_absolute() {
-        root.to_path_buf()
-    } else {
-        std::env::current_dir().map_err(|_| unsafe_entry())?.join(root)
-    };
-    let normalized = normalize_absolute_path(&absolute)?;
-
-    let mut existing = normalized.clone();
-    let mut missing = Vec::new();
-    loop {
-        match fs::symlink_metadata(&existing) {
-            Ok(metadata) => {
-                if !metadata.file_type().is_dir() {
-                    return Err(unsafe_entry());
-                }
-                let mut resolved = fs::canonicalize(&existing).map_err(|_| unsafe_entry())?;
-                for component in missing.iter().rev() {
-                    resolved.push(component);
-                }
-                return Ok(resolved);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let component = existing.file_name().ok_or_else(unsafe_entry)?.to_owned();
-                missing.push(component);
-                if !existing.pop() {
-                    return Err(unsafe_entry());
-                }
-            }
-            Err(_) => return Err(unsafe_entry()),
-        }
-    }
 }
 
 struct BoundedCounter {
@@ -961,9 +1351,14 @@ fn write_json_string(output: &mut impl Write, value: &str) -> io::Result<()> {
     serde_json::to_writer(output, value).map_err(io::Error::other)
 }
 
-fn compare_existing_snapshot_model(path: &Path, snapshot: &BottleSnapshot) -> Result<(), BottleMigrationError> {
+fn compare_existing_snapshot_model_handle(
+    mut file: File,
+    identity: FileIdentity,
+    snapshot: &BottleSnapshot,
+) -> Result<(), BottleMigrationError> {
     let expected_size = measure_snapshot_json(snapshot, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
-    let bytes = read_bounded(path, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+    let bytes = read_bounded_file(&mut file, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+    platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
     if bytes.len() != expected_size || !snapshot_json_matches(snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
         return Err(snapshot_corrupt());
     }
@@ -1083,25 +1478,6 @@ fn validate_basic_path(value: &str) -> Result<(), BottleMigrationError> {
     path::validate_relative_path(value).map_err(|_| unsafe_entry())
 }
 
-fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > u64::try_from(maximum).expect("read bound fits u64")
-    {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bounded file rejected"));
-    }
-    let mut file = File::open(path)?;
-    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(maximum));
-    Read::by_ref(&mut file)
-        .take(u64::try_from(maximum).expect("read bound fits u64") + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bounded file rejected"));
-    }
-    Ok(bytes)
-}
-
 fn read_bounded_file(file: &mut File, maximum: usize) -> io::Result<Vec<u8>> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() || metadata.len() > u64::try_from(maximum).expect("read bound fits u64") {
@@ -1157,18 +1533,6 @@ fn run_snapshot_test_hook(stage: SnapshotTestStage, path: &str) {
 
 #[cfg(not(test))]
 fn run_snapshot_test_hook(_stage: SnapshotTestStage, _path: &str) {}
-
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), BottleMigrationError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| transaction_failed())
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), BottleMigrationError> {
-    Ok(())
-}
 
 const fn unsafe_entry() -> BottleMigrationError {
     BottleMigrationError::new(DiagnosticCode::UnsafeEntry)
@@ -1356,6 +1720,11 @@ mod tests {
         let succeeded = unsafe { get_process_handle_count(get_current_process(), std::ptr::addr_of_mut!(count)) };
         assert_ne!(succeeded, 0);
         count
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_file_descriptor_count() -> usize {
+        fs::read_dir("/proc/self/fd").unwrap().count()
     }
 
     fn set_snapshot_hook(stage: super::SnapshotTestStage, path: &str, hook: impl FnOnce() + 'static) {
@@ -1712,7 +2081,8 @@ mod tests {
         drop(source);
         fs::remove_file(&source_path).unwrap();
         fs::write(&source_path, b"replaced").unwrap();
-        let (file, _) = super::platform::bind_regular(&source_path).unwrap();
+        let (file, _) =
+            super::platform::bind_regular_at(&root_handle, std::ffi::OsStr::new("payload.txt"), &source_path).unwrap();
         let mut replaced_source = super::SourceFile {
             relative_path: "payload.txt".into(),
             size: 8,
@@ -1721,9 +2091,11 @@ mod tests {
             preflight_digest: super::sha256_bytes(b"original"),
         };
         let store = temporary.path().join("store");
+        fs::create_dir(&store).unwrap();
+        let object_directory = super::BoundDirectory::bind(store.clone()).unwrap();
 
         let error = BottleStore::new(store)
-            .publish_object(&mut replaced_source)
+            .publish_object(&mut replaced_source, &object_directory)
             .unwrap_err();
 
         assert_eq!(error.code(), DiagnosticCode::SourceChanged);
@@ -1902,6 +2274,141 @@ mod tests {
 
         assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
         assert_eq!(fs::read(target).unwrap(), b"foreign snapshot sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_never_follows_a_store_root_link_inserted_after_preflight() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TemporaryDirectory::new("snapshot-store-root-link-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let external = temporary.path().join("external");
+        fs::create_dir(&external).unwrap();
+        let sentinel = external.join("sentinel.txt");
+        fs::write(&sentinel, b"external sentinel\n").unwrap();
+        let raced_store = store.clone();
+        let raced_external = external.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            symlink(raced_external, raced_store).unwrap();
+        });
+
+        let result = BottleStore::new(&store).snapshot(&source);
+        fs::remove_file(&store).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"external sentinel\n");
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_revalidates_a_present_store_root_by_parent_and_name() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TemporaryDirectory::new("snapshot-present-store-link-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        fs::create_dir(&store).unwrap();
+        let moved_store = temporary.path().join("moved-store");
+        let external = temporary.path().join("external");
+        fs::create_dir(&external).unwrap();
+        let sentinel = external.join("sentinel.txt");
+        fs::write(&sentinel, b"external sentinel\n").unwrap();
+        let raced_store = store.clone();
+        let raced_moved = moved_store.clone();
+        let raced_external = external.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            fs::rename(&raced_store, &raced_moved).unwrap();
+            symlink(raced_external, raced_store).unwrap();
+        });
+
+        let result = BottleStore::new(&store).snapshot(&source);
+        fs::remove_file(&store).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"external sentinel\n");
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 1);
+        assert!(moved_store.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_security_never_follows_a_store_root_junction_inserted_after_preflight() {
+        let temporary = TemporaryDirectory::new("snapshot-store-root-junction-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let external = temporary.path().join("external");
+        fs::create_dir(&external).unwrap();
+        let sentinel = external.join("sentinel.txt");
+        fs::write(&sentinel, b"external sentinel\n").unwrap();
+        let raced_store = store.clone();
+        let raced_external = external.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            create_directory_junction(&raced_store, &raced_external);
+        });
+
+        let result = BottleStore::new(&store).snapshot(&source);
+        fs::remove_dir(&store).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(fs::read(&sentinel).unwrap(), b"external sentinel\n");
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 1);
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_security_revalidates_a_present_store_root_by_parent_and_name() {
+        let temporary = TemporaryDirectory::new("snapshot-present-store-junction-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        fs::create_dir(&store).unwrap();
+        let external = temporary.path().join("external");
+        fs::create_dir(&external).unwrap();
+        let sentinel = external.join("sentinel.txt");
+        fs::write(&sentinel, b"external sentinel\n").unwrap();
+        let raced_store = store.clone();
+        let raced_external = external.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            fs::remove_dir(&raced_store).unwrap();
+            create_directory_junction(&raced_store, &raced_external);
+        });
+
+        let result = BottleStore::new(&store).snapshot(&source);
+        fs::remove_dir(&store).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"external sentinel\n");
+        assert_eq!(fs::read_dir(&external).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_security_holds_the_selected_source_name_against_windows_rename() {
+        let temporary = TemporaryDirectory::new("snapshot-selected-source-held-windows");
+        let source = create_regular_source(temporary.path());
+        let moved = temporary.path().join("moved-source");
+        let rename_was_denied = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&rename_was_denied);
+        let source_for_hook = source.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterRootBind, "", move || {
+            observed.set(fs::rename(source_for_hook, moved).is_err());
+        });
+
+        let receipt = BottleStore::new(temporary.path().join("store"))
+            .snapshot(&source)
+            .unwrap();
+
+        assert!(
+            rename_was_denied.get(),
+            "held source handles must deny rename/delete sharing"
+        );
+        assert_eq!(receipt.snapshot_digest, SNAPSHOT_DIGEST);
     }
 
     #[test]
@@ -2129,6 +2636,96 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn snapshot_security_rejects_selected_source_name_replaced_by_link_to_the_same_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TemporaryDirectory::new("snapshot-selected-root-link-race");
+        let source = create_regular_source(temporary.path());
+        let selected_name = source.clone();
+        let moved = temporary.path().join("moved-source");
+        let moved_for_hook = moved.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterRootBind, "", move || {
+            fs::rename(&selected_name, &moved_for_hook).unwrap();
+            symlink(&moved_for_hook, &selected_name).unwrap();
+        });
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store.exists());
+        fs::remove_file(&source).unwrap();
+        assert!(moved.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_selected_source_parent_replacement() {
+        let temporary = TemporaryDirectory::new("snapshot-selected-parent-race");
+        let selected_parent = temporary.path().join("selected-parent");
+        fs::create_dir(&selected_parent).unwrap();
+        let source = create_regular_source(&selected_parent);
+        let moved_parent = temporary.path().join("moved-parent");
+        let selected_parent_for_hook = selected_parent.clone();
+        let moved_parent_for_hook = moved_parent.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterRootBind, "", move || {
+            fs::rename(&selected_parent_for_hook, &moved_parent_for_hook).unwrap();
+            fs::create_dir(&selected_parent_for_hook).unwrap();
+        });
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store.exists());
+        assert!(moved_parent.join("source/manifest.json").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_nested_directory_replaced_by_link_to_the_same_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TemporaryDirectory::new("snapshot-nested-directory-race");
+        let source = create_regular_source(temporary.path());
+        let nested = source.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("nested.txt"), b"nested sentinel\n").unwrap();
+        let moved = source.join("moved-nested");
+        let nested_for_hook = nested.clone();
+        let moved_for_hook = moved.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSourcePreflight, "", move || {
+            fs::rename(&nested_for_hook, &moved_for_hook).unwrap();
+            symlink("moved-nested", &nested_for_hook).unwrap();
+        });
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store.join("snapshots").exists());
+        assert_eq!(fs::read(moved.join("nested.txt")).unwrap(), b"nested sentinel\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_rejects_late_source_leaf_deletion() {
+        let temporary = TemporaryDirectory::new("snapshot-late-deletion");
+        let source = create_regular_source(temporary.path());
+        let deleted = source.join("payload.txt");
+        set_snapshot_hook(super::SnapshotTestStage::BeforeSourceRevalidation, "", move || {
+            fs::remove_file(deleted).unwrap();
+        });
+        let store = temporary.path().join("store");
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store.join("snapshots").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn snapshot_security_rejects_absolute_escaping_and_cyclic_symlinks_before_store_write() {
         use std::os::unix::fs::symlink;
 
@@ -2316,6 +2913,18 @@ mod tests {
         let source = create_regular_source(temporary.path());
         #[cfg(windows)]
         let handles_before = process_handle_count();
+        #[cfg(target_os = "linux")]
+        let descriptors_before = process_file_descriptor_count();
+        let failure_source = temporary.path().join("failure-source");
+        fs::create_dir(&failure_source).unwrap();
+        fs::write(failure_source.join("manifest.json"), b"{}\n").unwrap();
+        let failure = BottleStore::new(temporary.path().join("failure-store")).snapshot(&failure_source);
+        assert_eq!(failure.unwrap_err().code(), DiagnosticCode::InvalidManifest);
+        fs::remove_dir_all(&failure_source).unwrap();
+        #[cfg(windows)]
+        assert_eq!(process_handle_count(), handles_before);
+        #[cfg(target_os = "linux")]
+        assert_eq!(process_file_descriptor_count(), descriptors_before);
         let source_for_unwind = source.clone();
         let panic_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
@@ -2339,5 +2948,7 @@ mod tests {
         assert!(!source.exists());
         #[cfg(windows)]
         assert_eq!(process_handle_count(), handles_before);
+        #[cfg(target_os = "linux")]
+        assert_eq!(process_file_descriptor_count(), descriptors_before);
     }
 }
