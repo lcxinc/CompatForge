@@ -55,6 +55,7 @@
       }
     },
     "guestArtifact": { "$ref": "guest-artifact.schema.json" },
+    "bottleExecutable": { "$ref": "bottle-executable.schema.json" },
     "mounts": {
       "type": "array",
       "items": {

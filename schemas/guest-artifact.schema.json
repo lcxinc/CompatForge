@@ -21,7 +21,7 @@
     "originalName": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$" },
     "architecture": { "enum": ["i386", "x86_64"] },
     "imageKind": { "const": "executable" },
-    "subsystem": { "const": "windowsConsole" },
+    "subsystem": { "enum": ["windowsConsole", "windowsGui"] },
     "inspectionSchemaVersion": { "const": "1" }
   }
 }

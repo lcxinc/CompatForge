@@ -1,0 +1,60 @@
+{
+  "$id": "https://compatforge.dev/schemas/bottle-executable.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "architecture": {
+      "enum": [
+        "i386",
+        "x86_64"
+      ]
+    },
+    "bottleId": {
+      "pattern": "^[a-z0-9][a-z0-9._-]+$",
+      "type": "string"
+    },
+    "digest": {
+      "pattern": "^sha256:[a-fA-F0-9]{64}$",
+      "type": "string"
+    },
+    "imageKind": {
+      "const": "executable"
+    },
+    "inspectionSchemaVersion": {
+      "const": "1"
+    },
+    "originalName": {
+      "minLength": 1,
+      "pattern": "^[^/\\\\]+$",
+      "type": "string"
+    },
+    "path": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "sizeBytes": {
+      "maximum": 67108864,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "subsystem": {
+      "enum": [
+        "windowsConsole",
+        "windowsGui"
+      ]
+    }
+  },
+  "required": [
+    "bottleId",
+    "digest",
+    "sizeBytes",
+    "path",
+    "originalName",
+    "architecture",
+    "imageKind",
+    "subsystem",
+    "inspectionSchemaVersion"
+  ],
+  "title": "CompatForge Bottle Executable Binding",
+  "type": "object"
+}
