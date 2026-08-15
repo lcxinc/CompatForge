@@ -2637,6 +2637,10 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "snapshot.rs",
                 'use ::std::process as p; fn controlled_process_leading_colon_alias() { p::Command::new("sh"); }',
             ),
+            "process-leading-colon-root-alias": (
+                "snapshot.rs",
+                'use ::std as s; fn controlled_process_leading_colon_root_alias() { s::process::Command::new("sh"); }',
+            ),
             "environment-args": (
                 "platform.rs",
                 "std::env::args();",
