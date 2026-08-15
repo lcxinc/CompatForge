@@ -2258,6 +2258,13 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
             self.assertTrue(validator.validate_bottle_migration_repository(root))
         with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
             root = self._copy_validation_tree(Path(temporary))
+            shutil.copy2(
+                root / "schemas" / "bottle.schema.json",
+                root / "schemas" / "forged.schema.json",
+            )
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
             schema_copy = root / "schemas-copy"
             root.joinpath("schemas").rename(schema_copy)
             try:

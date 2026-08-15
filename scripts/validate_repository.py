@@ -118,6 +118,32 @@ BOTTLE_MIGRATION_SCHEMA_SHA256 = {
     "bottle-runtime-map.schema.json": "sha256:42ce6b2d4bff934e6ed5936aa5f260c17a88ca2c05c671ab01cb4abd8734804c",
     "bottle-snapshot.schema.json": "sha256:6b97f84b1c6740e25e12392e9aa430c2f4d6fb09d7e85c82ffffd2fb1ba8aa97",
 }
+BOTTLE_MIGRATION_SCHEMA_NAMES = frozenset(
+    {
+        "bottle.schema.json",
+        "bottle-active-ref.schema.json",
+        "bottle-migration-plan.schema.json",
+        "bottle-runtime-map.schema.json",
+        "bottle-snapshot.schema.json",
+        "capability-report.schema.json",
+        "compatibility-result.schema.json",
+        "context-config.schema.json",
+        "executable-inspection.schema.json",
+        "guest-artifact.schema.json",
+        "launch-plan.schema.json",
+        "launch-request.schema.json",
+        "macos-provider.schema.json",
+        "macwin-patch-review.schema.json",
+        "macwin-source-pack.schema.json",
+        "migration-record.schema.json",
+        "portable-fixture.schema.json",
+        "portable-probe.schema.json",
+        "quarantine.schema.json",
+        "recipe.schema.json",
+        "runtime-event.schema.json",
+        "runtime-pack.schema.json",
+    }
+)
 BOTTLE_MIGRATION_FILE_SHA256 = {
     "goldens/win32-launch-plan.json": "sha256:041c16b7aa1040395e685db817c2360b57208d8c5d502bec843ee7944845335d",
     "goldens/win32-legacy-planning.json": "sha256:4db891c9b1524fc7cab947e7cb331d42a9a4067e2b53c849e8c8ef600b4fefe7",
@@ -693,10 +719,9 @@ def _bottle_revalidate_fixture(
 def _bottle_schema_names(schema_root: Path) -> tuple[str, ...]:
     """Return the authenticated Bottle schema names without following links.
 
-    The repository has other (non-Bottle) schemas.  They are intentionally
-    outside this namespace, but every entry in the directory still has to be a
-    regular ``*.schema.json`` document so an arbitrary payload cannot be
-    smuggled into the trust root.
+    The repository has other (non-Bottle) schemas, so the complete current
+    schema set is pinned separately from the four Bottle schema digests.  This
+    keeps general schemas available while rejecting arbitrary additions.
     """
 
     _bottle_directory_metadata(schema_root)
@@ -721,10 +746,7 @@ def _bottle_schema_names(schema_root: Path) -> tuple[str, ...]:
         if not entry.name.endswith(".schema.json"):
             raise ValueError(f"Bottle schema directory contains an unexpected entry: {entry.name}")
         names.append(entry.name)
-    bottle_names = tuple(
-        name for name in names if name.startswith("bottle-") and name.endswith(".schema.json")
-    )
-    if set(bottle_names) != set(BOTTLE_MIGRATION_SCHEMA_SHA256):
+    if set(names) != BOTTLE_MIGRATION_SCHEMA_NAMES:
         raise ValueError("Bottle schema set drifted")
     return tuple(names)
 
