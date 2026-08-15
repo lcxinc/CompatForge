@@ -33,19 +33,20 @@ enum ImportPhase {
 
 #[cfg(test)]
 thread_local! {
+    #[cfg(not(target_os = "macos"))]
     static IMPORT_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static IMPORT_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FAIL_NEXT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_WRITE_REPLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn fail_import_at_ordinal(ordinal: usize) {
     IMPORT_FAILURE_ORDINAL.with(|failure| failure.set(Some(ordinal)));
     IMPORT_ORDINAL.with(|current| current.set(0));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn reset_import_failure() {
     IMPORT_FAILURE_ORDINAL.with(|failure| failure.set(None));
     IMPORT_ORDINAL.with(|current| current.set(0));
@@ -79,12 +80,13 @@ fn take_write_failure(path: &Path) -> bool {
 fn checkpoint() -> Result<(), BottleMigrationError> {
     #[cfg(test)]
     {
-        let ordinal = IMPORT_ORDINAL.with(|current| {
+        let _ordinal = IMPORT_ORDINAL.with(|current| {
             let next = current.get().saturating_add(1);
             current.set(next);
             next
         });
-        if IMPORT_FAILURE_ORDINAL.with(|failure| failure.get() == Some(ordinal)) {
+        #[cfg(not(target_os = "macos"))]
+        if IMPORT_FAILURE_ORDINAL.with(|failure| failure.get() == Some(_ordinal)) {
             return Err(transaction_failed());
         }
     }
@@ -1430,11 +1432,15 @@ fn rollback_unavailable() -> BottleMigrationError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
     use super::super::{BottleMigrationPlan, BottleStore, RuntimeMap, RuntimeMapping};
+    #[cfg(not(target_os = "macos"))]
     use compatforge_domain::{
         CpuArchitecture, HostOs, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest, SCHEMA_VERSION_V1,
     };
+    #[cfg(not(target_os = "macos"))]
     use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackStore};
+    #[cfg(not(target_os = "macos"))]
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
@@ -1468,6 +1474,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn setup_case() -> (TemporaryDirectory, BottleStore, RuntimePackStore, BottleMigrationPlan) {
         let temporary = TemporaryDirectory::new("case");
         let source = temporary.path().join("source");
