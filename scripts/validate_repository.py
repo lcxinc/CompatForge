@@ -272,6 +272,8 @@ BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
     ("std::{net", "network access"),
     ("std::{process", "subprocess launch"),
     ("std::{env", "implicit environment access"),
+    ("std::{self as", "forbidden std capability alias"),
+    ("std::{self", "forbidden std capability alias"),
     ("std::net::", "network access"),
     ("std::os::unix::net::", "network access"),
     ("std::os::windows::net::", "network access"),

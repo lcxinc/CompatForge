@@ -2645,6 +2645,22 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "snapshot.rs",
                 'use ::std::process::{Command as C}; fn controlled_process_path_braced_alias() { C::new("sh"); }',
             ),
+            "process-grouped-root-self-alias": (
+                "snapshot.rs",
+                'use std::{self as s}; fn controlled_process_grouped_root_self_alias() { s::process::Command::new("sh"); }',
+            ),
+            "process-spaced-grouped-root-self-alias": (
+                "snapshot.rs",
+                'use std:: { self as s}; fn controlled_process_spaced_grouped_root_self_alias() { s::process::Command::new("sh"); }',
+            ),
+            "process-pub-grouped-root-self-alias": (
+                "snapshot.rs",
+                'pub use std::{self as s}; fn controlled_process_pub_grouped_root_self_alias() { s::process::Command::new("sh"); }',
+            ),
+            "process-leading-pub-grouped-root-self-alias": (
+                "snapshot.rs",
+                'pub use ::std::{self as s}; fn controlled_process_leading_pub_grouped_root_self_alias() { s::process::Command::new("sh"); }',
+            ),
             "environment-args": (
                 "platform.rs",
                 "std::env::args();",
