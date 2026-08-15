@@ -219,6 +219,12 @@ impl MacOsProviderSnapshot {
         if !serialized_path_is_absolute(&storage_root) {
             return Err(MacOsProviderError::InvalidConfig("storageRoot"));
         }
+        let storage_root_path = Path::new(&storage_root);
+        fs::create_dir_all(storage_root_path).map_err(|_| MacOsProviderError::InvalidConfig("storageRoot"))?;
+        let storage_root = fs::canonicalize(storage_root_path)
+            .map_err(|_| MacOsProviderError::InvalidConfig("storageRoot"))?
+            .to_string_lossy()
+            .into_owned();
         let runtime_binding = self
             .runtime_binding
             .clone()
@@ -1499,11 +1505,22 @@ mod tests {
 
     #[test]
     fn local_bootstrap_requires_a_complete_override_quartet() {
+        let runtime_store_root = if cfg!(windows) {
+            r"C:\\tmp\\runtime-store"
+        } else {
+            "/tmp/runtime-store"
+        };
+        let storage_root = if cfg!(windows) {
+            r"C:\\tmp\\storage"
+        } else {
+            "/tmp/storage"
+        };
+        let materialized_root = if cfg!(windows) { r"C:\\tmp\\root" } else { "/tmp/root" };
         let request = MacOsLocalContextRequest {
             schema_version: SCHEMA_VERSION_V1.into(),
-            runtime_store_root: "/tmp/runtime-store".into(),
-            storage_root: "/tmp/storage".into(),
-            materialized_root: Some("/tmp/root".into()),
+            runtime_store_root: runtime_store_root.into(),
+            storage_root: storage_root.into(),
+            materialized_root: Some(materialized_root.into()),
             wine: None,
             wineserver: None,
             version: None,
