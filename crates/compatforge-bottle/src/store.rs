@@ -293,8 +293,11 @@ impl BottleStore {
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
         let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
-        self.verify_ref_target(bottle_id, &active.active_plan_digest, None)
-            .map(|_| ())
+        self.verify_ref_target(bottle_id, &active.active_plan_digest, None)?;
+        for digest in &active.history {
+            self.verify_ref_target(bottle_id, digest, None)?;
+        }
+        Ok(())
     }
 
     /// Verify the exact Runtime Pack object referenced by the active plan.
@@ -306,8 +309,11 @@ impl BottleStore {
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
         let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
-        self.verify_ref_target(bottle_id, &active.active_plan_digest, Some(runtime_store))
-            .map(|_| ())
+        self.verify_ref_target(bottle_id, &active.active_plan_digest, Some(runtime_store))?;
+        for digest in &active.history {
+            self.verify_ref_target(bottle_id, digest, Some(runtime_store))?;
+        }
+        Ok(())
     }
 
     /// Verify and reactivate the most recent historical version.  Every byte
@@ -2102,6 +2108,21 @@ mod tests {
         let import_error = store.import(&plan).unwrap_err();
         assert_eq!(import_error.code(), super::super::DiagnosticCode::TargetCollision);
         assert_eq!(fs::read(version.join("foreign-extra")).unwrap(), b"foreign");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn verify_active_rejects_a_legal_but_missing_history_target() {
+        let (_temporary, store, _runtime_store, plan) = setup_case();
+        store.import(&plan).unwrap();
+        let active_path = store.active_path(&plan.bottle.id).unwrap();
+        let mut active = super::read_active_ref(&active_path, &plan.bottle.id).unwrap().unwrap();
+        // The ref itself remains canonical and contract-valid; only the
+        // historical target is unavailable.
+        active.history = vec!["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()];
+        fs::write(&active_path, active.canonical_json().unwrap()).unwrap();
+        let error = store.verify_active(&plan.bottle.id).unwrap_err();
+        assert_eq!(error.code(), super::super::DiagnosticCode::SnapshotCorrupt);
     }
 
     #[test]
