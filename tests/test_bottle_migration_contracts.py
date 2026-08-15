@@ -2,7 +2,12 @@ import ast
 import copy
 import json
 import math
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unicodedata
 import unittest
 from pathlib import Path
@@ -1906,6 +1911,135 @@ class BottleMigrationGoldenTests(unittest.TestCase):
     def _mutate_bottle_recipes(self, plan: dict[str, object]) -> None:
         plan["bottle"]["recipes"] = []
         plan["bottleDigest"] = self._digest(self._canonical_bytes(plan["bottle"]))
+
+
+class BottleMigrationCliTests(unittest.TestCase):
+    """Black-box checks for the bounded Bottle command group."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._target_dir = Path(tempfile.mkdtemp(prefix="compatforge-cli-target-"))
+        environment = os.environ.copy()
+        environment["CARGO_TARGET_DIR"] = str(cls._target_dir)
+        completed = subprocess.run(
+            ["cargo", "build", "-p", "compatforge-cli", "--locked", "--offline"],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+        if completed.returncode != 0:
+            shutil.rmtree(cls._target_dir, ignore_errors=True)
+            raise unittest.SkipTest(
+                "compatforge-cli build unavailable: "
+                + completed.stderr[-400:]
+            )
+        executable = "compatforge-cli.exe" if sys.platform == "win32" else "compatforge-cli"
+        cls._binary = cls._target_dir / "debug" / executable
+        cls._fixture_root = ROOT / "tests" / "fixtures" / "bottle-migration"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls._target_dir, ignore_errors=True)
+
+    @classmethod
+    def _run(cls, *arguments: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
+        merged = os.environ.copy()
+        merged["CARGO_TARGET_DIR"] = str(cls._target_dir)
+        if environment:
+            merged.update(environment)
+        return subprocess.run(
+            [str(cls._binary), *arguments],
+            cwd=ROOT,
+            env=merged,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_help_lists_exactly_the_five_bounded_stages(self) -> None:
+        completed = self._run("bottle")
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stderr, b"")
+        help_text = completed.stdout.decode("utf-8")
+        expected = (
+            "compatforge-cli bottle snapshot <store-root> <legacy-bottle-root>",
+            "compatforge-cli bottle plan <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>",
+            "compatforge-cli bottle import <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>",
+            "compatforge-cli bottle verify <store-root> <bottle-id>",
+            "compatforge-cli bottle rollback <store-root> <bottle-id>",
+        )
+        self.assertEqual(tuple(line for line in expected if line in help_text), expected)
+
+    def test_unknown_or_incomplete_commands_do_not_touch_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-cli-unknown-") as temporary:
+            missing = Path(temporary) / "must-not-be-created"
+            completed = self._run("bottle", "plan", str(missing))
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stderr, b"")
+            self.assertFalse(missing.exists())
+
+    def test_failure_is_closed_json_exit_one_and_has_empty_stdout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-cli-failure-") as temporary:
+            absolute_source = str(Path(temporary) / "absent-source")
+            completed = self._run("bottle", "snapshot", absolute_source, absolute_source)
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, b"")
+            diagnostic = json.loads(completed.stderr)
+            self.assertEqual(set(diagnostic), {"code", "message"})
+            self.assertIn(
+                diagnostic["code"],
+                {
+                    "unsupported-platform",
+                    "source-changed",
+                    "unsafe-entry",
+                    "invalid-manifest",
+                    "runtime-unmapped",
+                    "runtime-mismatch",
+                    "snapshot-corrupt",
+                    "target-collision",
+                    "transaction-failed",
+                    "rollback-unavailable",
+                    "rollback-corrupt",
+                },
+            )
+            self.assertNotIn(absolute_source, completed.stderr.decode("utf-8"))
+
+    def test_snapshot_receipt_is_canonical_bounded_and_repeatable(self) -> None:
+        if sys.platform == "darwin":
+            self.skipTest("strict macOS mode rejects snapshot creation")
+        with tempfile.TemporaryDirectory(prefix="compatforge-cli-snapshot-") as temporary:
+            store = Path(temporary) / "store"
+            source = self._fixture_root / "win64"
+            first = self._run("bottle", "snapshot", str(store), str(source))
+            second = self._run("bottle", "snapshot", str(store), str(source))
+            self.assertEqual(first.returncode, 0)
+            self.assertEqual(second.returncode, 0)
+            self.assertEqual(first.stderr, b"")
+            self.assertEqual(first.stdout, second.stdout)
+            self.assertLessEqual(len(first.stdout), 1024 * 1024)
+            receipt = json.loads(first.stdout)
+            self.assertEqual(
+                list(receipt),
+                ["bottleId", "entryCount", "snapshotDigest", "totalFileBytes"],
+            )
+
+    def test_all_five_subcommands_have_bounded_dispatch(self) -> None:
+        commands = (
+            ("snapshot", "store", "source"),
+            ("plan", "store", "digest", "runtime", "map.json"),
+            ("import", "store", "digest", "runtime", "map.json"),
+            ("verify", "store", "bottle-1"),
+            ("rollback", "store", "bottle-1"),
+        )
+        for command in commands:
+            completed = self._run("bottle", *command)
+            self.assertEqual(completed.returncode, 1, command)
+            self.assertEqual(completed.stdout, b"", command)
+            diagnostic = json.loads(completed.stderr)
+            self.assertEqual(set(diagnostic), {"code", "message"}, command)
 
 
 if __name__ == "__main__":
