@@ -145,6 +145,89 @@ struct SnapshotPublication {
     handle: Option<HeldFile>,
 }
 
+#[derive(Debug)]
+struct OwnedSnapshotPublication {
+    directory_path: PathBuf,
+    directory: HeldFile,
+    target_name: std::ffi::OsString,
+    identity: Option<FileIdentity>,
+    handle: Option<HeldFile>,
+    owned: bool,
+}
+
+impl OwnedSnapshotPublication {
+    fn prepare(directory: &BoundDirectory, target_name: &std::ffi::OsStr) -> io::Result<Self> {
+        Ok(Self {
+            directory_path: directory.path.clone(),
+            directory: directory.handle.try_clone()?,
+            target_name: target_name.to_owned(),
+            identity: None,
+            handle: None,
+            owned: false,
+        })
+    }
+
+    fn arm(&mut self, identity: FileIdentity) {
+        self.identity = Some(identity);
+        self.owned = true;
+    }
+
+    fn hold(&mut self, handle: HeldFile) {
+        self.handle = Some(handle);
+    }
+
+    fn disarm(mut self) -> HeldFile {
+        self.owned = false;
+        self.identity = None;
+        self.handle.take().expect("a completed publication has a held target")
+    }
+
+    fn cleanup(&mut self) -> io::Result<()> {
+        if !self.owned {
+            return Ok(());
+        }
+        let expected = self
+            .identity
+            .ok_or_else(|| io::Error::other("an owned publication has no identity"))?;
+        drop(self.handle.take());
+        let (handle, actual, _) = match platform::bind_regular_for_removal_at(
+            &self.directory,
+            &self.target_name,
+            &self.directory_path.join(&self.target_name),
+        ) {
+            Ok(bound) => bound,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.owned = false;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if actual != expected {
+            self.owned = false;
+            return Ok(());
+        }
+        let removed = platform::remove_regular_if_identity_at(
+            &self.directory,
+            &self.target_name,
+            &self.directory_path,
+            &handle,
+            expected,
+        )?;
+        drop(handle);
+        self.owned = false;
+        if removed {
+            platform::sync_directory(&self.directory)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OwnedSnapshotPublication {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
 impl OwnedTemporaryPath {
     #[cfg(test)]
     fn new(path: impl Into<PathBuf>) -> Self {
@@ -177,9 +260,12 @@ impl OwnedTemporaryPath {
             (Some(directory), Some(name)) => platform::create_regular_at(directory, name, &self.path)?,
             _ => HeldFile::new(OpenOptions::new().write(true).create_new(true).open(&self.path)?),
         };
-        self.handle = Some(file.try_clone()?);
+        self.handle = Some(file);
         self.owned = true;
-        Ok(file)
+        self.handle
+            .as_ref()
+            .expect("an owned temporary has a held handle")
+            .try_clone_at(platform::HandleClonePoint::OwnedTemporaryCreate)
     }
 
     fn identity(&self) -> io::Result<FileIdentity> {
@@ -1003,8 +1089,10 @@ impl BottleStore {
                 snapshot,
             )
             .map_err(|_| transaction_failed())?;
+            let mut owned_publication =
+                OwnedSnapshotPublication::prepare(directory, &target_name).map_err(|_| transaction_failed())?;
             match directory.hard_link(temporary_name, &target_name) {
-                Ok(()) => {}
+                Ok(()) => owned_publication.arm(owned_identity),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     let (file, identity, _) = directory.bind_regular(&target_name).map_err(|_| snapshot_corrupt())?;
                     compare_existing_snapshot_model_handle(file, identity, snapshot)?;
@@ -1035,12 +1123,19 @@ impl BottleStore {
             if target_identity != owned_identity {
                 return Err(transaction_failed());
             }
+            owned_publication.hold(target_handle);
             compare_existing_snapshot_model_handle(
-                target_handle.try_clone().map_err(|_| transaction_failed())?,
+                owned_publication
+                    .handle
+                    .as_ref()
+                    .expect("an armed publication has a held target")
+                    .try_clone_at(platform::HandleClonePoint::SnapshotPublicationReadback)
+                    .map_err(|_| transaction_failed())?,
                 target_identity,
                 snapshot,
             )
             .map_err(|_| transaction_failed())?;
+            let target_handle = owned_publication.disarm();
             Ok(SnapshotPublication {
                 target_name,
                 created: true,
@@ -3520,5 +3615,61 @@ mod tests {
         assert_eq!(process_handle_count(), handles_before);
         #[cfg(target_os = "linux")]
         assert_eq!(process_file_descriptor_count(), descriptors_before);
+    }
+
+    #[test]
+    fn clone_failure_after_temp_create_cleans_only_the_owned_temporary() {
+        let temporary = TemporaryDirectory::new("snapshot-temp-create-clone-failure");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let object_directory = store.join("objects/sha256");
+        fs::create_dir_all(&object_directory).unwrap();
+        let owned_temporary = object_directory.join(".object.tmp-clone-failure");
+        let foreign = object_directory.join(".foreign-sentinel");
+        fs::write(&foreign, b"foreign object sentinel").unwrap();
+        override_next_temporary_path("object", &owned_temporary);
+        let registry_before = super::platform::handle_registry_snapshot();
+        super::platform::fail_next_clone_at(super::platform::HandleClonePoint::OwnedTemporaryCreate);
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::TransactionFailed);
+        assert!(!owned_temporary.exists());
+        assert_eq!(fs::read(&foreign).unwrap(), b"foreign object sentinel");
+        assert!(!store.join("snapshots").exists());
+        assert_eq!(temporary_file_count(&store), 0);
+        let registry_after = super::platform::handle_registry_snapshot();
+        assert_eq!(
+            registry_after.0 - registry_before.0,
+            registry_after.1 - registry_before.1
+        );
+        assert_eq!(registry_after.2, registry_before.2);
+    }
+
+    #[test]
+    fn clone_failure_after_snapshot_link_rolls_back_only_the_owned_target() {
+        let temporary = TemporaryDirectory::new("snapshot-target-clone-failure");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let snapshot_directory = store.join("snapshots/sha256");
+        fs::create_dir_all(&snapshot_directory).unwrap();
+        let target = snapshot_directory.join("8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        let foreign = snapshot_directory.join("foreign-sentinel.json");
+        fs::write(&foreign, b"foreign snapshot sentinel").unwrap();
+        let registry_before = super::platform::handle_registry_snapshot();
+        super::platform::fail_next_clone_at(super::platform::HandleClonePoint::SnapshotPublicationReadback);
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::TransactionFailed);
+        assert!(!target.exists());
+        assert_eq!(fs::read(&foreign).unwrap(), b"foreign snapshot sentinel");
+        assert_eq!(temporary_file_count(&store), 0);
+        let registry_after = super::platform::handle_registry_snapshot();
+        assert_eq!(
+            registry_after.0 - registry_before.0,
+            registry_after.1 - registry_before.1
+        );
+        assert_eq!(registry_after.2, registry_before.2);
     }
 }

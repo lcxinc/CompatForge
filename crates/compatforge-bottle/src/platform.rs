@@ -7,9 +7,16 @@ use std::path::Path;
 #[derive(Debug)]
 pub(crate) struct HeldFile(RawFile);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandleClonePoint {
+    OwnedTemporaryCreate,
+    SnapshotPublicationReadback,
+}
+
 #[cfg(test)]
 thread_local! {
     static HANDLE_REGISTRY: std::cell::Cell<(u64, u64, i64)> = const { std::cell::Cell::new((0, 0, 0)) };
+    static HANDLE_CLONE_FAILURE: std::cell::Cell<Option<HandleClonePoint>> = const { std::cell::Cell::new(None) };
 }
 
 impl HeldFile {
@@ -24,6 +31,17 @@ impl HeldFile {
 
     pub(crate) fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self::new)
+    }
+
+    pub(crate) fn try_clone_at(&self, clone_point: HandleClonePoint) -> io::Result<Self> {
+        #[cfg(test)]
+        if HANDLE_CLONE_FAILURE.with(|failure| failure.get() == Some(clone_point)) {
+            HANDLE_CLONE_FAILURE.with(|failure| failure.set(None));
+            return Err(io::Error::other("injected held-handle clone failure"));
+        }
+        #[cfg(not(test))]
+        let _ = clone_point;
+        self.try_clone()
     }
 }
 
@@ -76,6 +94,16 @@ impl Seek for HeldFile {
 #[cfg(test)]
 pub(crate) fn handle_registry_snapshot() -> (u64, u64, i64) {
     HANDLE_REGISTRY.get()
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_clone_at(point: HandleClonePoint) {
+    HANDLE_CLONE_FAILURE.with(|failure| {
+        assert!(
+            failure.replace(Some(point)).is_none(),
+            "a clone failure is already armed"
+        );
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
