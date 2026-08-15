@@ -23,6 +23,10 @@ const COPY_BUFFER_SIZE: usize = 64 * 1024;
 // A materialized version contains at most the snapshot entry bound plus its
 // three authenticated root files and a small amount of directory structure.
 const MAX_TRANSACTION_ENTRIES: usize = 100_000 + 32;
+// Materialized transaction paths add `version/prefix/` in front of the guest
+// path.  Keep the guest-facing MAX_PATH_DEPTH contract exact while allowing
+// that authenticated store scaffolding to surround a legal deepest entry.
+const MAX_TRANSACTION_PATH_DEPTH: usize = MAX_PATH_DEPTH + 2;
 const OWNER_MARKER: &[u8] = b"compatforge-bottle-transaction-v1\n";
 static IMPORT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -309,6 +313,9 @@ impl BottleStore {
             if !version_matches(self, &version_path, plan, &snapshot, &manifest_bytes, &migration_bytes)? {
                 return Err(transaction_failed());
             }
+            // The test-only hook runs between two independent final
+            // validations; the second validation and active-ref readback are
+            // intentionally kept immediately before the namespace commit.
             #[cfg(test)]
             run_import_test_hook(ImportTestStage::AfterFinalValidation);
             if !version_matches(self, &version_path, plan, &snapshot, &manifest_bytes, &migration_bytes)? {
@@ -1537,7 +1544,7 @@ fn sync_tree(path: &Path, depth: usize, entries_seen: &mut usize) -> Result<(), 
     while !stack.is_empty() {
         let index = stack.len().saturating_sub(1);
         if stack[index].children.is_none() {
-            if stack[index].depth > MAX_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
+            if stack[index].depth > MAX_TRANSACTION_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
                 return Err(transaction_failed());
             }
             *entries_seen = entries_seen.saturating_add(1);
@@ -1710,7 +1717,7 @@ fn cleanup_transaction_directory(
     expected: &BTreeMap<PathBuf, CleanupExpectation>,
     entries_seen: &mut usize,
 ) -> io::Result<()> {
-    if relative.components().count() > MAX_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
+    if relative.components().count() > MAX_TRANSACTION_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "transaction cleanup exceeds its bound",
@@ -1770,14 +1777,13 @@ fn cleanup_transaction_directory(
         } else {
             frame.relative.join(&name)
         };
-        if child_relative.components().count() > MAX_PATH_DEPTH {
+        if child_relative.components().count() > MAX_TRANSACTION_PATH_DEPTH {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "transaction cleanup exceeds its depth bound",
             ));
         }
         let child = entry.path();
-        let metadata = fs::symlink_metadata(&child)?;
         let Some(expectation) = expected.get(&child_relative) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1794,12 +1800,23 @@ fn cleanup_transaction_directory(
             ));
         }
         run_cleanup_test_hook(&child_relative);
+        // The hook models a concurrent replacement after the first binding.
+        // Rebind the child immediately before observing its kind or opening
+        // it; otherwise a same-byte foreign file could pass content checks
+        // and be removed as if it were still owned.
+        if cleanup_identity(&child)? != expected_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transaction child identity changed",
+            ));
+        }
         if cleanup_identity(&frame.path)? != frame.identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "transaction parent identity changed",
             ));
         }
+        let metadata = fs::symlink_metadata(&child)?;
         if metadata.file_type().is_dir() {
             if !matches!(expectation.kind, CleanupKind::Directory) {
                 return Err(io::Error::new(
@@ -1834,6 +1851,12 @@ fn cleanup_transaction_directory(
             CleanupKind::Directory => false,
         };
         if !owned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transaction child identity changed",
+            ));
+        }
+        if cleanup_identity(&child)? != expected_identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "transaction child identity changed",
@@ -2541,6 +2564,47 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_rejects_file_substitution_after_child_identity_check() {
+        let temporary = TemporaryDirectory::new("cleanup-file-substitution");
+        let transaction = temporary.path().join("transaction");
+        let owned = transaction.join("owned");
+        let moved = temporary.path().join("moved-owned");
+        let foreign = temporary.path().join("foreign-owned");
+        fs::create_dir_all(&transaction).unwrap();
+        fs::write(&owned, b"same bytes").unwrap();
+        fs::write(&foreign, b"same bytes").unwrap();
+        let transaction_identity = super::cleanup_identity(&transaction).unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            PathBuf::from("owned"),
+            super::CleanupExpectation::new(super::CleanupKind::Bytes(b"same bytes".to_vec())),
+        );
+        super::bind_cleanup_expectation(&transaction, Path::new("owned"), &mut expected).unwrap();
+        let owned_for_hook = owned.clone();
+        let moved_for_hook = moved.clone();
+        let foreign_for_hook = foreign.clone();
+        super::CLEANUP_STAGE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(super::CleanupTestHook {
+                    relative: PathBuf::from("owned"),
+                    hook: Box::new(move || {
+                        fs::rename(&owned_for_hook, &moved_for_hook).unwrap();
+                        fs::rename(&foreign_for_hook, &owned_for_hook).unwrap();
+                    }),
+                }))
+                .is_none());
+        });
+
+        let result = super::cleanup_transaction(&transaction, transaction_identity, &expected);
+
+        assert!(result.is_err(), "cleanup must reject a same-byte foreign replacement");
+        assert!(owned.exists(), "the foreign replacement remains reachable");
+        assert!(moved.exists(), "the originally owned file is not discarded");
+        assert_eq!(fs::read(&owned).unwrap(), b"same bytes");
+        assert_eq!(fs::read(&moved).unwrap(), b"same bytes");
+    }
+
+    #[test]
     fn adversarial_cleanup_rejects_directory_substitution_after_child_identity_check() {
         let temporary = TemporaryDirectory::new("cleanup-directory-substitution");
         let transaction = temporary.path().join("transaction");
@@ -2630,6 +2694,34 @@ mod tests {
 
         assert!(receipt.activated);
         store.verify_active(&plan.bottle.id).unwrap();
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn import_accepts_the_exact_maximum_guest_depth_without_transaction_residue() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        let source = temporary.path().join("source");
+        let mut nested = source.join("deep");
+        for _ in 0..super::MAX_PATH_DEPTH {
+            fs::create_dir(&nested).unwrap();
+            nested.push("d");
+        }
+
+        let snapshot = store.snapshot(&source).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: first_plan.runtime_pack.id.clone(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let plan = store
+            .plan(&snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+        let receipt = store.import_with_runtime(&plan, &runtime_store).unwrap();
+
+        assert!(receipt.activated);
+        store.verify_active(&plan.bottle.id).unwrap();
+        let transactions = store.root().join("transactions");
+        assert_eq!(fs::read_dir(transactions).unwrap().count(), 0);
     }
 
     #[test]

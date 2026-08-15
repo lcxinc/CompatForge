@@ -2565,13 +2565,69 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "platform.rs",
                 'std::net::TcpStream::connect("127.0.0.1:9");',
             ),
+            "network-alias": (
+                "platform.rs",
+                'use std::net as n; fn controlled_network_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
+            ),
+            "network-braced-alias": (
+                "platform.rs",
+                'use std::{net as n}; fn controlled_network_braced_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
+            ),
+            "network-spaced-alias": (
+                "platform.rs",
+                'use std :: net as n; fn controlled_network_spaced_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
+            ),
             "unix-network": (
                 "platform.rs",
                 'std::os::unix::net::UnixStream::connect("/tmp/forbidden");',
             ),
+            "unix-network-alias": (
+                "platform.rs",
+                'use std::os::unix::net as n; fn controlled_unix_network_alias() { n::UnixStream::connect("/tmp/forbidden"); }',
+            ),
             "process": (
                 "snapshot.rs",
                 "std::process::Command::new(\"sh\");",
+            ),
+            "process-alias": (
+                "snapshot.rs",
+                'use std::process as p; fn controlled_process_alias() { p::Command::new("sh"); }',
+            ),
+            "process-braced-alias": (
+                "snapshot.rs",
+                'use std::{process::Command as C}; fn controlled_process_braced_alias() { C::new("sh"); }',
+            ),
+            "process-braced-module-alias": (
+                "snapshot.rs",
+                'use std::{process as p}; fn controlled_process_braced_module_alias() { p::Command::new("sh"); }',
+            ),
+            "process-spaced-alias": (
+                "snapshot.rs",
+                'use std :: process as p; fn controlled_process_spaced_alias() { p::Command::new("sh"); }',
+            ),
+            "process-newline-alias": (
+                "snapshot.rs",
+                'use std\n::process as p; fn controlled_process_newline_alias() { p::Command::new("sh"); }',
+            ),
+            "process-comment-alias": (
+                "snapshot.rs",
+                'use std/*module*/::process as p; fn controlled_process_comment_alias() { p::Command::new("sh"); }',
+            ),
+            "process-comment-braced-alias": (
+                "snapshot.rs",
+                'use std /*module*/ { process as p}; fn controlled_process_comment_braced_alias() { p::Command::new("sh"); }',
+            ),
+            "process-comment-newline-alias": (
+                "snapshot.rs",
+                'use std\n/*module*/::process as p; fn controlled_process_comment_newline_alias() { p::Command::new("sh"); }',
+            ),
+            "process-root-alias": (
+                "snapshot.rs",
+                'use std as s; fn controlled_process_root_alias() { s::process::Command::new("sh"); }',
+            ),
+            "process-root-extern-alias": (
+                "snapshot.rs",
+                'extern crate std as s; fn controlled_process_root_extern_alias() { s::process::Command::new("sh"); }',
             ),
             "environment-args": (
                 "platform.rs",
@@ -2609,6 +2665,18 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "platform.rs",
                 'std::env::var_os("HOME");',
             ),
+            "environment-alias": (
+                "platform.rs",
+                'use std::env as e; fn controlled_environment_alias() { e::var_os("HOME"); }',
+            ),
+            "environment-braced-alias": (
+                "platform.rs",
+                'use std::{env as e}; fn controlled_environment_braced_alias() { e::current_dir(); }',
+            ),
+            "environment-spaced-braced-alias": (
+                "platform.rs",
+                'use std::{ env as e}; fn controlled_environment_spaced_braced_alias() { e::current_dir(); }',
+            ),
             "temporary-directory": (
                 "platform.rs",
                 "std::env::temp_dir();",
@@ -2644,6 +2712,31 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 self.assertTrue(
                     errors,
                     f"validator accepted controlled {name} capability mutant",
+                )
+
+    def test_same_line_after_cfg_test_attribute_is_not_hidden(self) -> None:
+        validator = self._validator()
+        repository = BottleMigrationRepositoryTests
+        mutants = (
+            'const CONTROLLED_TEST: () = (); fn controlled_forbidden_capability() { std::net::TcpStream::connect("127.0.0.1:9"); }',
+            'fn controlled_test() {} fn controlled_forbidden_capability() { std::net::TcpStream::connect("127.0.0.1:9"); }',
+            'mod controlled_test {} fn controlled_forbidden_capability() { std::net::TcpStream::connect("127.0.0.1:9"); }',
+            'impl ControlledTest {} fn controlled_forbidden_capability() { std::net::TcpStream::connect("127.0.0.1:9"); }',
+        )
+        for mutant in mutants:
+            with self.subTest(mutant=mutant), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-side-effect-"
+            ) as temporary:
+                root = repository._copy_validation_tree(Path(temporary))
+                self._copy_runtime_sources(root)
+                path = root / "crates" / "compatforge-bottle" / "src" / "platform.rs"
+                content = path.read_text(encoding="utf-8")
+                content += f"\n#[cfg(test)]\n{mutant}\n"
+                path.write_text(content, encoding="utf-8")
+                errors = validator.validate_bottle_migration_repository(root)
+                self.assertTrue(
+                    errors,
+                    f"validator hid a production capability after cfg(test): {mutant}",
                 )
 
     def test_cfg_not_test_mutants_are_not_hidden_from_the_guard(self) -> None:

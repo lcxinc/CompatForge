@@ -235,6 +235,25 @@ BOTTLE_RUNTIME_SOURCE_FILES = (
     "crates/compatforge-bottle/src/store.rs",
 )
 BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
+    # Keep capability imports forbidden as well as concrete calls.  This
+    # closes aliases such as ``use std::net as n`` and grouped imports such
+    # as ``use std::{process::Command as C}`` without rejecting the allowed
+    # ``std::process::id`` used only for unique temporary names.
+    ("use std::net", "network access"),
+    ("use std::{net", "network access"),
+    ("use std {net", "network access"),
+    ("use std::os::unix::net", "network access"),
+    ("use std::{os::unix::net", "network access"),
+    ("use std::os::windows::net", "network access"),
+    ("use std::{os::windows::net", "network access"),
+    ("use std::process", "subprocess launch"),
+    ("use std::{process", "subprocess launch"),
+    ("use std {process", "subprocess launch"),
+    ("use std::env", "implicit environment access"),
+    ("use std::{env", "implicit environment access"),
+    ("use std {env", "implicit environment access"),
+    ("use std as", "forbidden std capability alias"),
+    ("extern crate std as", "forbidden std capability alias"),
     ("std::net::", "network access"),
     ("std::os::unix::net::", "network access"),
     ("std::os::windows::net::", "network access"),
@@ -1614,6 +1633,38 @@ def _bottle_rust_mask_non_code(text: str) -> str:
     return "".join(output)
 
 
+def _bottle_cfg_item_has_trailing_tokens(line: str) -> bool:
+    """Return whether a cfg(test) item shares its line with more code.
+
+    A test-only cfg attribute normally owns the following complete Rust item.
+    The scanner must not, however, discard a production item appended after a
+    same-line const/function/module/impl.  Use the existing lexical mask so a
+    brace or semicolon in a literal cannot manufacture a boundary.  A trailing
+    semicolon is allowed for macro items; every other token after the first
+    complete top-level item conservatively keeps the whole line in policy
+    source.
+    """
+    masked = _bottle_rust_mask_non_code(line)
+    depth = 0
+    saw_brace = False
+    index = 0
+    while index < len(masked):
+        char = masked[index]
+        if char == "{":
+            saw_brace = True
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if saw_brace and depth == 0:
+                trailing = masked[index + 1 :].strip().rstrip(";").strip()
+                return bool(trailing)
+        elif char == ";" and depth == 0:
+            trailing = masked[index + 1 :].strip()
+            return bool(trailing)
+        index += 1
+    return False
+
+
 def _bottle_test_only_cfg(stripped: str) -> bool:
     """Recognize only cfg expressions that require the test configuration."""
     normalized = "".join(stripped.split())
@@ -1646,6 +1697,15 @@ def _bottle_production_source(text: str) -> str:
                 skipped_braces = 0
             continue
         if pending_test_item:
+            if _bottle_cfg_item_has_trailing_tokens(line):
+                # A production item follows the cfg(test) item on this line.
+                # Keep the complete line: masking comments/literals below
+                # remains conservative and avoids trying to split Rust items
+                # with a partial parser.
+                kept.append(line)
+                pending_test_item = False
+                skipped_braces = 0
+                continue
             if brace_count:
                 skipped_braces = brace_delta
                 pending_test_item = False
@@ -1680,8 +1740,10 @@ def _bottle_validate_runtime_side_effect_policy(root: Path) -> list[str]:
         except (OSError, UnicodeError):
             return ["Bottle migration runtime source boundary could not be read"]
         policy_source = _bottle_rust_mask_non_code(source)
+        normalized_policy_source = re.sub(r"\s+", "", policy_source)
         for marker, capability in BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES:
-            if marker in policy_source:
+            normalized_marker = re.sub(r"\s+", "", marker)
+            if marker in policy_source or normalized_marker in normalized_policy_source:
                 errors.append(
                     f"Bottle migration runtime source uses forbidden {capability}: "
                     f"{path.relative_to(root).as_posix()}"
