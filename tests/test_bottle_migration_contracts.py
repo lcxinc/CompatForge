@@ -1263,6 +1263,11 @@ class BottleMigrationSchemaTests(unittest.TestCase):
             cls._assert_rfc3339(value)
 
         if type(value) is str:
+            if schema.get("format") == "uuid" and re.fullmatch(
+                r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+                value,
+            ) is None:
+                raise AssertionError("UUID format mismatch")
             if len(value) < schema.get("minLength", 0):
                 raise AssertionError("string too short")
             if len(value) > schema.get("maxLength", len(value)):
@@ -1432,6 +1437,12 @@ class BottleMigrationGoldenTests(unittest.TestCase):
     RUNTIME_PACK_DIGEST = (
         "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af"
     )
+    RUNTIME_MAP_DIGEST = "sha256:c0fedd9cfa46eee8c0f341c744dc82fead8c05b950b9a25bf13454324c664251"
+    RUNTIME_MAP_BYTES = 237
+    LAUNCH_REQUEST_IDS = {
+        "bottle-win64": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+        "bottle-win32": "018fe3cb-9d12-7b52-b334-1cce0e857fca",
+    }
     FIXTURE_FILE_EVIDENCE = {
         "win64/drive_c/Public/example.txt": (
             21,
@@ -1479,7 +1490,7 @@ class BottleMigrationGoldenTests(unittest.TestCase):
             with self.subTest(case=case):
                 manifest = self._load_json(Path(case) / "manifest.json")
                 runtime_map = self._load_json(Path("runtime-map.json"))
-                self._assert_valid(runtime_map, self._schema("bottle-runtime-map.schema.json"))
+                self._assert_runtime_map(runtime_map)
                 expected = self._legacy_projection(manifest, runtime_map)
                 legacy = self._load_golden(f"{case}-legacy-planning.json")
                 self.assertEqual(legacy, expected)
@@ -1498,6 +1509,22 @@ class BottleMigrationGoldenTests(unittest.TestCase):
                 self.assertEqual(raw, self._pretty_json_bytes(json.loads(raw)))
                 self.assertEqual(self._digest(raw), expected_digest)
 
+    def test_runtime_map_is_literal_and_self_consistent_forgery_is_rejected(self) -> None:
+        raw = (self.FIXTURE_ROOT / "runtime-map.json").read_bytes()
+        runtime_map = self._load_json(Path("runtime-map.json"))
+        self.assertEqual(len(raw), self.RUNTIME_MAP_BYTES)
+        self.assertEqual(self._digest(raw), self.RUNTIME_MAP_DIGEST)
+        forged = copy.deepcopy(runtime_map)
+        forged["mappings"].append(
+            {
+                "legacyEngineId": "wine-10",
+                "runtimePackId": self.RUNTIME_PACK_ID,
+                "runtimePackDigest": self.RUNTIME_PACK_DIGEST,
+            }
+        )
+        with self.assertRaises(AssertionError):
+            self._assert_runtime_map(forged)
+
     def test_independent_oracle_rejects_self_consistent_forgery(self) -> None:
         manifest = self._load_json(Path("win64") / "manifest.json")
         runtime_map = self._load_json(Path("runtime-map.json"))
@@ -1506,6 +1533,8 @@ class BottleMigrationGoldenTests(unittest.TestCase):
             self._mutate_launcher,
             self._mutate_runtime_digest,
             self._mutate_environment,
+            self._mutate_bottle_storage,
+            self._mutate_bottle_recipes,
         ):
             with self.subTest(mutator=mutate.__name__):
                 forged = copy.deepcopy(plan)
@@ -1514,6 +1543,34 @@ class BottleMigrationGoldenTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self._assert_migration_plan(manifest, runtime_map, forged)
 
+    def test_independent_oracle_rejects_launch_projection_forgery(self) -> None:
+        manifest = self._load_json(Path("win64") / "manifest.json")
+        runtime_map = self._load_json(Path("runtime-map.json"))
+        plan = self._load_golden("win64-migration-plan.json")
+        launch = self._load_golden("win64-launch-plan.json")
+        mutators = (
+            self._mutate_launch_environment,
+            self._mutate_launch_executable,
+            self._mutate_launch_request_id,
+            self._mutate_launch_translator,
+            self._mutate_launch_graphics,
+            self._mutate_launch_lifecycle,
+            self._mutate_launch_trace,
+        )
+        self._assert_migration_plan(manifest, runtime_map, plan)
+        for mutate in mutators:
+            with self.subTest(mutator=mutate.__name__):
+                forged = copy.deepcopy(launch)
+                mutate(forged)
+                with self.assertRaises(AssertionError):
+                    self._assert_launch_plan(manifest, plan, forged)
+
+    def test_launch_schema_rejects_malformed_request_id_format(self) -> None:
+        launch = self._load_golden("win64-launch-plan.json")
+        launch["requestId"] = "not-a-uuid"
+        with self.assertRaises(AssertionError):
+            self._assert_valid(launch, self._launch_schema())
+
     def _load_json(self, relative: Path) -> dict[str, object]:
         raw = (self.FIXTURE_ROOT / relative).read_bytes()
         self.assertEqual(raw, self._pretty_json_bytes(json.loads(raw)))
@@ -1521,6 +1578,22 @@ class BottleMigrationGoldenTests(unittest.TestCase):
 
     def _load_golden(self, name: str) -> dict[str, object]:
         return self._load_json(Path("goldens") / name)
+
+    def _assert_runtime_map(self, runtime_map: dict[str, object]) -> None:
+        self._assert_valid(runtime_map, self._schema("bottle-runtime-map.schema.json"))
+        self.assertEqual(
+            runtime_map,
+            {
+                "schemaVersion": "1",
+                "mappings": [
+                    {
+                        "legacyEngineId": "wine-9",
+                        "runtimePackId": self.RUNTIME_PACK_ID,
+                        "runtimePackDigest": self.RUNTIME_PACK_DIGEST,
+                    }
+                ],
+            },
+        )
 
     @staticmethod
     def _pretty_json_bytes(value: object) -> bytes:
@@ -1611,28 +1684,43 @@ class BottleMigrationGoldenTests(unittest.TestCase):
         plan: dict[str, object],
     ) -> None:
         self._assert_valid(plan, self._schema("bottle-migration-plan.schema.json"))
-        expected_legacy = self._legacy_projection(manifest, runtime_map)
-        self.assertEqual(plan["schemaVersion"], "1")
-        self.assertEqual(plan["legacyFormat"], "macwin-bottle-v1")
-        self.assertEqual(plan["legacyEngineId"], expected_legacy["legacyEngineId"])
-        self.assertEqual(plan["runtimePack"], expected_legacy["runtimePack"])
-        self.assertEqual(plan["bottle"]["id"], manifest["id"])
-        self.assertEqual(plan["bottle"]["name"], manifest["name"])
-        self.assertEqual(plan["bottle"]["createdAt"], manifest["createdAt"])
-        self.assertEqual(plan["bottle"]["updatedAt"], manifest["updatedAt"])
-        self.assertEqual(plan["bottle"]["guest"]["windowsVersion"], manifest["windowsVersion"])
-        self.assertEqual(
-            plan["bottle"]["guest"]["architecture"], expected_legacy["architecture"]
-        )
-        self.assertEqual(plan["launchers"], expected_legacy["launchers"])
-        self.assertEqual(plan["bottle"]["runtimePack"], plan["runtimePack"])
-        self.assertEqual(plan["diagnostics"], [])
-        expected_bottle_digest = self._digest(self._canonical_bytes(plan["bottle"]))
-        self.assertEqual(plan["bottleDigest"], expected_bottle_digest)
-        self.assertEqual(plan["planDigest"], self._unsigned_plan_digest(plan))
+        self.assertEqual(plan, self._expected_migration_plan(manifest, runtime_map))
 
+    def _expected_migration_plan(
+        self,
+        manifest: dict[str, object],
+        runtime_map: dict[str, object],
+    ) -> dict[str, object]:
+        expected_legacy = self._legacy_projection(manifest, runtime_map)
+        runtime_pack = expected_legacy["runtimePack"]
+        bottle = {
+            "schemaVersion": "1",
+            "id": manifest["id"],
+            "name": manifest["name"],
+            "guest": {
+                "windowsVersion": manifest["windowsVersion"],
+                "architecture": expected_legacy["architecture"],
+            },
+            "runtimePack": runtime_pack,
+            "storage": {"layoutVersion": 1, "state": "ready"},
+            "createdAt": manifest["createdAt"],
+            "updatedAt": manifest["updatedAt"],
+        }
         snapshot = self._snapshot_projection(manifest)
-        self.assertEqual(plan["snapshotDigest"], snapshot["digest"])
+        expected = {
+            "schemaVersion": "1",
+            "snapshotDigest": snapshot["digest"],
+            "legacyFormat": "macwin-bottle-v1",
+            "legacyEngineId": manifest["engineId"],
+            "bottle": bottle,
+            "bottleDigest": self._digest(self._canonical_bytes(bottle)),
+            "runtimePack": runtime_pack,
+            "launchers": expected_legacy["launchers"],
+            "diagnostics": [],
+            "planDigest": "",
+        }
+        expected["planDigest"] = self._unsigned_plan_digest(expected)
+        return expected
 
     def _assert_launch_plan(
         self,
@@ -1641,17 +1729,78 @@ class BottleMigrationGoldenTests(unittest.TestCase):
         launch: dict[str, object],
     ) -> None:
         self._assert_valid(launch, self._launch_schema())
-        self.assertEqual(launch["schemaVersion"], "1")
-        self.assertEqual(launch["runtime"]["packId"], migration_plan["runtimePack"]["id"])
-        self.assertEqual(
-            launch["runtime"]["packDigest"], migration_plan["runtimePack"]["digest"]
-        )
-        self.assertEqual(launch["runtime"]["provider"], "wine")
-        self.assertEqual(launch["sandbox"], {"allowDevices": [], "network": "deny", "profile": "strict"})
-        self.assertEqual(launch["process"]["workingDirectory"], f"/compatforge/bottles/{manifest['id']}/prefix")
+        self.assertEqual(launch, self._expected_launch_plan(manifest, migration_plan))
+
+    def _expected_launch_plan(
+        self,
+        manifest: dict[str, object],
+        migration_plan: dict[str, object],
+    ) -> dict[str, object]:
         launcher = sorted(manifest["installedApps"], key=lambda item: item["id"])[0]
-        self.assertEqual(launch["process"]["arguments"][0], launcher["exePath"])
-        self.assertEqual(launch["process"]["arguments"][1:], launcher["args"])
+        environment = dict(manifest["envOverrides"])
+        environment.update(launcher["envOverrides"])
+        return {
+            "schemaVersion": "1",
+            "requestId": self.LAUNCH_REQUEST_IDS[manifest["id"]],
+            "runtime": {
+                "provider": "wine",
+                "packId": migration_plan["runtimePack"]["id"],
+                "packDigest": migration_plan["runtimePack"]["digest"],
+            },
+            "translator": {"provider": "native", "version": "fixture-preview"},
+            "graphics": {
+                "backend": "wined3d",
+                "version": "fixture-preview",
+                "options": {},
+            },
+            "process": {
+                "executable": "/compatforge/runtime/bin/wine",
+                "arguments": [launcher["exePath"], *launcher["args"]],
+                "environment": environment,
+                "workingDirectory": f"/compatforge/bottles/{manifest['id']}/prefix",
+            },
+            "sandbox": {
+                "profile": "strict",
+                "network": "deny",
+                "allowDevices": [],
+            },
+            "lifecycle": {
+                "terminationGraceMilliseconds": 3000,
+                "maximumRuntimeMilliseconds": 600000,
+            },
+            "decisionTrace": [
+                "legacy Bottle launcher mapped to verified preview Runtime Pack",
+                "environment merge uses launcher override precedence",
+            ],
+        }
+
+    @staticmethod
+    def _mutate_launch_environment(launch: dict[str, object]) -> None:
+        launch["process"]["environment"]["SHARED"] = "forged"
+
+    @staticmethod
+    def _mutate_launch_executable(launch: dict[str, object]) -> None:
+        launch["process"]["executable"] = "/forged/wine"
+
+    @staticmethod
+    def _mutate_launch_request_id(launch: dict[str, object]) -> None:
+        launch["requestId"] = "not-a-uuid"
+
+    @staticmethod
+    def _mutate_launch_translator(launch: dict[str, object]) -> None:
+        launch["translator"]["version"] = "forged"
+
+    @staticmethod
+    def _mutate_launch_graphics(launch: dict[str, object]) -> None:
+        launch["graphics"]["backend"] = "dxvk"
+
+    @staticmethod
+    def _mutate_launch_lifecycle(launch: dict[str, object]) -> None:
+        launch["lifecycle"]["terminationGraceMilliseconds"] = 4000
+
+    @staticmethod
+    def _mutate_launch_trace(launch: dict[str, object]) -> None:
+        launch["decisionTrace"].append("forged")
 
     def _snapshot_projection(self, manifest: dict[str, object]) -> dict[str, object]:
         case = "win64" if manifest["arch"] == "win64" else "win32"
@@ -1727,6 +1876,14 @@ class BottleMigrationGoldenTests(unittest.TestCase):
     @staticmethod
     def _mutate_environment(plan: dict[str, object]) -> None:
         plan["launchers"][0]["environment"][0]["value"] = "forged"
+
+    def _mutate_bottle_storage(self, plan: dict[str, object]) -> None:
+        plan["bottle"]["storage"]["layoutVersion"] = 2
+        plan["bottleDigest"] = self._digest(self._canonical_bytes(plan["bottle"]))
+
+    def _mutate_bottle_recipes(self, plan: dict[str, object]) -> None:
+        plan["bottle"]["recipes"] = []
+        plan["bottleDigest"] = self._digest(self._canonical_bytes(plan["bottle"]))
 
 
 if __name__ == "__main__":

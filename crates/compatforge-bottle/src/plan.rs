@@ -923,6 +923,17 @@ mod tests {
             .unwrap();
         let runtime_map =
             RuntimeMap::from_json(&fs::read_to_string(fixture_root.join("runtime-map.json")).unwrap()).unwrap();
+        assert_fixture_runtime_map_exact(&runtime_map).unwrap();
+        let mut forged_runtime_map = runtime_map.clone();
+        forged_runtime_map.mappings.insert(
+            0,
+            RuntimeMapping {
+                legacy_engine_id: "wine-8".into(),
+                runtime_pack_id: "fixture-runtime".into(),
+                runtime_pack_digest: "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af".into(),
+            },
+        );
+        assert!(assert_fixture_runtime_map_exact(&forged_runtime_map).is_err());
 
         for case in ["win64", "win32"] {
             let source = temporary.path().join(case);
@@ -945,6 +956,21 @@ mod tests {
             .unwrap();
             launch.validate().unwrap();
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn assert_fixture_runtime_map_exact(runtime_map: &RuntimeMap) -> Result<(), &'static str> {
+        if runtime_map.schema_version != SCHEMA_VERSION_V1 || runtime_map.mappings.len() != 1 {
+            return Err("runtime map fixture drifted");
+        }
+        let mapping = &runtime_map.mappings[0];
+        if mapping.legacy_engine_id != "wine-9"
+            || mapping.runtime_pack_id != "fixture-runtime"
+            || mapping.runtime_pack_digest != "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af"
+        {
+            return Err("runtime map fixture drifted");
+        }
+        runtime_map.validate().map_err(|_| "runtime map is invalid")
     }
 
     #[cfg(not(target_os = "macos"))]
