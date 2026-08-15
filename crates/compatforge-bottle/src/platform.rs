@@ -119,6 +119,81 @@ pub(crate) struct FileIdentity {
     modified: Option<std::time::SystemTime>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StableIdentity([u64; 3]);
+
+impl FileIdentity {
+    pub(crate) fn stable_identity(self) -> StableIdentity {
+        #[cfg(unix)]
+        {
+            StableIdentity([self.object.device, self.object.inode, 0])
+        }
+        #[cfg(windows)]
+        {
+            StableIdentity([
+                u64::from(self.object.volume.unwrap_or_default()),
+                self.object.index.unwrap_or_default(),
+                0,
+            ])
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            StableIdentity([
+                self.len,
+                self.modified
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |duration| duration.as_nanos() as u64),
+                0,
+            ])
+        }
+    }
+}
+
+/// Bind an on-disk path without following a final link and return its stable
+/// object identity.  Transaction cleanup uses this for ownership checks so a
+/// same-byte replacement cannot be mistaken for a file staged by us.
+pub(crate) fn path_identity(path: &Path) -> io::Result<FileIdentity> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(FileIdentity {
+            object: ObjectIdentity {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                mode: metadata.mode(),
+            },
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        let file = if metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            open_directory_no_follow(path)?
+        } else {
+            open_regular_no_follow(path)?
+        };
+        Ok(FileIdentity {
+            object: object_identity(&file, &metadata)?,
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "path identity is unsupported on this platform",
+        ))
+    }
+}
+
+pub(crate) fn stable_path_identity(path: &Path) -> io::Result<StableIdentity> {
+    path_identity(path).map(FileIdentity::stable_identity)
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObjectIdentity {

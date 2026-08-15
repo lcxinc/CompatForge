@@ -137,12 +137,16 @@ impl BottleStore {
         let next_ref = next_active_ref(plan, current.as_ref());
         let ref_bytes = canonical_json(&next_ref).map_err(|_| invalid_manifest())?;
         bounded_bytes(&ref_bytes)?;
-        let cleanup_expectations = transaction_expectations(&snapshot, &manifest_bytes, &migration_bytes, &ref_bytes);
-        create_transaction(&transaction_root)?;
+        let mut cleanup_expectations =
+            transaction_expectations(&snapshot, &manifest_bytes, &migration_bytes, &ref_bytes);
+        let transaction_identity = create_transaction(&transaction_root)?;
+        bind_cleanup_expectation(&transaction_root, Path::new(".owner"), &mut cleanup_expectations)?;
         let mut phase = ImportPhase::Preflight;
         let result = (|| {
             let staged_version = transaction_root.join("version");
             ensure_dir(&staged_version)?;
+            bind_cleanup_expectation(&transaction_root, Path::new("version"), &mut cleanup_expectations)?;
+            checkpoint()?;
             materialize_version(
                 self,
                 &staged_version,
@@ -150,6 +154,7 @@ impl BottleStore {
                 &snapshot,
                 &manifest_bytes,
                 &migration_bytes,
+                &mut cleanup_expectations,
             )?;
             checkpoint()?;
             verify_staged_version(
@@ -160,13 +165,16 @@ impl BottleStore {
                 &manifest_bytes,
                 &migration_bytes,
             )?;
+            checkpoint()?;
             let staged_ref = transaction_root.join("current.json");
             write_new_file(&staged_ref, &ref_bytes)?;
+            bind_cleanup_expectation(&transaction_root, Path::new("current.json"), &mut cleanup_expectations)?;
             verify_file_bytes(&staged_ref, &ref_bytes)?;
             phase = ImportPhase::Staged;
             checkpoint()?;
 
             if !path_exists(&version_path)? {
+                checkpoint()?;
                 publish_version(&staged_version, &version_path)?;
             } else if !version_matches(self, &version_path, plan, &snapshot, &manifest_bytes, &migration_bytes)? {
                 return Err(target_collision());
@@ -178,11 +186,13 @@ impl BottleStore {
             // visible state.  This is the last fallible check before the
             // active-ref replacement (the namespace switch is the commit
             // point).
+            checkpoint()?;
             if !version_matches(self, &version_path, plan, &snapshot, &manifest_bytes, &migration_bytes)? {
                 return Err(transaction_failed());
             }
             checkpoint()?;
 
+            checkpoint()?;
             publish_ref(&staged_ref, &active_path)?;
             phase = ImportPhase::RefPublished;
             Ok(ImportReceipt {
@@ -196,7 +206,7 @@ impl BottleStore {
 
         match result {
             Ok(receipt) => {
-                let _ = cleanup_transaction(&transaction_root, &cleanup_expectations);
+                let _ = cleanup_transaction(&transaction_root, transaction_identity, &cleanup_expectations);
                 Ok(receipt)
             }
             Err(error) => {
@@ -204,7 +214,7 @@ impl BottleStore {
                 // rollback failure after it: leaving an immutable version is
                 // safe, while changing the active pointer again is not.
                 if phase != ImportPhase::RefPublished {
-                    let _ = cleanup_transaction(&transaction_root, &cleanup_expectations);
+                    let _ = cleanup_transaction(&transaction_root, transaction_identity, &cleanup_expectations);
                 }
                 Err(error)
             }
@@ -306,10 +316,26 @@ fn expected_prefix_entries(
     Ok(expected)
 }
 
+type CleanupIdentity = crate::platform::StableIdentity;
+
 #[derive(Debug, Clone)]
-enum CleanupExpectation {
+enum CleanupKind {
     Bytes(Vec<u8>),
     Digest { size: u64, digest: String },
+    Directory,
+    Link { target: String },
+}
+
+#[derive(Debug, Clone)]
+struct CleanupExpectation {
+    kind: CleanupKind,
+    identity: Option<CleanupIdentity>,
+}
+
+impl CleanupExpectation {
+    fn new(kind: CleanupKind) -> Self {
+        Self { kind, identity: None }
+    }
 }
 
 fn transaction_expectations(
@@ -321,23 +347,31 @@ fn transaction_expectations(
     let mut expected = BTreeMap::new();
     expected.insert(
         PathBuf::from(".owner"),
-        CleanupExpectation::Bytes(OWNER_MARKER.to_vec()),
+        CleanupExpectation::new(CleanupKind::Bytes(OWNER_MARKER.to_vec())),
     );
     expected.insert(
         PathBuf::from("version/manifest.json"),
-        CleanupExpectation::Bytes(manifest_bytes.to_vec()),
+        CleanupExpectation::new(CleanupKind::Bytes(manifest_bytes.to_vec())),
     );
     expected.insert(
         PathBuf::from("version/migration.json"),
-        CleanupExpectation::Bytes(migration_bytes.to_vec()),
+        CleanupExpectation::new(CleanupKind::Bytes(migration_bytes.to_vec())),
     );
     expected.insert(
         PathBuf::from("version/prefix/manifest.json"),
-        CleanupExpectation::Bytes(manifest_bytes.to_vec()),
+        CleanupExpectation::new(CleanupKind::Bytes(manifest_bytes.to_vec())),
     );
     expected.insert(
         PathBuf::from("current.json"),
-        CleanupExpectation::Bytes(ref_bytes.to_vec()),
+        CleanupExpectation::new(CleanupKind::Bytes(ref_bytes.to_vec())),
+    );
+    expected.insert(
+        PathBuf::from("version"),
+        CleanupExpectation::new(CleanupKind::Directory),
+    );
+    expected.insert(
+        PathBuf::from("version/prefix"),
+        CleanupExpectation::new(CleanupKind::Directory),
     );
     for entry in &snapshot.entries {
         let relative = entry_path(entry);
@@ -345,17 +379,63 @@ fn transaction_expectations(
             continue;
         }
         let path = PathBuf::from("version/prefix").join(relative);
-        if let SnapshotEntry::File { size, digest, .. } = entry {
-            expected.insert(
-                path,
-                CleanupExpectation::Digest {
-                    size: *size,
-                    digest: digest.clone(),
-                },
-            );
+        match entry {
+            SnapshotEntry::File { size, digest, .. } => {
+                expected.insert(
+                    path,
+                    CleanupExpectation::new(CleanupKind::Digest {
+                        size: *size,
+                        digest: digest.clone(),
+                    }),
+                );
+            }
+            SnapshotEntry::Directory { .. } => {
+                expected.insert(path, CleanupExpectation::new(CleanupKind::Directory));
+            }
+            SnapshotEntry::Link { target, .. } => {
+                expected.insert(
+                    path,
+                    CleanupExpectation::new(CleanupKind::Link { target: target.clone() }),
+                );
+            }
         }
     }
     expected
+}
+
+fn bind_cleanup_expectation(
+    transaction_root: &Path,
+    relative: &Path,
+    expected: &mut BTreeMap<PathBuf, CleanupExpectation>,
+) -> Result<(), BottleMigrationError> {
+    let Some(expectation) = expected.get_mut(relative) else {
+        return Err(transaction_failed());
+    };
+    if expectation.identity.is_none() {
+        let path = transaction_root.join(relative);
+        expectation.identity = Some(cleanup_identity(&path).map_err(|_| transaction_failed())?);
+    }
+    Ok(())
+}
+
+fn bind_existing_cleanup_expectations(
+    transaction_root: &Path,
+    expected: &mut BTreeMap<PathBuf, CleanupExpectation>,
+) -> Result<(), BottleMigrationError> {
+    let paths = expected.keys().cloned().collect::<Vec<_>>();
+    for relative in paths {
+        let path = transaction_root.join(&relative);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => bind_cleanup_expectation(transaction_root, &relative, expected)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(transaction_failed()),
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_identity(path: &Path) -> io::Result<CleanupIdentity> {
+    crate::platform::stable_path_identity(path)
 }
 
 #[derive(Debug, Clone)]
@@ -393,20 +473,50 @@ fn materialize_version(
     snapshot: &BottleSnapshot,
     manifest_bytes: &[u8],
     migration_bytes: &[u8],
+    cleanup_expectations: &mut BTreeMap<PathBuf, CleanupExpectation>,
 ) -> Result<(), BottleMigrationError> {
     ensure_dir(destination)?;
+    let transaction_root = destination.parent().ok_or_else(transaction_failed)?;
+    bind_cleanup_expectation(transaction_root, Path::new("version"), cleanup_expectations)?;
+    checkpoint()?;
     write_new_file(&destination.join("manifest.json"), manifest_bytes)?;
+    bind_cleanup_expectation(
+        transaction_root,
+        Path::new("version/manifest.json"),
+        cleanup_expectations,
+    )?;
+    checkpoint()?;
     write_new_file(&destination.join("migration.json"), migration_bytes)?;
+    bind_cleanup_expectation(
+        transaction_root,
+        Path::new("version/migration.json"),
+        cleanup_expectations,
+    )?;
+    checkpoint()?;
     let prefix = destination.join("prefix");
     ensure_dir(&prefix)?;
+    bind_cleanup_expectation(transaction_root, Path::new("version/prefix"), cleanup_expectations)?;
+    checkpoint()?;
     write_new_file(&prefix.join("manifest.json"), manifest_bytes)?;
+    bind_cleanup_expectation(
+        transaction_root,
+        Path::new("version/prefix/manifest.json"),
+        cleanup_expectations,
+    )?;
+    checkpoint()?;
     for entry in &snapshot.entries {
         let path = prefix.join(entry_path(entry));
+        let relative = PathBuf::from("version/prefix").join(entry_path(entry));
         match entry {
             SnapshotEntry::Directory { .. } => ensure_dir(&path)?,
             SnapshotEntry::Link { target, .. } => {
                 ensure_parent(&path)?;
-                create_link(target, &path)?;
+                let target_is_directory = snapshot
+                    .entries
+                    .iter()
+                    .find(|candidate| entry_path(candidate) == target)
+                    .is_some_and(|candidate| matches!(candidate, SnapshotEntry::Directory { .. }));
+                create_link(target, &path, target_is_directory)?;
             }
             SnapshotEntry::File {
                 path: relative,
@@ -424,6 +534,8 @@ fn materialize_version(
                 copy_object(&object, &path, *size, digest)?;
             }
         }
+        bind_cleanup_expectation(transaction_root, &relative, cleanup_expectations)?;
+        bind_existing_cleanup_expectations(transaction_root, cleanup_expectations)?;
         checkpoint()?;
     }
     sync_tree(destination)?;
@@ -563,7 +675,7 @@ fn transaction_path(root: &Path, bottle_id: &str, digest: &str) -> Result<PathBu
     Ok(root.join("transactions").join(bottle_id))
 }
 
-fn create_transaction(path: &Path) -> Result<(), BottleMigrationError> {
+fn create_transaction(path: &Path) -> Result<CleanupIdentity, BottleMigrationError> {
     match fs::create_dir(path) {
         Ok(()) => {
             let marker = path.join(".owner");
@@ -571,7 +683,7 @@ fn create_transaction(path: &Path) -> Result<(), BottleMigrationError> {
                 let _ = fs::remove_dir(path);
                 Err(error)
             } else {
-                Ok(())
+                cleanup_identity(path).map_err(|_| transaction_failed())
             }
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(transaction_failed()),
@@ -594,7 +706,15 @@ fn publish_ref(source: &Path, target: &Path) -> Result<(), BottleMigrationError>
             return Err(target_collision());
         }
     }
-    fs::rename(source, target).map_err(|_| transaction_failed())
+    #[cfg(windows)]
+    {
+        windows_move_file(source, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+            .map_err(|_| transaction_failed())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, target).map_err(|_| transaction_failed())
+    }
 }
 
 fn read_active_ref(path: &Path, bottle_id: &str) -> Result<Option<BottleActiveRef>, BottleMigrationError> {
@@ -880,7 +1000,11 @@ fn open_regular(path: &Path) -> io::Result<File> {
 fn sync_tree(path: &Path) -> Result<(), BottleMigrationError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| transaction_failed())?;
     if metadata.file_type().is_symlink() {
-        return Err(transaction_failed());
+        // Snapshot links are already normalized and authenticated.  Syncing a
+        // link means persisting the directory entry itself; never follow its
+        // target during the transaction.
+        checkpoint()?;
+        return Ok(());
     }
     if metadata.file_type().is_dir() {
         for entry in fs::read_dir(path).map_err(|_| transaction_failed())? {
@@ -890,11 +1014,13 @@ fn sync_tree(path: &Path) -> Result<(), BottleMigrationError> {
         File::open(path)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| transaction_failed())?;
+        checkpoint()?;
     } else if metadata.file_type().is_file() {
         #[cfg(unix)]
         File::open(path)
             .and_then(|file| file.sync_all())
             .map_err(|_| transaction_failed())?;
+        checkpoint()?;
     }
     Ok(())
 }
@@ -929,23 +1055,32 @@ fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -
     Ok(())
 }
 
-fn create_link(target: &str, path: &Path) -> Result<(), BottleMigrationError> {
+fn create_link(target: &str, path: &Path, target_is_directory: bool) -> Result<(), BottleMigrationError> {
     #[cfg(unix)]
     {
+        let _ = target_is_directory;
         std::os::unix::fs::symlink(target, path).map_err(|_| transaction_failed())
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, path).map_err(|_| transaction_failed())
+        if target_is_directory {
+            std::os::windows::fs::symlink_dir(target, path).map_err(|_| transaction_failed())
+        } else {
+            std::os::windows::fs::symlink_file(target, path).map_err(|_| transaction_failed())
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (target, path);
+        let _ = (target, path, target_is_directory);
         Err(unsafe_entry())
     }
 }
 
-fn cleanup_transaction(path: &Path, expected: &BTreeMap<PathBuf, CleanupExpectation>) -> io::Result<()> {
+fn cleanup_transaction(
+    path: &Path,
+    transaction_identity: CleanupIdentity,
+    expected: &BTreeMap<PathBuf, CleanupExpectation>,
+) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -955,6 +1090,12 @@ fn cleanup_transaction(path: &Path, expected: &BTreeMap<PathBuf, CleanupExpectat
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "transaction path is not an owned directory",
+        ));
+    }
+    if cleanup_identity(path)? != transaction_identity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "transaction directory identity changed",
         ));
     }
     cleanup_transaction_directory(path, Path::new(""), expected)?;
@@ -976,28 +1117,45 @@ fn cleanup_transaction_directory(
         };
         let child = entry.path();
         let metadata = fs::symlink_metadata(&child)?;
-        if metadata.file_type().is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "transaction child is a link",
-            ));
-        }
-        if metadata.file_type().is_dir() {
-            cleanup_transaction_directory(&child, &child_relative, expected)?;
-            fs::remove_dir(&child)?;
-            continue;
-        }
         let Some(expectation) = expected.get(&child_relative) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "transaction child is not owned",
             ));
         };
-        let owned = match expectation {
-            CleanupExpectation::Bytes(bytes) => read_bounded(&child, MAX_VERSION_JSON_BYTES)
+        if let Some(identity) = expectation.identity {
+            if cleanup_identity(&child)? != identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transaction child identity changed",
+                ));
+            }
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transaction child identity was not bound",
+            ));
+        }
+        if metadata.file_type().is_dir() {
+            if !matches!(expectation.kind, CleanupKind::Directory) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "transaction directory kind changed",
+                ));
+            }
+            cleanup_transaction_directory(&child, &child_relative, expected)?;
+            fs::remove_dir(&child)?;
+            continue;
+        }
+        let owned = match &expectation.kind {
+            CleanupKind::Bytes(bytes) => read_bounded(&child, MAX_VERSION_JSON_BYTES)
                 .map(|actual| actual == bytes.as_slice())
                 .unwrap_or(false),
-            CleanupExpectation::Digest { size, digest } => verify_file_digest(&child, *size, digest).is_ok(),
+            CleanupKind::Digest { size, digest } => verify_file_digest(&child, *size, digest).is_ok(),
+            CleanupKind::Link { target } => fs::read_link(&child)
+                .map(|actual| actual == Path::new(target))
+                .unwrap_or(false),
+            CleanupKind::Directory => false,
         };
         if !owned {
             return Err(io::Error::new(
@@ -1037,12 +1195,50 @@ fn rename_noreplace(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 fn rename_noreplace(source: &Path, target: &Path) -> io::Result<()> {
-    if target.exists() {
-        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists"));
+    // MoveFileExW without REPLACE_EXISTING is an atomic no-replace rename on
+    // Windows, unlike a check-then-rename sequence that can race a creator.
+    windows_move_file(source, target, MOVEFILE_WRITE_THROUGH)
+}
+
+#[cfg(all(not(target_os = "linux"), not(windows)))]
+fn rename_noreplace(_source: &Path, _target: &Path) -> io::Result<()> {
+    // macOS snapshot creation is intentionally unsupported today; fail closed
+    // for any future non-Linux backend until it has an atomic no-replace API.
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unsupported on this platform",
+    ))
+}
+
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+#[cfg(windows)]
+fn windows_move_file(source: &Path, target: &Path, flags: u32) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        #[link_name = "MoveFileExW"]
+        fn move_file_ex_w(source: *const u16, target: *const u16, flags: u32) -> i32;
     }
-    fs::rename(source, target)
+
+    let mut source = source.as_os_str().encode_wide().collect::<Vec<_>>();
+    source.push(0);
+    let mut target = target.as_os_str().encode_wide().collect::<Vec<_>>();
+    target.push(0);
+    // SAFETY: both UTF-16 buffers are NUL-terminated and remain alive for the
+    // duration of the synchronous Win32 call.
+    let result = unsafe { move_file_ex_w(source.as_ptr(), target.as_ptr(), flags) };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn invalid_manifest() -> BottleMigrationError {
@@ -1264,7 +1460,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn injected_precommit_failures_leave_source_and_active_ref_unchanged() {
-        for ordinal in 1..=24 {
+        for ordinal in 1..=128 {
             let (temporary, store, _runtime_store, plan) = setup_case();
             let source_manifest = temporary.path().join("source/manifest.json");
             let before = fs::read(&source_manifest).unwrap();
@@ -1286,7 +1482,7 @@ mod tests {
                     }
                 }
             }
-            if ordinal == 24 {
+            if ordinal == 128 {
                 panic!("failure injector did not reach a successful ordinal");
             }
         }
@@ -1325,5 +1521,59 @@ mod tests {
         .unwrap();
         assert_eq!(active.history, vec![first_plan.plan_digest]);
         store.verify_active(&first_plan.bottle.id).unwrap();
+    }
+
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn safe_snapshot_links_are_materialized_and_verified() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        let source = temporary.path().join("source");
+        std::os::unix::fs::symlink("example.exe", source.join("drive_c/Example/alias.exe")).unwrap();
+        let snapshot = store.snapshot(&source).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: "fixture-runtime".into(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let plan = store
+            .plan(&snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+
+        let receipt = store.import(&plan).unwrap();
+        assert!(receipt.activated);
+        let version = store
+            .root()
+            .join("versions")
+            .join(&plan.bottle.id)
+            .join(plan.plan_digest.trim_start_matches("sha256:"));
+        assert_eq!(
+            fs::read_link(version.join("prefix/drive_c/Example/alias.exe")).unwrap(),
+            PathBuf::from("example.exe")
+        );
+        store.verify_active(&plan.bottle.id).unwrap();
+        assert!(!store.root().join("transactions").join("bottle-fixture").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_refuses_same_bytes_replacement_of_an_owned_file() {
+        let temporary = TemporaryDirectory::new("cleanup-identity");
+        let transaction = temporary.path().join("transaction");
+        fs::create_dir_all(&transaction).unwrap();
+        let owner = transaction.join(".owner");
+        fs::write(&owner, super::OWNER_MARKER).unwrap();
+        let transaction_identity = super::cleanup_identity(&transaction).unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            PathBuf::from(".owner"),
+            super::CleanupExpectation::new(super::CleanupKind::Bytes(super::OWNER_MARKER.to_vec())),
+        );
+        super::bind_cleanup_expectation(&transaction, Path::new(".owner"), &mut expected).unwrap();
+
+        let replacement = transaction.join("replacement");
+        fs::write(&replacement, super::OWNER_MARKER).unwrap();
+        fs::rename(&replacement, &owner).unwrap();
+        assert!(super::cleanup_transaction(&transaction, transaction_identity, &expected).is_err());
+        assert_eq!(fs::read(&owner).unwrap(), super::OWNER_MARKER);
     }
 }
