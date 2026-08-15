@@ -1795,4 +1795,27 @@ mod tests {
             super::MAX_VERSION_JSON_BYTES as u64 + 1
         );
     }
+
+    #[test]
+    fn nested_link_targets_round_trip_from_root_to_parent_relative() {
+        let cases = [
+            (
+                "drive_c/Example/alias.exe",
+                "drive_c/Example/example.exe",
+                "example.exe",
+            ),
+            (
+                "drive_c/Example/alias.exe",
+                "drive_c/Other/example.exe",
+                "../Other/example.exe",
+            ),
+            ("drive_c/Example/alias.exe", "manifest.json", "../../manifest.json"),
+            ("drive_c/Example/parent-link", "drive_c/Example", "."),
+        ];
+        for (link_path, target, expected_raw) in cases {
+            let actual = super::materialized_link_target(link_path, target).unwrap();
+            assert_eq!(actual, PathBuf::from(expected_raw));
+            assert_eq!(super::normalize_link_target(link_path, &actual).unwrap(), target);
+        }
+    }
 }
