@@ -37,8 +37,9 @@ pub struct RuntimeMapping {
 impl RuntimeMapping {
     fn validate(&self) -> Result<(), BottleMigrationError> {
         validate_legacy_engine_id(&self.legacy_engine_id)?;
-        validate_id("runtimeMap.runtimePackId", &self.runtime_pack_id).map_err(|_| invalid_manifest())?;
-        validate_digest("runtimeMap.runtimePackDigest", &self.runtime_pack_digest).map_err(|_| invalid_manifest())?;
+        validate_plan_id("runtimeMap.runtimePackId", &self.runtime_pack_id)?;
+        validate_canonical_digest("runtimeMap.runtimePackDigest", &self.runtime_pack_digest)
+            .map_err(|_| invalid_manifest())?;
         Ok(())
     }
 }
@@ -149,6 +150,7 @@ impl BottleMigrationPlan {
         if !same_digest(&expected_plan, &self.plan_digest) {
             return Err(snapshot_corrupt());
         }
+        validate_canonical_digest("migration.planDigest", &self.plan_digest).map_err(|_| snapshot_corrupt())?;
         Ok(())
     }
 
@@ -170,12 +172,27 @@ impl BottleMigrationPlan {
         {
             return Err(invalid_manifest());
         }
-        validate_digest("migration.snapshotDigest", &self.snapshot_digest).map_err(|_| snapshot_corrupt())?;
+        validate_canonical_digest("migration.snapshotDigest", &self.snapshot_digest).map_err(|_| snapshot_corrupt())?;
         validate_legacy_engine_id(&self.legacy_engine_id)?;
+        if self.bottle.name.is_empty() || self.bottle.name.len() > crate::MAX_TEXT_BYTES {
+            return Err(invalid_manifest());
+        }
+        if !matches!(
+            self.bottle.guest.architecture,
+            CpuArchitecture::I386 | CpuArchitecture::X86_64
+        ) || !matches!(self.bottle.storage.state, BottleState::Ready)
+            || !self.bottle.recipes.is_empty()
+            || self.bottle.created_at.len() > crate::MAX_TEXT_BYTES
+            || self.bottle.updated_at.len() > crate::MAX_TEXT_BYTES
+        {
+            return Err(invalid_manifest());
+        }
+        validate_plan_id("migration.bottle.id", &self.bottle.id)?;
         self.bottle.validate().map_err(|_| invalid_manifest())?;
-        validate_digest("migration.bottleDigest", &self.bottle_digest).map_err(|_| snapshot_corrupt())?;
-        validate_id("migration.runtimePack.id", &self.runtime_pack.id).map_err(|_| invalid_manifest())?;
-        validate_digest("migration.runtimePack.digest", &self.runtime_pack.digest).map_err(|_| runtime_mismatch())?;
+        validate_canonical_digest("migration.bottleDigest", &self.bottle_digest).map_err(|_| snapshot_corrupt())?;
+        validate_plan_id("migration.runtimePack.id", &self.runtime_pack.id)?;
+        validate_canonical_digest("migration.runtimePack.digest", &self.runtime_pack.digest)
+            .map_err(|_| runtime_mismatch())?;
         if self.bottle.runtime_pack != self.runtime_pack {
             return Err(runtime_mismatch());
         }
@@ -184,8 +201,8 @@ impl BottleMigrationPlan {
         }
         let mut launcher_ids = BTreeSet::new();
         for launcher in &self.launchers {
-            validate_id("migration.launcher.id", &launcher.id).map_err(|_| invalid_manifest())?;
-            validate_id("migration.launcher.appId", &launcher.app_id).map_err(|_| invalid_manifest())?;
+            validate_plan_id("migration.launcher.id", &launcher.id)?;
+            validate_plan_id("migration.launcher.appId", &launcher.app_id)?;
             if launcher.bottle_id != self.bottle.id {
                 return Err(invalid_manifest());
             }
@@ -408,6 +425,21 @@ fn validate_legacy_engine_id(value: &str) -> Result<(), BottleMigrationError> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
     {
+        return Err(invalid_manifest());
+    }
+    Ok(())
+}
+
+fn validate_plan_id(field: &'static str, value: &str) -> Result<(), BottleMigrationError> {
+    if value.len() > MAX_ID_BYTES {
+        return Err(invalid_manifest());
+    }
+    validate_id(field, value).map_err(|_| invalid_manifest())
+}
+
+fn validate_canonical_digest(field: &'static str, value: &str) -> Result<(), BottleMigrationError> {
+    validate_digest(field, value).map_err(|_| invalid_manifest())?;
+    if normalize_digest(value) != value {
         return Err(invalid_manifest());
     }
     Ok(())
@@ -739,5 +771,21 @@ mod tests {
                 .code(),
             DiagnosticCode::SnapshotCorrupt
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn sealed_plan_validation_rejects_schema_widening_mutants() {
+        let (_temporary, mut plan) = setup_case("drive_c/Example/example.exe", "win10", "win64");
+        plan.bottle.guest.architecture = CpuArchitecture::Arm64;
+        plan.bottle_digest = digest_serialized(&plan.bottle).unwrap();
+        plan.plan_digest = unsigned_plan_digest(&plan).unwrap();
+        assert_eq!(plan.validate().unwrap_err().code(), DiagnosticCode::InvalidManifest);
+
+        let (_temporary, mut plan) = setup_case("drive_c/Example/example.exe", "win10", "win64");
+        plan.bottle.name = "x".repeat(crate::MAX_TEXT_BYTES + 1);
+        plan.bottle_digest = digest_serialized(&plan.bottle).unwrap();
+        plan.plan_digest = unsigned_plan_digest(&plan).unwrap();
+        assert_eq!(plan.validate().unwrap_err().code(), DiagnosticCode::InvalidManifest);
     }
 }
