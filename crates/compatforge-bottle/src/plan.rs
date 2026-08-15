@@ -663,6 +663,8 @@ mod tests {
         assert_eq!(plan.launchers[0].environment[0].name, "BOTTLE");
         assert_eq!(plan.launchers[0].environment[1].name, "LAUNCHER");
         assert_eq!(plan.launchers[0].environment[2].value, "launcher");
+        assert_eq!(plan.bottle.created_at, "2026-08-08T00:00:00Z");
+        assert_eq!(plan.bottle.updated_at, "2026-08-08T00:00:01Z");
         plan.validate().unwrap();
         assert_eq!(plan.recomputed_digest().unwrap(), plan.plan_digest);
     }
