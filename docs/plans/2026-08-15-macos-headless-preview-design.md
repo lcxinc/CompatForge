@@ -8,6 +8,28 @@
 - 实施仓库：CompatForge
 - 明确不修改：ForgeOS、ForgeTools、Mac-Win
 
+## 2026-08-15 实施前修订
+
+代码复核确认，原方案还需要补齐两个启动边界：
+
+1. macOS Provider 生成的受保护 Runtime Binding 必须携带已验证的 `wine` 与
+   `wineserver` SHA-256；Process Supervisor 在创建进程前重新验证两个固定入口，
+   使 Provider probe 后发生的本地 Runtime 漂移也会 fail closed。
+2. CLI 增加只读 `prepared-plan`，与 `prepared-launch` 共用同一个
+   `PreparedLaunch::prepare/authorize` helper。验收请求固定 inspection SHA-256，
+   从而可以保存可复验的 Prepared LaunchPlan，同时保持 launch stdout 只包含
+   RuntimeEvent JSONL。
+
+以上均为 additive 行为，不增加 schema 字段或 C ABI 符号。Runtime digest 作为
+Provider 所有的受保护环境项进入既有 Runtime Binding；普通非 macOS Provider
+未提供该证据时保持原行为。
+
+用户随后批准真实自动发现。验收工具默认调用独立发现器，只检查 CrossOver、
+Whisky 和相邻 Mac-Win 开发构建的固定候选位置，并要求入口 containment、可执行
+普通文件、单架构 x86_64 Mach-O 与实际版本命令全部通过。它不扫描 `PATH`、不
+递归遍历主目录、不联网；显式 `root/wine/wineserver/version` 四元组仍可整体
+覆盖。以下与“只允许显式 Wine 路径”冲突的旧描述均由本修订取代。
+
 ## 背景
 
 CompatForge Core 0.10.0 已经具备形成真实 macOS 无头运行闭环的大部分基础：
@@ -30,7 +52,7 @@ CompatForge Core 0.10.0 已经具备形成真实 macOS 无头运行闭环的大�
 
 ## 目标
 
-在 Apple Silicon Mac 上，开发者使用自己已经合法安装的 x86_64 Wine，通过显式路径完成以下闭环：
+在 Apple Silicon Mac 上，开发者使用自己已经合法安装的 x86_64 Wine，通过受限自动发现或显式覆盖完成以下闭环：
 
 1. 将固定的 `wine` 与 `wineserver` 入口登记为 unsigned preview Runtime Pack 证据；
 2. 安装并验证该 Runtime Pack；
@@ -47,7 +69,7 @@ CompatForge Core 0.10.0 已经具备形成真实 macOS 无头运行闭环的大�
 首个里程碑完成时必须同时满足：
 
 - Host 是 macOS ARM64；
-- Runtime 是开发者显式指定的 x86_64 Wine；
+- Runtime 是受限发现器实际验证或开发者完整显式指定的 x86_64 Wine；
 - Provider 只有在固定 Wine 实际执行成功时才报告 Rosetta available；
 - 来宾是 inspection 判定为 `x86_64`、`windowsConsole`、`executable` 的真实 PE；
 - 启动使用 `PreparedLaunch::prepare` 和 `PreparedLaunch::authorize`，不使用旧式普通 plan 启动作为验收路径；
@@ -66,8 +88,8 @@ CompatForge Core 0.10.0 已经具备形成真实 macOS 无头运行闭环的大�
 - GUI PE、安装器、窗口管理、字体、IME、剪贴板或文件关联；
 - Qt 6/QML 桌面客户端；
 - D3DMetal、DXVK、MoltenVK 或真实 GPU/driver 认证；
-- Wine 下载、发现、自动更新或系统 `PATH` 扫描；
-- Homebrew/CrossOver/GPTK 专用自动探测；
+- Wine 下载、自动更新、系统 `PATH` 扫描或任意目录递归发现；
+- Homebrew Cellar/GPTK 或未知第三方布局的猜测式探测；
 - 完整 Wine 目录内容寻址物化、归档解包或 GC；
 - stable/candidate Runtime 签名、可信公钥、轮换或撤销；
 - App Sandbox/seatbelt、Hardened Runtime、签名或 notarization；
@@ -100,7 +122,8 @@ CompatForge Core 0.10.0 已经具备形成真实 macOS 无头运行闭环的大�
 
 ```mermaid
 flowchart TD
-    A["开发者显式选择本地 Wine 根"] --> B["register_macos_local_wine.py"]
+    A["固定候选自动发现或显式覆盖"] --> A2["Mach-O + version 执行验证"]
+    A2 --> B["register_macos_local_wine.py"]
     B --> C["preview bundle + provider.json + receipt"]
     C --> D["现有 runtime install / verify"]
     D --> E["现有 provider macos probe / context"]
@@ -176,6 +199,11 @@ python -S -B tools/register_macos_local_wine.py \
 新增 additive 命令：
 
 ```text
+compatforge-cli prepared-plan \
+  <context-config.json> \
+  <absolute-windows-executable> \
+  <launch-request.json>
+
 compatforge-cli prepared-launch \
   <context-config.json> \
   <absolute-windows-executable> \
@@ -195,9 +223,10 @@ compatforge-cli prepared-launch-terminate \
 3. 要求 request executable path 与该绝对 source path 精确一致；
 4. 调用 `PreparedLaunch::prepare`；
 5. 调用 `PreparedLaunch::authorize`；
-6. 将授权后的同一计划交给 `ProcessSupervisor::start`；
-7. 复用现有 JSONL event loop 和终止语义；
-8. 失败写 stderr、返回非零，不向 stdout 混入非事件文本。
+6. `prepared-plan` 只输出授权后的 LaunchPlan，不创建进程；
+7. launch 命令将授权后的同一计划交给 `ProcessSupervisor::start`；
+8. launch 命令复用现有 JSONL event loop 和终止语义；
+9. 失败写 stderr、返回非零，不向 launch stdout 混入非事件文本。
 
 普通 `launch` 命令保持兼容，不改变其现有语义；但 macOS 真实 PE 预览与后续外部客户端文档必须使用 `prepared-launch`。
 
@@ -214,13 +243,17 @@ int main(void) {
 }
 ```
 
-Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写到 `target/macos-headless-preview/`。编译器不是 CompatForge Runtime，也不进入 Runtime Pack。真实 PE 的 digest 由 Guest Artifact Store 在准备阶段产生。
+Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写到仓库外、调用方
+显式提供的空 `--work-root`。链接禁用 PE 时间戳，保证相同输入摘要稳定。编译器
+不是 CompatForge Runtime，也不进入 Runtime Pack。真实 PE 的 digest 由 Guest
+Artifact Store 在准备阶段产生。
 
 如果开发者使用其他 Console PE，必须明确提供路径并自行确认来源与执行安全；真实应用不得替代安全的最小 probe 作为第一轮验收。
 
 ## 本地验收证据
 
-验收脚本只接受显式路径并调用上述工具和 CLI。它在本地工作目录保存：
+验收脚本接受显式 CLI、编译器和隔离目录；Wine 默认经受限候选自动发现，也可由
+完整四元组覆盖。它调用上述工具和 CLI，并在本地工作目录保存：
 
 - Runtime install receipt；
 - Runtime verify receipt；
@@ -258,7 +291,7 @@ Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写�
 - Pack 为 unsigned preview，不能发布；
 - source URL/许可证字段只表示开发者声明，不构成发行合规证明；
 - 不接受 D3DMetal 或其他商业组件作为本里程碑输入；
-- 不扫描开发者主目录或相邻仓库；
+- 只读取固定候选路径，不递归扫描；相邻 Mac-Win 只读开发构建可作为候选，绝不修改；
 - 不执行来源 PE，直到 Runtime/Provider/PreparedLaunch 全部验证完成；
 - 未知或高风险 PE 不应在本地 Wine 路径运行，应使用隔离 VM/Remote；
 - 本预览不声称 Wine Bottle 是安全边界。
@@ -290,7 +323,7 @@ Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写�
 
 ### 分支与提交
 
-- 分支：`agent/macos-headless-preview`；
+- 分支：从已合并设计的最新 `origin/main` 新建 `codex/macos-headless-preview`；
 - 从同步后的 `origin/main` 建立独立 worktree；
 - 文档、登记工具、PreparedLaunch CLI、验收脚本分别提交；
 - 每个提交保持现有 workspace、validator 和 ForgeOS C ABI fixture 通过；
@@ -302,6 +335,7 @@ Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写�
 ### 跨平台自动测试
 
 - 本地 Wine 登记工具的确定性、边界、无副作用和失败清理；
+- 自动发现器的闭集候选顺序、containment、Mach-O 架构和实际版本执行；
 - bundle/manifest/provider config 可被现有 Rust DTO 与 schema 接受；
 - PreparedLaunch CLI 精确 argv、错误退出、stdout/stderr 和事件输出；
 - PreparedLaunch 继续拒绝 Context、Runtime、Guest Artifact 和计划漂移；
@@ -336,7 +370,7 @@ Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写�
 
 - 工具输出确定、可验证、幂等；
 - 来源只读；
-- 无 PATH、网络、环境发现或商业组件；
+- 登记工具无发现能力；发现器无 PATH、网络、shell 或递归扫描；
 - 现有 Runtime Store 和 macOS Provider 接受输出。
 
 ### Gate C：PreparedLaunch CLI
@@ -354,7 +388,7 @@ Mac 开发者通过显式指定的 MinGW 编译器构建 x86_64 PE，输出写�
 
 ## 后续关系
 
-本里程碑完成后只证明“一个开发者本地、显式固定的 Wine Runtime 能在 Apple Silicon 上通过 Rosetta 启动一个真实 Console PE”。它为以下后续工作提供证据，但不替代它们：
+本里程碑完成后只证明“一个开发者本地、自动发现并执行验证或显式固定的 Wine Runtime 能在 Apple Silicon 上通过 Rosetta 启动一个真实 Console PE”。它为以下后续工作提供证据，但不替代它们：
 
 - 正式 Runtime materializer、签名、下载、升级和 GC；
 - authenticated `compatforged` 与 daemon lease；

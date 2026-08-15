@@ -4002,6 +4002,56 @@ def validate_pe_inspection_fixture() -> list[str]:
     return errors
 
 
+def validate_macos_preview_binary_hygiene() -> list[str]:
+    allowed = {PurePosixPath("tests/fixtures/hello-x86_64.exe")}
+    errors: list[str] = []
+    try:
+        executable_paths = sorted(ROOT.rglob("*.exe"))
+    except OSError as error:
+        return [f"macOS preview binary hygiene: {error}"]
+    for path in executable_paths:
+        if ".git" in path.parts:
+            continue
+        relative = PurePosixPath(path.relative_to(ROOT).as_posix())
+        if relative not in allowed:
+            errors.append(f"{relative}: generated Windows executable must not be stored in the repository")
+    probe_source = ROOT / "tests" / "fixtures" / "windows_console_smoke.c"
+    try:
+        source = probe_source.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"macOS preview probe source: {error}")
+    else:
+        if "COMPATFORGE_WINDOWS_CONSOLE_OK" not in source:
+            errors.append("macOS preview probe source is missing its success marker")
+
+    discovery_tool = ROOT / "tools" / "discover_macos_wine.py"
+    try:
+        discovery_source = discovery_tool.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"macOS Wine discovery tool: {error}")
+    else:
+        for required in (
+            "CrossOver.app",
+            "Whisky.app",
+            "Mac-Win",
+            "macho_architectures",
+            '"--version"',
+        ):
+            if required not in discovery_source:
+                errors.append(f"macOS Wine discovery tool is missing bounded evidence: {required}")
+        for forbidden in (
+            "shutil.which",
+            "shell=True",
+            "os.walk",
+            "Path.rglob",
+            "urllib",
+            "requests",
+        ):
+            if forbidden in discovery_source:
+                errors.append(f"macOS Wine discovery tool uses forbidden discovery surface: {forbidden}")
+    return errors
+
+
 def main() -> int:
     errors = (
         validate_macwin_asset_migration()
@@ -4011,6 +4061,7 @@ def main() -> int:
         + validate_markdown_links()
         + validate_no_developer_paths()
         + validate_pe_inspection_fixture()
+        + validate_macos_preview_binary_hygiene()
     )
     if errors:
         print("repository validation failed:", file=sys.stderr)

@@ -128,5 +128,31 @@ python -S -B scripts/validate_repository.py
 - Context capability 查询覆盖 Linux x86_64/ARM64 映射、空 Provider、不可用 Provider、NULL 输出语义、确定性排序、无文件/进程物化边界，以及 token、用户路径、任意进程 observation 不进入公开报告；该路径不依赖或调用 PE 解析模块。
 - PE inspection 覆盖 DOS/PE signature、optional header/machine 一致性、section/header 上限、RVA 映射、import 终止和名称闭集；确定性无代码 fixture 在三平台 CLI 检查，Linux C consumer 先验证 API 0.9.0/ABI 1 再解析 additive symbol。
 - PreparedLaunch 覆盖来源修改不影响固定对象、对象篡改、符号链接、路径/架构/digest 伪报、Context/sandbox/工作目录漂移和确定性重编。Linux 动态 C consumer 验证 API 0.10.0/ABI 1 的 `prepare → inspection-get → plan-get`；该 fixture 不调用 start，不执行真实 PE。
+- macOS Headless Preview 自动测试覆盖受限候选发现、Mach-O/实际版本验证、登记工具的确定性、路径隔离、幂等发布，PreparedLaunch CLI 精确参数，以及 Wine/wineserver/Guest 摘要在 spawn 前的篡改拒绝。真实 Wine 验收是 Apple Silicon 上的显式 opt-in 门禁，不进入默认 CI，也不产生 GUI 或应用兼容评级。
 - Runtime Pack 覆盖 NIST SHA-256 vectors、流式边界、manifest 规范化排序、组件/manifest digest 失败、stable/candidate 签名 fail-closed、幂等安装、对象复用、active ref 原子可见性、目标重校验与回滚。
 - 三平台 CI 使用两个本地 preview bundle 执行 `install v1 → install v2 → verify v2 → rollback v1`；fixture 只包含可公开文本 blob，不包含 Wine 或商业二进制。
+
+## Apple Silicon 本地无头预览
+
+先运行跨平台、无 Wine 的契约测试：
+
+```text
+python3 -S -B -m unittest tests.test_macos_headless_preview -v
+```
+
+真实验收必须由开发者显式提供 CLI、MinGW 和独立工作/存储目录。Wine 默认从
+固定的 CrossOver、Whisky、相邻 Mac-Win 开发构建候选中自动发现并执行验证：
+
+```text
+python3 -S -B tools/run_macos_headless_preview.py \
+  --compatforge-cli /absolute/path/to/compatforge-cli \
+  --cc /absolute/path/to/x86_64-w64-mingw32-gcc \
+  --runtime-store /absolute/empty/runtime-store \
+  --storage-root /absolute/empty/core-storage \
+  --work-root /absolute/empty/work-root
+```
+
+需要覆盖自动选择时，必须一起提供 `--wine-root`、`--wine`、`--wineserver` 和
+`--version`，不接受部分覆盖。发现器不使用 `PATH`、网络或 shell。
+
+完整限制、证据和清理方式见[本地预览指南](guides/macos-headless-preview.md)。
