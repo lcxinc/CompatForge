@@ -2577,6 +2577,10 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "platform.rs",
                 'use std :: net as n; fn controlled_network_spaced_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
             ),
+            "network-leading-colon-alias": (
+                "platform.rs",
+                'use ::std::net as n; fn controlled_network_leading_colon_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
+            ),
             "unix-network": (
                 "platform.rs",
                 'std::os::unix::net::UnixStream::connect("/tmp/forbidden");',
@@ -2629,6 +2633,10 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "snapshot.rs",
                 'extern crate std as s; fn controlled_process_root_extern_alias() { s::process::Command::new("sh"); }',
             ),
+            "process-leading-colon-alias": (
+                "snapshot.rs",
+                'use ::std::process as p; fn controlled_process_leading_colon_alias() { p::Command::new("sh"); }',
+            ),
             "environment-args": (
                 "platform.rs",
                 "std::env::args();",
@@ -2676,6 +2684,10 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
             "environment-spaced-braced-alias": (
                 "platform.rs",
                 'use std::{ env as e}; fn controlled_environment_spaced_braced_alias() { e::current_dir(); }',
+            ),
+            "environment-leading-colon-alias": (
+                "platform.rs",
+                'use ::std::env as e; fn controlled_environment_leading_colon_alias() { e::current_dir(); }',
             ),
             "temporary-directory": (
                 "platform.rs",
