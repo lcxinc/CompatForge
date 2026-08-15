@@ -2223,6 +2223,121 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
             source.write_bytes(source.read_bytes() + b"mutated")
             self.assertTrue(validator.validate_bottle_migration_repository(root))
 
+    def test_validator_revalidates_every_trust_root_leaf_after_document_reads(self) -> None:
+        validator = self._validator()
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            original = validator._bottle_read_regular
+            target = (
+                root
+                / "tests"
+                / "fixtures"
+                / "bottle-migration"
+                / "goldens"
+                / "win64-legacy-planning.json"
+            )
+            mutated = False
+
+            def read_and_mutate(path, maximum=2 * 1024 * 1024):
+                nonlocal mutated
+                result = original(path, maximum)
+                if not mutated and Path(path).name == "testing.md":
+                    target.write_bytes(target.read_bytes() + b" ")
+                    mutated = True
+                return result
+
+            with mock.patch.object(validator, "_bottle_read_regular", side_effect=read_and_mutate):
+                self.assertTrue(validator.validate_bottle_migration_repository(root))
+            self.assertTrue(mutated)
+
+    def test_validator_rejects_schema_namespace_extras_and_schema_root_links(self) -> None:
+        validator = self._validator()
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            (root / "schemas" / "evil.txt").write_bytes(b"forged")
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            schema_copy = root / "schemas-copy"
+            root.joinpath("schemas").rename(schema_copy)
+            try:
+                os.symlink(schema_copy, root / "schemas", target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"directory symlinks unavailable: {error}")
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+    def test_validator_requires_structural_workspace_docs_and_ci_evidence(self) -> None:
+        validator = self._validator()
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            workflow = root / ".github" / "workflows" / "ci.yml"
+            workflow.write_text(
+                "# " + " ".join(validator.BOTTLE_MIGRATION_CI_SNIPPETS) + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            cargo = root / "Cargo.toml"
+            cargo.write_text(
+                cargo.read_text(encoding="utf-8").replace(
+                    '  "apps/cli",\n  "crates/compatforge-bottle",',
+                    '  # "apps/cli",\n  # "crates/compatforge-bottle",',
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            documentation = root / "docs" / "testing.md"
+            content = documentation.read_text(encoding="utf-8")
+            content = re.sub(
+                r"^compatforge-cli bottle .*$",
+                lambda match: f"<!-- {match.group(0)} -->",
+                content,
+                flags=re.MULTILINE,
+            )
+            documentation.write_text(content, encoding="utf-8")
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+    def test_validator_bounds_schema_directory_enumeration_before_sorting(self) -> None:
+        validator = self._validator()
+
+        class FakeScanner:
+            def __init__(self, entries):
+                self.entries = iter(entries)
+
+            def __enter__(self):
+                return self.entries
+
+            def __exit__(self, *unused):
+                return False
+
+        class FakeEntry:
+            def __init__(self, name):
+                self.name = name
+
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            schema_root = Path(temporary) / "schemas"
+            schema_root.mkdir()
+            entries = [
+                FakeEntry(f"forged-{index}.schema.json")
+                for index in range(validator.BOTTLE_MIGRATION_MAX_DIRECTORY_ENTRIES + 1)
+            ]
+            with mock.patch.object(validator.os, "scandir", return_value=FakeScanner(entries)):
+                with self.assertRaisesRegex(ValueError, "too many entries"):
+                    validator._bottle_schema_names(schema_root)
+
+    def test_validator_bounds_aggregate_trust_root_bytes(self) -> None:
+        validator = self._validator()
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            with mock.patch.object(validator, "BOTTLE_MIGRATION_TRUST_ROOT_MAX_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "trust root exceeds the byte bound"):
+                    validator._bottle_capture_trust_root(root)
+
 
 
 if __name__ == "__main__":

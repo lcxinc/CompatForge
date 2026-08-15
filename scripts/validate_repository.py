@@ -166,6 +166,8 @@ BOTTLE_MIGRATION_FIXTURE_COUNTS = {
     "win32": {"entryCount": 4, "totalFileBytes": 558},
     "win64": {"entryCount": 4, "totalFileBytes": 1152},
 }
+BOTTLE_MIGRATION_MAX_DIRECTORY_ENTRIES = 100_000
+BOTTLE_MIGRATION_TRUST_ROOT_MAX_BYTES = 128 * 1024 * 1024
 BOTTLE_MIGRATION_DOC_SNIPPETS = {
     "docs/testing.md": (
         "compatforge-cli bottle snapshot",
@@ -562,6 +564,22 @@ def _bottle_read_regular(path: Path, maximum: int = 2 * 1024 * 1024) -> tuple[by
         os.close(descriptor)
 
 
+# The trust-root pass deliberately keeps a private reference to the checked
+# reader.  Mutation tests replace ``_bottle_read_regular`` to simulate a
+# replacement after one of the semantic passes; the final pass must observe
+# the filesystem independently of that test hook.
+_BOTTLE_TRUST_READ_REGULAR = _bottle_read_regular
+
+
+def _bottle_directory_metadata(path: Path) -> os.stat_result:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+        raise ValueError(f"Bottle migration trust root contains a link: {path}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"Bottle migration trust root is not a directory: {path}")
+    return metadata
+
+
 def _bottle_path_component_is_safe(component: str) -> bool:
     if not component or component in {".", ".."}:
         return False
@@ -592,7 +610,10 @@ def _bottle_relative_path_is_safe(relative: str) -> bool:
 
 def _bottle_walk_fixture(
     root: Path,
+    reader=None,
 ) -> tuple[dict[str, tuple[str, tuple[int, ...], bytes | None]], int, tuple[int, ...]]:
+    if reader is None:
+        reader = _bottle_read_regular
     identities: dict[str, tuple[str, tuple[int, ...], bytes | None]] = {}
     total_bytes = 0
     root_metadata = root.lstat()
@@ -612,7 +633,13 @@ def _bottle_walk_fixture(
         if depth > 128:
             raise ValueError("Bottle migration fixture exceeds path depth")
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            entries = []
+            with os.scandir(directory) as scanner:
+                for entry in scanner:
+                    entries.append(entry)
+                    if len(entries) > BOTTLE_MIGRATION_MAX_DIRECTORY_ENTRIES:
+                        raise ValueError("Bottle migration fixture directory has too many entries")
+            entries.sort(key=lambda entry: entry.name)
         except OSError as error:
             raise ValueError(f"Bottle migration fixture enumeration failed: {error}") from error
         for entry in entries:
@@ -633,7 +660,7 @@ def _bottle_walk_fixture(
                 continue
             if not stat.S_ISREG(child_metadata.st_mode):
                 raise ValueError(f"Bottle migration fixture contains a non-regular entry: {child_relative}")
-            raw, read_identity = _bottle_read_regular(child)
+            raw, read_identity = reader(child)
             if read_identity != identity:
                 raise ValueError(f"Bottle migration fixture changed while reading: {child_relative}")
             total_bytes += len(raw)
@@ -661,6 +688,141 @@ def _bottle_revalidate_fixture(
             raise ValueError(f"Bottle migration fixture identity changed: {relative}")
         if kind == "file" and raw != current_raw:
             raise ValueError(f"Bottle migration fixture bytes changed: {relative}")
+
+
+def _bottle_schema_names(schema_root: Path) -> tuple[str, ...]:
+    """Return the authenticated Bottle schema names without following links.
+
+    The repository has other (non-Bottle) schemas.  They are intentionally
+    outside this namespace, but every entry in the directory still has to be a
+    regular ``*.schema.json`` document so an arbitrary payload cannot be
+    smuggled into the trust root.
+    """
+
+    _bottle_directory_metadata(schema_root)
+    try:
+        entries = []
+        with os.scandir(schema_root) as scanner:
+            for entry in scanner:
+                entries.append(entry)
+                if len(entries) > BOTTLE_MIGRATION_MAX_DIRECTORY_ENTRIES:
+                    raise ValueError("Bottle schema directory has too many entries")
+        entries.sort(key=lambda entry: entry.name)
+    except OSError as error:
+        raise ValueError(f"Bottle schema directory cannot be enumerated: {error}") from error
+    names: list[str] = []
+    for entry in entries:
+        path = schema_root / entry.name
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+            raise ValueError(f"Bottle schema directory contains a link: {entry.name}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"Bottle schema directory contains a non-regular entry: {entry.name}")
+        if not entry.name.endswith(".schema.json"):
+            raise ValueError(f"Bottle schema directory contains an unexpected entry: {entry.name}")
+        names.append(entry.name)
+    bottle_names = tuple(
+        name for name in names if name.startswith("bottle-") and name.endswith(".schema.json")
+    )
+    if set(bottle_names) != set(BOTTLE_MIGRATION_SCHEMA_SHA256):
+        raise ValueError("Bottle schema set drifted")
+    return tuple(names)
+
+
+def _bottle_relative_key(root: Path, path: Path) -> str:
+    relative = path.relative_to(root).as_posix()
+    return relative or "."
+
+
+def _bottle_bind_directory_chain(
+    root: Path,
+    directory: Path,
+    identities: dict[str, tuple[int, ...]],
+) -> None:
+    current = directory
+    while True:
+        metadata = _bottle_directory_metadata(current)
+        identities[_bottle_relative_key(root, current)] = _bottle_identity(metadata)
+        if current == root:
+            return
+        current = current.parent
+
+
+def _bottle_capture_trust_root(
+    root: Path,
+) -> tuple[
+    dict[str, tuple[int, ...]],
+    dict[str, tuple[tuple[int, ...], bytes]],
+]:
+    """Capture every Bottle validator input with directory and leaf identity."""
+
+    root = root.resolve()
+    directories: dict[str, tuple[int, ...]] = {}
+    files: dict[str, tuple[tuple[int, ...], bytes]] = {}
+    total_bytes = 0
+
+    def capture_file(path: Path, maximum: int = 2 * 1024 * 1024) -> None:
+        nonlocal total_bytes
+        raw, identity = _BOTTLE_TRUST_READ_REGULAR(path, maximum)
+        total_bytes += len(raw)
+        if total_bytes > BOTTLE_MIGRATION_TRUST_ROOT_MAX_BYTES:
+            raise ValueError("Bottle migration trust root exceeds the byte bound")
+        files[_bottle_relative_key(root, path)] = (identity, raw)
+
+    _bottle_bind_directory_chain(root, root, directories)
+
+    fixture_root = root / "tests" / "fixtures" / "bottle-migration"
+    fixture_identities, _, fixture_root_identity = _bottle_walk_fixture(
+        fixture_root,
+        reader=_BOTTLE_TRUST_READ_REGULAR,
+    )
+    _bottle_bind_directory_chain(root, fixture_root, directories)
+    directories[_bottle_relative_key(root, fixture_root)] = fixture_root_identity
+    for relative, (kind, identity, raw) in fixture_identities.items():
+        path = fixture_root / relative
+        key = _bottle_relative_key(root, path)
+        if kind == "directory":
+            directories[key] = identity
+        else:
+            if raw is None:
+                raise ValueError(f"Bottle fixture file has no bytes: {relative}")
+            total_bytes += len(raw)
+            if total_bytes > BOTTLE_MIGRATION_TRUST_ROOT_MAX_BYTES:
+                raise ValueError("Bottle migration trust root exceeds the byte bound")
+            files[key] = (identity, raw)
+
+    schema_root = root / "schemas"
+    schema_names = _bottle_schema_names(schema_root)
+    _bottle_bind_directory_chain(root, schema_root, directories)
+    for name in schema_names:
+        path = schema_root / name
+        capture_file(path)
+
+    for relative in BOTTLE_MIGRATION_DOC_SNIPPETS:
+        path = root / relative
+        _bottle_bind_directory_chain(root, path.parent, directories)
+        capture_file(path, 2 * 1024 * 1024)
+    for relative in ("Cargo.toml", ".github/workflows/ci.yml"):
+        path = root / relative
+        _bottle_bind_directory_chain(root, path.parent, directories)
+        capture_file(path, 2 * 1024 * 1024)
+    return directories, files
+
+
+def _bottle_revalidate_trust_root(
+    root: Path,
+    expected: tuple[
+        dict[str, tuple[int, ...]],
+        dict[str, tuple[tuple[int, ...], bytes]],
+    ],
+) -> None:
+    current = _bottle_capture_trust_root(root)
+    expected_directories, expected_files = expected
+    current_directories, current_files = current
+    if current_directories != expected_directories:
+        raise ValueError("Bottle migration trust-root directory changed during validation")
+    if current_files != expected_files:
+        raise ValueError("Bottle migration trust-root bytes or identity changed during validation")
 
 
 def _bottle_load_document(path: Path, maximum: int = 64 * 1024 * 1024) -> object:
@@ -695,19 +857,14 @@ def _bottle_snapshot_projection(case: str, manifest: dict[str, object], root: Pa
     case_root = root / case
     entries: list[dict[str, object]] = []
     total = 0
-    paths: list[str] = []
-    for candidate in sorted(case_root.rglob("*"), key=lambda path: path.relative_to(case_root).as_posix()):
-        relative = candidate.relative_to(case_root).as_posix()
-        if candidate.is_dir():
-            paths.append(relative)
-        elif candidate.is_file():
-            paths.append(relative)
-    for relative in paths:
-        candidate = case_root / relative
-        if candidate.is_dir():
+    identities, _, _ = _bottle_walk_fixture(case_root)
+    for relative in sorted(identities):
+        kind, _, raw = identities[relative]
+        if kind == "directory":
             entries.append({"kind": "directory", "path": relative})
             continue
-        raw, _ = _bottle_read_regular(candidate)
+        if raw is None:
+            raise ValueError(f"Bottle migration fixture file has no bytes: {relative}")
         entries.append(
             {
                 "digest": _bottle_digest(raw),
@@ -907,16 +1064,7 @@ def _bottle_expected_launch(case: str, manifest: dict[str, object], runtime_map:
 
 def _bottle_validate_schema_documents(root: Path) -> None:
     schema_root = root / "schemas"
-    try:
-        extra = sorted(
-            path.name
-            for path in schema_root.iterdir()
-            if path.name.startswith("bottle-") and path.name.endswith(".schema.json")
-        )
-    except OSError as error:
-        raise ValueError(f"Bottle schema directory cannot be enumerated: {error}") from error
-    if set(extra) != set(BOTTLE_MIGRATION_SCHEMA_SHA256):
-        raise ValueError("Bottle schema set drifted")
+    _bottle_schema_names(schema_root)
     for name, expected_digest in BOTTLE_MIGRATION_SCHEMA_SHA256.items():
         path = schema_root / name
         raw, _ = _bottle_read_regular(path)
@@ -982,23 +1130,152 @@ def _bottle_validate_fixture(root: Path) -> None:
     _bottle_revalidate_fixture(fixture_root, identities, root_identity)
 
 
+def _bottle_visible_markdown(content: str) -> str:
+    return re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+
+
+def _bottle_fenced_blocks(content: str) -> list[tuple[str, ...]]:
+    blocks: list[tuple[str, ...]] = []
+    current: list[str] | None = None
+    for line in content.splitlines():
+        if line.lstrip().startswith("```"):
+            if current is None:
+                current = []
+            else:
+                blocks.append(tuple(current))
+                current = None
+            continue
+        if current is not None:
+            current.append(line.rstrip())
+    if current is not None:
+        raise ValueError("Bottle migration documentation has an unclosed command block")
+    return blocks
+
+
+def _bottle_require_document_commands(relative: str, content: str) -> None:
+    commands = {
+        "snapshot": re.compile(r"^compatforge-cli bottle snapshot(?:\s|$)"),
+        "plan": re.compile(r"^compatforge-cli bottle plan(?:\s|$)"),
+        "import": re.compile(r"^compatforge-cli bottle import(?:\s|$)"),
+        "verify": re.compile(r"^compatforge-cli bottle verify(?:\s|$)"),
+        "rollback": re.compile(r"^compatforge-cli bottle rollback(?:\s|$)"),
+    }
+    blocks = _bottle_fenced_blocks(content)
+    if not any(
+        all(any(pattern.match(line) for line in block) for pattern in commands.values())
+        for block in blocks
+    ):
+        raise ValueError(f"Bottle migration documentation command block is incomplete: {relative}")
+
+
+def _bottle_workspace_members(cargo_text: str) -> set[str]:
+    members: set[str] = set()
+    in_members = False
+    for raw_line in cargo_text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not in_members:
+            if re.fullmatch(r"members\s*=\s*\[", line):
+                in_members = True
+            continue
+        if line == "]":
+            in_members = False
+            break
+        match = WORKSPACE_MEMBER.fullmatch(line)
+        if match:
+            members.add(match.group(1))
+    if in_members:
+        raise ValueError("Bottle migration workspace members array is not closed")
+    return members
+
+
+def _bottle_ci_active_lines(workflow_text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for index, raw_line in enumerate(workflow_text.splitlines()):
+        line = raw_line.split("#", 1)[0].rstrip()
+        if line.strip():
+            lines.append((index, line))
+    return lines
+
+
+def _bottle_require_ci_sequence(workflow_text: str) -> None:
+    active = _bottle_ci_active_lines(workflow_text)
+    step_index = None
+    step_indent = None
+    for index, line in active:
+        stripped = line.strip()
+        if stripped == "- name: Run Bottle migration fixture sequence":
+            step_index = index
+            step_indent = len(line) - len(line.lstrip())
+            break
+    if step_index is None or step_indent is None:
+        raise ValueError("Bottle migration CI fixture step is missing")
+    step_lines = []
+    for index, line in active:
+        if index < step_index:
+            continue
+        if index > step_index and len(line) - len(line.lstrip()) <= step_indent:
+            if line.strip().startswith("- name:"):
+                break
+        step_lines.append(line)
+    if not any(line.strip() == "run: |" for line in step_lines):
+        raise ValueError("Bottle migration CI fixture step has no run block")
+    run_lines = [line for line in step_lines if line.strip() != "run: |" and line != step_lines[0]]
+    stage_positions: list[int] = []
+    for stage in ("snapshot", "plan", "import", "verify", "rollback"):
+        if stage in {"snapshot", "plan"}:
+            command_prefix = r"(?:[A-Za-z_][A-Za-z0-9_]*\s*=\s*\"?\$\(\s*)?"
+        elif stage == "rollback":
+            command_prefix = r"if\s+"
+        else:
+            command_prefix = ""
+        pattern = re.compile(
+            rf"^\s*{command_prefix}cargo run -p compatforge-cli --locked -- bottle {stage}(?:\s|$)"
+        )
+        positions = [index for index, line in enumerate(run_lines) if pattern.search(line)]
+        if not positions:
+            raise ValueError(f"Bottle migration CI command is missing: {stage}")
+        stage_positions.append(positions[0])
+    if stage_positions != sorted(stage_positions):
+        raise ValueError("Bottle migration CI command sequence is out of order")
+    if not any(
+        re.search(
+            r"^\s*(?:run:\s*)?python(?:3)?\s+.*-m\s+unittest\s+tests\.test_bottle_migration_contracts\b",
+            line,
+        )
+        for _, line in active
+    ):
+        raise ValueError("Bottle migration CI contract test is missing")
+    if not any(
+        re.search(r"^\s*(?:run:\s*)?cargo\s+test\s+-p\s+compatforge-bottle\b", line)
+        for _, line in active
+    ):
+        raise ValueError("Bottle migration CI Bottle target is missing")
+    if not any(BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST.removeprefix("sha256:") in line for _, line in active):
+        raise ValueError("Bottle migration CI Runtime Pack digest is missing")
+
+
 def _bottle_validate_docs_and_ci(root: Path) -> None:
     for relative, snippets in BOTTLE_MIGRATION_DOC_SNIPPETS.items():
         path = root / relative
         raw, _ = _bottle_read_regular(path, 2 * 1024 * 1024)
         content = raw.decode("utf-8", errors="strict")
+        visible = _bottle_visible_markdown(content)
         for snippet in snippets:
-            if snippet not in content:
+            if snippet not in visible:
                 raise ValueError(f"Bottle migration documentation is incomplete: {relative}")
+        if relative in {
+            "docs/testing.md",
+            "docs/implementation/phase-1-bottle-migration.md",
+        }:
+            _bottle_require_document_commands(relative, visible)
     cargo, _ = _bottle_read_regular(root / "Cargo.toml", 2 * 1024 * 1024)
     cargo_text = cargo.decode("utf-8", errors="strict")
-    if '"apps/cli"' not in cargo_text or '"crates/compatforge-bottle"' not in cargo_text:
+    members = _bottle_workspace_members(cargo_text)
+    if not {"apps/cli", "crates/compatforge-bottle"}.issubset(members):
         raise ValueError("Bottle migration workspace membership is not bound")
     workflow, _ = _bottle_read_regular(root / ".github" / "workflows" / "ci.yml", 2 * 1024 * 1024)
     workflow_text = workflow.decode("utf-8", errors="strict")
-    for snippet in BOTTLE_MIGRATION_CI_SNIPPETS:
-        if snippet not in workflow_text:
-            raise ValueError("Bottle migration CI sequence is incomplete")
+    _bottle_require_ci_sequence(workflow_text)
 
 
 def validate_bottle_migration_repository(root: Path | None = None) -> list[str]:
@@ -1011,9 +1288,11 @@ def validate_bottle_migration_repository(root: Path | None = None) -> list[str]:
     """
     repository_root = (root or ROOT).resolve()
     try:
+        trust_root = _bottle_capture_trust_root(repository_root)
         _bottle_validate_schema_documents(repository_root)
         _bottle_validate_fixture(repository_root)
         _bottle_validate_docs_and_ci(repository_root)
+        _bottle_revalidate_trust_root(repository_root, trust_root)
     except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as error:
         return [f"Bottle migration repository validation failed: {error}"]
     return []
