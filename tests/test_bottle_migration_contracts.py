@@ -2309,6 +2309,53 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
             documentation.write_text(content, encoding="utf-8")
             self.assertTrue(validator.validate_bottle_migration_repository(root))
 
+    def test_validator_requires_exact_ci_digest_assertions(self) -> None:
+        validator = self._validator()
+        runtime_verify = (
+            "run: cargo run -p compatforge-cli --locked -- runtime verify "
+            "target/runtime-store "
+            f"{validator.BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST}"
+        )
+        snapshot_assertion = (
+            "          test \"$(python -c 'import json,sys; "
+            "print(json.load(sys.stdin)[\"snapshotDigest\"])' "
+            "<<<\"$snapshot_receipt\")\" = \\\n"
+            f"            \"{validator.BOTTLE_MIGRATION_SNAPSHOT_DIGESTS['win64']}\""
+        )
+        plan_assertion = (
+            "          test \"$(python -c 'import json,sys; "
+            "print(json.load(sys.stdin)[\"planDigest\"])' "
+            "<<<\"$plan_receipt\")\" = \\\n"
+            f"            \"{validator.BOTTLE_MIGRATION_PLAN_DIGESTS['win64']}\""
+        )
+        mutations = {
+            "runtime-echo": (
+                runtime_verify,
+                f"run: echo {validator.BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST}",
+            ),
+            "snapshot-echo": (
+                snapshot_assertion,
+                f"          echo {validator.BOTTLE_MIGRATION_SNAPSHOT_DIGESTS['win64']}",
+            ),
+            "plan-echo": (
+                plan_assertion,
+                f"          echo {validator.BOTTLE_MIGRATION_PLAN_DIGESTS['win64']}",
+            ),
+        }
+        for name, (expected, replacement) in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-validator-"
+            ) as temporary:
+                root = self._copy_validation_tree(Path(temporary))
+                workflow = root / ".github" / "workflows" / "ci.yml"
+                content = workflow.read_text(encoding="utf-8")
+                self.assertIn(expected, content)
+                workflow.write_text(
+                    content.replace(expected, replacement, 1),
+                    encoding="utf-8",
+                )
+                self.assertTrue(validator.validate_bottle_migration_repository(root))
+
     def test_validator_bounds_schema_directory_enumeration_before_sorting(self) -> None:
         validator = self._validator()
 

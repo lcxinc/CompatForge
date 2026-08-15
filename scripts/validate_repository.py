@@ -1272,8 +1272,38 @@ def _bottle_require_ci_sequence(workflow_text: str) -> None:
         for _, line in active
     ):
         raise ValueError("Bottle migration CI Bottle target is missing")
-    if not any(BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST.removeprefix("sha256:") in line for _, line in active):
-        raise ValueError("Bottle migration CI Runtime Pack digest is missing")
+    runtime_verify = (
+        "run: cargo run -p compatforge-cli --locked -- runtime verify "
+        f"target/runtime-store {BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST}"
+    )
+    if not any(line.strip() == runtime_verify for _, line in active):
+        raise ValueError("Bottle migration CI Runtime Pack verification is missing")
+
+    stripped_run_lines = [line.strip() for line in run_lines]
+
+    def require_adjacent_lines(expected: tuple[str, str], label: str) -> None:
+        if not any(
+            stripped_run_lines[index : index + len(expected)] == list(expected)
+            for index in range(len(stripped_run_lines) - len(expected) + 1)
+        ):
+            raise ValueError(f"Bottle migration CI {label} assertion is missing")
+
+    require_adjacent_lines(
+        (
+            'test "$(python -c \'import json,sys; print(json.load(sys.stdin)["snapshotDigest"])\' '
+            '<<<"$snapshot_receipt")" = \\',
+            f'"{BOTTLE_MIGRATION_SNAPSHOT_DIGESTS["win64"]}"',
+        ),
+        "snapshot digest",
+    )
+    require_adjacent_lines(
+        (
+            'test "$(python -c \'import json,sys; print(json.load(sys.stdin)["planDigest"])\' '
+            '<<<"$plan_receipt")" = \\',
+            f'"{BOTTLE_MIGRATION_PLAN_DIGESTS["win64"]}"',
+        ),
+        "plan digest",
+    )
 
 
 def _bottle_validate_docs_and_ci(root: Path) -> None:
