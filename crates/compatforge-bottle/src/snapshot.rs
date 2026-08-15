@@ -1217,6 +1217,7 @@ impl BottleStore {
         digest: &str,
         size: u64,
     ) -> Result<(), BottleMigrationError> {
+        file.rewind().map_err(|_| snapshot_corrupt())?;
         if file.metadata().map_err(|_| snapshot_corrupt())?.len() != size {
             return Err(snapshot_corrupt());
         }
@@ -1885,6 +1886,7 @@ fn compare_existing_snapshot_model_handle(
     identity: FileIdentity,
     snapshot: &BottleSnapshot,
 ) -> Result<(), BottleMigrationError> {
+    file.rewind().map_err(|_| snapshot_corrupt())?;
     let expected_size = measure_snapshot_json(snapshot, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
     let bytes = read_bounded_file(&mut file, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
     platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
@@ -2096,8 +2098,7 @@ mod tests {
     };
     use crate::DiagnosticCode;
     use std::fs;
-    #[cfg(windows)]
-    use std::io::Write as _;
+    use std::io::{Seek as _, SeekFrom, Write as _};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::SystemTime;
@@ -2188,6 +2189,25 @@ mod tests {
         fs::write(source.join("payload.txt"), PAYLOAD).unwrap();
         fs::write(source.join("payload-copy.txt"), PAYLOAD).unwrap();
         source
+    }
+
+    fn create_held_staging_file(root: &Path, _label: &str) -> super::HeldFile {
+        #[cfg(target_os = "linux")]
+        {
+            let directory = super::BoundDirectory::bind(root.to_path_buf()).unwrap();
+            super::platform::create_anonymous_regular_at(&directory.handle).unwrap()
+        }
+        #[cfg(windows)]
+        {
+            super::HeldFile::new(
+                fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(root.join(format!("{_label}.staged")))
+                    .unwrap(),
+            )
+        }
     }
 
     fn source_inventory(root: &Path) -> Vec<SourceLeaf> {
@@ -2343,6 +2363,60 @@ mod tests {
                 total_file_bytes: 239,
             }
         );
+    }
+
+    #[test]
+    fn held_object_staging_readback_is_repeatable_from_shared_and_arbitrary_offsets() {
+        let temporary = TemporaryDirectory::new("held-object-staging-readback");
+        let mut staged = create_held_staging_file(temporary.path(), "object");
+        staged.write_all(PAYLOAD).unwrap();
+        staged.sync_all().unwrap();
+        staged.rewind().unwrap();
+        let identity = super::platform::regular_identity(&staged).unwrap();
+        let store = BottleStore::new(temporary.path().join("store"));
+
+        store
+            .verify_object_handle(
+                staged.try_clone().unwrap(),
+                identity,
+                PAYLOAD_DIGEST,
+                u64::try_from(PAYLOAD.len()).unwrap(),
+            )
+            .unwrap();
+        store
+            .verify_object_handle(
+                staged.try_clone().unwrap(),
+                identity,
+                PAYLOAD_DIGEST,
+                u64::try_from(PAYLOAD.len()).unwrap(),
+            )
+            .unwrap();
+        staged.seek(SeekFrom::Start(7)).unwrap();
+        store
+            .verify_object_handle(
+                staged.try_clone().unwrap(),
+                identity,
+                PAYLOAD_DIGEST,
+                u64::try_from(PAYLOAD.len()).unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn held_snapshot_staging_readback_is_repeatable_from_shared_and_arbitrary_offsets() {
+        let temporary = TemporaryDirectory::new("held-snapshot-staging-readback");
+        let snapshot = security_snapshot(vec![SnapshotEntry::Directory { path: "empty".into() }]);
+        let mut staged = create_held_staging_file(temporary.path(), "snapshot");
+        super::render_snapshot_json(&snapshot, true, &mut staged).unwrap();
+        staged.write_all(b"\n").unwrap();
+        staged.sync_all().unwrap();
+        staged.rewind().unwrap();
+        let identity = super::platform::regular_identity(&staged).unwrap();
+
+        super::compare_existing_snapshot_model_handle(staged.try_clone().unwrap(), identity, &snapshot).unwrap();
+        super::compare_existing_snapshot_model_handle(staged.try_clone().unwrap(), identity, &snapshot).unwrap();
+        staged.seek(SeekFrom::Start(11)).unwrap();
+        super::compare_existing_snapshot_model_handle(staged.try_clone().unwrap(), identity, &snapshot).unwrap();
     }
 
     #[test]
