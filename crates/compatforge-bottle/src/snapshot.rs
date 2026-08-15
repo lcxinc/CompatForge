@@ -3,13 +3,13 @@ use crate::digest::{copy_and_digest, digest_reader};
 #[cfg(test)]
 use crate::digest::{sha256_bytes, STREAM_BUFFER_BYTES};
 use crate::path::{self, EntryKind};
-use crate::platform::{self, FileIdentity};
+use crate::platform::{self, FileIdentity, HeldFile};
 use crate::{BottleMigrationError, DiagnosticCode};
 use compatforge_domain::validate_id;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,10 +46,12 @@ struct SnapshotTestHook {
 enum SnapshotTestStage {
     AfterRootBind,
     AfterSourcePreflight,
+    AfterStoreObjectsMaterialized,
     AfterFileCopy,
     BeforeSourceRevalidation,
     AfterSourceRevalidation,
     AfterSnapshotManifestMeasurement,
+    AfterStoreSnapshotsMaterialized,
     BeforeObjectPublish,
     BeforeSnapshotPublish,
     AfterSnapshotPublish,
@@ -102,7 +104,7 @@ struct SourceFile {
     relative_path: String,
     size: u64,
     identity: FileIdentity,
-    file: File,
+    file: HeldFile,
     preflight_digest: String,
 }
 
@@ -112,13 +114,13 @@ enum SourceEntry {
     Directory {
         relative_path: String,
         identity: FileIdentity,
-        _handle: File,
+        _handle: HeldFile,
     },
     Link {
         relative_path: String,
         target: String,
         identity: FileIdentity,
-        _handle: Option<File>,
+        _handle: Option<HeldFile>,
     },
 }
 
@@ -126,7 +128,7 @@ enum SourceEntry {
 struct OwnedTemporaryPath {
     path: PathBuf,
     name: Option<std::ffi::OsString>,
-    directory: Option<File>,
+    directory: Option<HeldFile>,
     owned: bool,
 }
 
@@ -161,11 +163,11 @@ impl OwnedTemporaryPath {
         })
     }
 
-    fn create_new(&mut self) -> io::Result<File> {
+    fn create_new(&mut self) -> io::Result<HeldFile> {
         debug_assert!(!self.owned);
         let file = match (&self.directory, &self.name) {
             (Some(directory), Some(name)) => platform::create_regular_at(directory, name, &self.path)?,
-            _ => OpenOptions::new().write(true).create_new(true).open(&self.path)?,
+            _ => HeldFile::new(OpenOptions::new().write(true).create_new(true).open(&self.path)?),
         };
         self.owned = true;
         Ok(file)
@@ -203,7 +205,7 @@ impl Drop for OwnedTemporaryPath {
 #[derive(Debug)]
 struct BoundDirectory {
     path: PathBuf,
-    handle: File,
+    handle: HeldFile,
     identity: FileIdentity,
 }
 
@@ -239,7 +241,7 @@ impl BoundDirectory {
         }
     }
 
-    fn bind_regular(&self, name: &std::ffi::OsStr) -> io::Result<(File, FileIdentity)> {
+    fn bind_regular(&self, name: &std::ffi::OsStr) -> io::Result<(HeldFile, FileIdentity)> {
         self.verify()?;
         platform::bind_regular_at(&self.handle, name, &self.path.join(name))
     }
@@ -279,7 +281,7 @@ struct SelectedSource {
     parent: BoundDirectory,
     name: std::ffi::OsString,
     path: PathBuf,
-    root_handle: File,
+    root_handle: HeldFile,
     root_identity: FileIdentity,
 }
 
@@ -671,6 +673,7 @@ impl BottleStore {
         let legacy_manifest = LegacyBottleManifest::from_json(manifest_json)?;
         validate_id("legacyBottle.id", &legacy_manifest.id).map_err(|_| invalid_manifest())?;
         let mut store = SnapshotStoreBinding::materialize_objects(pending_store)?;
+        run_snapshot_test_hook(SnapshotTestStage::AfterStoreObjectsMaterialized, "");
 
         let mut snapshot_entries = Vec::with_capacity(source_entries.len());
         for source_entry in &mut source_entries {
@@ -717,6 +720,7 @@ impl BottleStore {
         let snapshot_digest = digest_snapshot_json(&snapshot).map_err(|_| transaction_failed())?;
         verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
         store.materialize_snapshots()?;
+        run_snapshot_test_hook(SnapshotTestStage::AfterStoreSnapshotsMaterialized, "");
         store.verify()?;
         let publication = self.publish_snapshot(&snapshot_digest, &snapshot, store.snapshots()?)?;
         let post_publication = (|| {
@@ -858,7 +862,7 @@ impl BottleStore {
 
     fn verify_object_handle(
         &self,
-        mut file: File,
+        mut file: HeldFile,
         identity: FileIdentity,
         digest: &str,
         size: u64,
@@ -1040,10 +1044,30 @@ impl BottleSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceMetadataKind {
+    Link,
+    Directory,
+    File,
+}
+
+fn classify_source_metadata(metadata: &fs::Metadata) -> Result<SourceMetadataKind, BottleMigrationError> {
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        Ok(SourceMetadataKind::Link)
+    } else if file_type.is_dir() {
+        Ok(SourceMetadataKind::Directory)
+    } else if file_type.is_file() {
+        Ok(SourceMetadataKind::File)
+    } else {
+        Err(unsafe_entry())
+    }
+}
+
 fn collect_source_entries(
     root: &Path,
     directory: &Path,
-    directory_handle: &File,
+    directory_handle: &HeldFile,
     entries: &mut Vec<SourceEntry>,
     total_file_bytes: &mut u64,
 ) -> Result<(), BottleMigrationError> {
@@ -1053,57 +1077,56 @@ fn collect_source_entries(
         let path = child.path();
         let relative_path = portable_relative_path(root, &path)?;
         let metadata = fs::symlink_metadata(&path).map_err(|_| unsafe_entry())?;
-        let file_type = metadata.file_type();
-        if file_type.is_symlink() {
-            let (handle, identity, raw_target) =
-                platform::bind_link_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
-            let target = path::normalize_link_target(&relative_path, &raw_target).map_err(|_| unsafe_entry())?;
-            push_entry(
-                entries,
-                SourceEntry::Link {
-                    relative_path,
-                    target,
-                    identity,
-                    _handle: handle,
-                },
-            )?;
-            continue;
-        }
-        if file_type.is_dir() {
-            let (handle, identity) =
-                platform::bind_directory_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
-            collect_source_entries(root, &path, &handle, entries, total_file_bytes)?;
-            push_entry(
-                entries,
-                SourceEntry::Directory {
-                    relative_path,
-                    identity,
-                    _handle: handle,
-                },
-            )?;
-        } else if file_type.is_file() {
-            let size = metadata.len();
-            checked_regular_file_size(size, total_file_bytes)?;
-            let (mut file, identity) =
-                platform::bind_regular_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
-            let (preflight_digest, preflight_size) = digest_reader(&mut file).map_err(|_| source_changed())?;
-            if preflight_size != size {
-                return Err(source_changed());
+        match classify_source_metadata(&metadata)? {
+            SourceMetadataKind::Link => {
+                let (handle, identity, raw_target) =
+                    platform::bind_link_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
+                let target = path::normalize_link_target(&relative_path, &raw_target).map_err(|_| unsafe_entry())?;
+                push_entry(
+                    entries,
+                    SourceEntry::Link {
+                        relative_path,
+                        target,
+                        identity,
+                        _handle: handle,
+                    },
+                )?;
             }
-            file.rewind().map_err(|_| source_changed())?;
-            platform::verify_regular(&file, identity).map_err(|_| source_changed())?;
-            push_entry(
-                entries,
-                SourceEntry::File(SourceFile {
-                    relative_path,
-                    size,
-                    identity,
-                    file,
-                    preflight_digest,
-                }),
-            )?;
-        } else {
-            return Err(unsafe_entry());
+            SourceMetadataKind::Directory => {
+                let (handle, identity) = platform::bind_directory_at(directory_handle, &child.file_name(), &path)
+                    .map_err(|_| unsafe_entry())?;
+                collect_source_entries(root, &path, &handle, entries, total_file_bytes)?;
+                push_entry(
+                    entries,
+                    SourceEntry::Directory {
+                        relative_path,
+                        identity,
+                        _handle: handle,
+                    },
+                )?;
+            }
+            SourceMetadataKind::File => {
+                let size = metadata.len();
+                checked_regular_file_size(size, total_file_bytes)?;
+                let (mut file, identity) = platform::bind_regular_at(directory_handle, &child.file_name(), &path)
+                    .map_err(|_| unsafe_entry())?;
+                let (preflight_digest, preflight_size) = digest_reader(&mut file).map_err(|_| source_changed())?;
+                if preflight_size != size {
+                    return Err(source_changed());
+                }
+                file.rewind().map_err(|_| source_changed())?;
+                platform::verify_regular(&file, identity).map_err(|_| source_changed())?;
+                push_entry(
+                    entries,
+                    SourceEntry::File(SourceFile {
+                        relative_path,
+                        size,
+                        identity,
+                        file,
+                        preflight_digest,
+                    }),
+                )?;
+            }
         }
     }
     Ok(())
@@ -1352,7 +1375,7 @@ fn write_json_string(output: &mut impl Write, value: &str) -> io::Result<()> {
 }
 
 fn compare_existing_snapshot_model_handle(
-    mut file: File,
+    mut file: HeldFile,
     identity: FileIdentity,
     snapshot: &BottleSnapshot,
 ) -> Result<(), BottleMigrationError> {
@@ -1378,7 +1401,7 @@ fn compare_existing_snapshot(path: &Path, expected: &[u8]) -> Result<(), BottleM
         return Err(snapshot_corrupt());
     }
 
-    let mut file = File::open(path).map_err(|_| snapshot_corrupt())?;
+    let mut file = std::fs::File::open(path).map_err(|_| snapshot_corrupt())?;
     let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
     let mut offset = 0_usize;
     loop {
@@ -1478,7 +1501,7 @@ fn validate_basic_path(value: &str) -> Result<(), BottleMigrationError> {
     path::validate_relative_path(value).map_err(|_| unsafe_entry())
 }
 
-fn read_bounded_file(file: &mut File, maximum: usize) -> io::Result<Vec<u8>> {
+fn read_bounded_file(file: &mut HeldFile, maximum: usize) -> io::Result<Vec<u8>> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file() || metadata.len() > u64::try_from(maximum).expect("read bound fits u64") {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "bounded file rejected"));
@@ -1725,6 +1748,27 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn process_file_descriptor_count() -> usize {
         fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+
+    fn temporary_file_count(root: &Path) -> usize {
+        fn visit(path: &Path, count: &mut usize) {
+            if !path.exists() {
+                return;
+            }
+            for child in fs::read_dir(path).unwrap() {
+                let child = child.unwrap();
+                let metadata = child.file_type().unwrap();
+                if metadata.is_dir() {
+                    visit(&child.path(), count);
+                } else if child.file_name().to_string_lossy().contains(".tmp-") {
+                    *count += 1;
+                }
+            }
+        }
+
+        let mut count = 0;
+        visit(root, &mut count);
+        count
     }
 
     fn set_snapshot_hook(stage: super::SnapshotTestStage, path: &str, hook: impl FnOnce() + 'static) {
@@ -2788,6 +2832,20 @@ mod tests {
         assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_security_classifier_explicitly_rejects_character_devices() {
+        use std::os::unix::fs::FileTypeExt as _;
+
+        let metadata = fs::symlink_metadata("/dev/null").unwrap();
+        assert!(
+            metadata.file_type().is_char_device(),
+            "the capability fixture must be a real device"
+        );
+        let error = super::classify_source_metadata(&metadata).unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::UnsafeEntry);
+    }
+
     #[cfg(windows)]
     fn create_directory_junction(link: &Path, target: &Path) {
         use std::os::windows::ffi::OsStrExt as _;
@@ -2946,6 +3004,94 @@ mod tests {
         assert!(unwind.is_err());
         fs::remove_dir_all(&source).unwrap();
         assert!(!source.exists());
+        #[cfg(windows)]
+        assert_eq!(process_handle_count(), handles_before);
+        #[cfg(target_os = "linux")]
+        assert_eq!(process_file_descriptor_count(), descriptors_before);
+    }
+
+    #[test]
+    fn resource_cleanup_registry_covers_materialized_store_failure_and_unwind() {
+        if std::env::var_os("COMPATFORGE_HANDLE_REGISTRY_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "snapshot::tests::resource_cleanup_registry_covers_materialized_store_failure_and_unwind",
+                    "--nocapture",
+                ])
+                .env("COMPATFORGE_HANDLE_REGISTRY_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let temporary = TemporaryDirectory::new("snapshot-materialized-cleanup");
+        let registry_before = super::platform::handle_registry_snapshot();
+        #[cfg(windows)]
+        let handles_before = process_handle_count();
+        #[cfg(target_os = "linux")]
+        let descriptors_before = process_file_descriptor_count();
+
+        let failure_source = create_regular_source(temporary.path());
+        let failure_payload = failure_source.join("payload.txt");
+        let raced_failure_payload = failure_payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterStoreObjectsMaterialized, "", move || {
+            fs::write(raced_failure_payload, b"attacker bytes\n").unwrap();
+        });
+        let failure_store = temporary.path().join("failure-store");
+        let failure = BottleStore::new(&failure_store).snapshot(&failure_source);
+        assert_eq!(failure.unwrap_err().code(), DiagnosticCode::SourceChanged);
+        assert_eq!(fs::read(&failure_payload).unwrap(), b"attacker bytes\n");
+        assert!(failure_store.is_dir());
+        assert!(failure_store.join("objects").is_dir());
+        assert!(failure_store.join("objects/sha256").is_dir());
+        assert!(!failure_store.join("snapshots").exists());
+        assert_eq!(object_count(&failure_store), 2);
+        assert_eq!(temporary_file_count(&failure_store), 0);
+
+        let after_failure = super::platform::handle_registry_snapshot();
+        assert!(
+            after_failure.0 > registry_before.0,
+            "the failure must acquire tracked handles"
+        );
+        assert_eq!(after_failure.0 - registry_before.0, after_failure.1 - registry_before.1);
+        assert_eq!(after_failure.2, registry_before.2);
+        #[cfg(windows)]
+        assert_eq!(process_handle_count(), handles_before);
+        #[cfg(target_os = "linux")]
+        assert_eq!(process_file_descriptor_count(), descriptors_before);
+
+        let unwind_parent = temporary.path().join("unwind-case");
+        fs::create_dir(&unwind_parent).unwrap();
+        let unwind_source = create_regular_source(&unwind_parent);
+        let unwind_source_before = source_inventory(&unwind_source);
+        let unwind_store = unwind_parent.join("store");
+        set_snapshot_hook(super::SnapshotTestStage::AfterStoreSnapshotsMaterialized, "", || {
+            panic!("controlled post-snapshot-store materialization unwind");
+        });
+        let panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let unwind = std::panic::catch_unwind(|| BottleStore::new(&unwind_store).snapshot(&unwind_source));
+        std::panic::set_hook(panic_hook);
+        assert!(unwind.is_err());
+        assert_eq!(source_inventory(&unwind_source), unwind_source_before);
+        assert!(unwind_store.is_dir());
+        assert!(unwind_store.join("objects").is_dir());
+        assert!(unwind_store.join("objects/sha256").is_dir());
+        assert!(unwind_store.join("snapshots").is_dir());
+        assert!(unwind_store.join("snapshots/sha256").is_dir());
+        assert_eq!(object_count(&unwind_store), 2);
+        assert_eq!(fs::read_dir(unwind_store.join("snapshots/sha256")).unwrap().count(), 0);
+        assert_eq!(temporary_file_count(&unwind_store), 0);
+
+        let after_unwind = super::platform::handle_registry_snapshot();
+        assert!(
+            after_unwind.0 > after_failure.0,
+            "the unwind must acquire tracked handles"
+        );
+        assert_eq!(after_unwind.0 - after_failure.0, after_unwind.1 - after_failure.1);
+        assert_eq!(after_unwind.2, registry_before.2);
         #[cfg(windows)]
         assert_eq!(process_handle_count(), handles_before);
         #[cfg(target_os = "linux")]
