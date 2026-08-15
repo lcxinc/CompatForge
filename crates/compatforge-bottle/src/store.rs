@@ -36,6 +36,7 @@ thread_local! {
     static IMPORT_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static IMPORT_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FAIL_NEXT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_NEXT_WRITE_REPLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -53,6 +54,26 @@ pub(crate) fn reset_import_failure() {
 #[cfg(test)]
 pub(crate) fn fail_next_write() {
     FAIL_NEXT_WRITE.with(|failure| failure.set(true));
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn fail_next_write_with_replacement() {
+    FAIL_NEXT_WRITE.with(|failure| failure.set(true));
+    FAIL_NEXT_WRITE_REPLACEMENT.with(|replacement| replacement.set(true));
+}
+
+#[cfg(test)]
+fn take_write_failure(path: &Path) -> bool {
+    if !FAIL_NEXT_WRITE.with(|failure| failure.replace(false)) {
+        return false;
+    }
+    if FAIL_NEXT_WRITE_REPLACEMENT.with(|replacement| replacement.replace(false)) {
+        let replacement = path.with_extension("foreign");
+        let _ = fs::write(&replacement, b"foreign replacement");
+        let _ = fs::remove_file(path);
+        let _ = fs::rename(replacement, path);
+    }
+    true
 }
 
 fn checkpoint() -> Result<(), BottleMigrationError> {
@@ -329,7 +350,7 @@ enum CleanupKind {
     Bytes(Vec<u8>),
     Digest { size: u64, digest: String },
     Directory,
-    Link { target: String },
+    Link { target: String, link_path: String },
 }
 
 #[derive(Debug, Clone)]
@@ -401,7 +422,10 @@ fn transaction_expectations(
             SnapshotEntry::Link { target, .. } => {
                 expected.insert(
                     path,
-                    CleanupExpectation::new(CleanupKind::Link { target: target.clone() }),
+                    CleanupExpectation::new(CleanupKind::Link {
+                        target: target.clone(),
+                        link_path: relative.to_owned(),
+                    }),
                 );
             }
         }
@@ -448,6 +472,33 @@ fn bind_cleanup_ancestors(
 
 fn cleanup_identity(path: &Path) -> io::Result<CleanupIdentity> {
     crate::platform::stable_path_identity(path)
+}
+
+fn materialized_link_target(link_path: &str, target: &str) -> Result<PathBuf, BottleMigrationError> {
+    let parent = link_path
+        .rsplit_once('/')
+        .map_or_else(Vec::new, |(parent, _)| parent.split('/').collect::<Vec<_>>());
+    let target = target.split('/').collect::<Vec<_>>();
+    let common = parent
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..parent.len() {
+        relative.push("..");
+    }
+    for component in &target[common..] {
+        relative.push(component);
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(snapshot_corrupt());
+    }
+    Ok(relative)
+}
+
+fn normalize_link_target(link_path: &str, actual: &Path) -> Result<String, BottleMigrationError> {
+    crate::path::normalize_link_target(link_path, actual).map_err(|_| target_collision())
 }
 
 #[derive(Debug, Clone)]
@@ -532,7 +583,8 @@ fn materialize_version(
             SnapshotEntry::Link { target, .. } => {
                 ensure_parent(&path)?;
                 let target_is_directory = directory_paths.contains(target.as_str());
-                create_link(target, &path, target_is_directory)?;
+                let materialized_target = materialized_link_target(entry_path(entry), target)?;
+                create_link(&materialized_target, &path, target_is_directory)?;
             }
             SnapshotEntry::File {
                 path: relative,
@@ -567,6 +619,7 @@ fn verify_staged_version(
     manifest_bytes: &[u8],
     migration_bytes: &[u8],
 ) -> Result<(), BottleMigrationError> {
+    verify_version_root(version)?;
     verify_file_bytes(&version.join("manifest.json"), manifest_bytes)?;
     verify_file_bytes(&version.join("migration.json"), migration_bytes)?;
     verify_prefix(store, &version.join("prefix"), snapshot, manifest_bytes)?;
@@ -614,7 +667,8 @@ fn verify_prefix(
             }
             PrefixEntry::Link { target } => {
                 let actual = fs::read_link(&path).map_err(|_| target_collision())?;
-                if actual != Path::new(target) {
+                let normalized = normalize_link_target(relative, &actual)?;
+                if normalized != *target {
                     return Err(target_collision());
                 }
             }
@@ -627,6 +681,38 @@ fn verify_prefix(
     }
     let _ = store;
     Ok(())
+}
+
+fn verify_version_root(version: &Path) -> Result<(), BottleMigrationError> {
+    if !is_directory(version)? {
+        return Err(target_collision());
+    }
+    let expected = BTreeSet::from([
+        "manifest.json".to_owned(),
+        "migration.json".to_owned(),
+        "prefix".to_owned(),
+    ]);
+    if enumerate_children(version)? != expected {
+        return Err(target_collision());
+    }
+    Ok(())
+}
+
+fn enumerate_children(root: &Path) -> Result<BTreeSet<String>, BottleMigrationError> {
+    let mut paths = BTreeSet::new();
+    for entry in fs::read_dir(root).map_err(|_| target_collision())? {
+        if paths.len() >= 100_000 {
+            return Err(target_collision());
+        }
+        let name = entry
+            .map_err(|_| target_collision())?
+            .file_name()
+            .to_str()
+            .ok_or_else(target_collision)?
+            .replace('\\', "/");
+        paths.insert(name);
+    }
+    Ok(paths)
 }
 
 fn validate_active_version(store: &BottleStore, current: &BottleActiveRef) -> Result<(), BottleMigrationError> {
@@ -695,24 +781,47 @@ fn create_transaction(path: &Path) -> Result<CleanupIdentity, BottleMigrationErr
     match fs::create_dir(path) {
         Ok(()) => {
             let marker = path.join(".owner");
-            if let Err(error) = write_new_file(&marker, OWNER_MARKER) {
-                let _ = fs::remove_file(&marker);
-                let _ = fs::remove_dir(path);
-                Err(error)
-            } else {
-                match cleanup_identity(path) {
+            match write_new_file_with_identity(&marker, OWNER_MARKER) {
+                Ok(marker_identity) => match cleanup_identity(path) {
                     Ok(identity) => Ok(identity),
                     Err(_) => {
-                        let _ = fs::remove_file(&marker);
+                        let _ = remove_owned_file(&marker, Some(marker_identity), OWNER_MARKER);
                         let _ = fs::remove_dir(path);
                         Err(transaction_failed())
                     }
+                },
+                Err((error, marker_identity)) => {
+                    let _ = remove_owned_file(&marker, marker_identity, OWNER_MARKER);
+                    let _ = fs::remove_dir(path);
+                    Err(error)
                 }
             }
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(transaction_failed()),
         Err(_) => Err(transaction_failed()),
     }
+}
+
+fn remove_owned_file(path: &Path, expected: Option<CleanupIdentity>, expected_bytes: &[u8]) -> io::Result<bool> {
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+    if cleanup_identity(path)? != expected {
+        return Ok(false);
+    }
+    if fs::read(path)? != expected_bytes {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    Ok(true)
 }
 
 fn publish_version(source: &Path, target: &Path) -> Result<(), BottleMigrationError> {
@@ -806,13 +915,28 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), BottleMigrationError>
     bounded_bytes(bytes)?;
     ensure_parent(path)?;
     let mut file = create_new_regular(path).map_err(|_| transaction_failed())?;
-    #[cfg(test)]
-    if FAIL_NEXT_WRITE.with(|failure| failure.replace(false)) {
-        return Err(transaction_failed());
-    }
     file.write_all(bytes).map_err(|_| transaction_failed())?;
     file.sync_all().map_err(|_| transaction_failed())?;
     verify_file_bytes(path, bytes)
+}
+
+fn write_new_file_with_identity(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<CleanupIdentity, (BottleMigrationError, Option<CleanupIdentity>)> {
+    bounded_bytes(bytes).map_err(|error| (error, None))?;
+    ensure_parent(path).map_err(|error| (error, None))?;
+    let mut file = create_new_regular(path).map_err(|_| (transaction_failed(), None))?;
+    let identity = cleanup_identity(path).map_err(|_| (transaction_failed(), None))?;
+    file.write_all(bytes)
+        .map_err(|_| (transaction_failed(), Some(identity)))?;
+    #[cfg(test)]
+    if take_write_failure(path) {
+        return Err((transaction_failed(), Some(identity)));
+    }
+    file.sync_all().map_err(|_| (transaction_failed(), Some(identity)))?;
+    verify_file_bytes(path, bytes).map_err(|error| (error, Some(identity)))?;
+    Ok(identity)
 }
 
 fn verify_file_bytes(path: &Path, expected: &[u8]) -> Result<(), BottleMigrationError> {
@@ -1083,7 +1207,7 @@ fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -
     Ok(())
 }
 
-fn create_link(target: &str, path: &Path, target_is_directory: bool) -> Result<(), BottleMigrationError> {
+fn create_link(target: &Path, path: &Path, target_is_directory: bool) -> Result<(), BottleMigrationError> {
     #[cfg(unix)]
     {
         let _ = target_is_directory;
@@ -1180,8 +1304,12 @@ fn cleanup_transaction_directory(
                 .map(|actual| actual == bytes.as_slice())
                 .unwrap_or(false),
             CleanupKind::Digest { size, digest } => verify_file_digest(&child, *size, digest).is_ok(),
-            CleanupKind::Link { target } => fs::read_link(&child)
-                .map(|actual| actual == Path::new(target))
+            CleanupKind::Link { target, link_path } => fs::read_link(&child)
+                .and_then(|actual| {
+                    normalize_link_target(link_path, &actual)
+                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid transaction link"))
+                })
+                .map(|actual| actual == *target)
                 .unwrap_or(false),
             CleanupKind::Directory => false,
         };
@@ -1583,6 +1711,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn extra_version_root_entry_is_rejected_instead_of_being_a_noop() {
+        let (_temporary, store, _runtime_store, plan) = setup_case();
+        store.import(&plan).unwrap();
+        let version = store
+            .root()
+            .join("versions")
+            .join(&plan.bottle.id)
+            .join(plan.plan_digest.trim_start_matches("sha256:"));
+        fs::write(version.join("foreign-extra"), b"foreign").unwrap();
+
+        let verify_error = store.verify_active(&plan.bottle.id).unwrap_err();
+        assert_eq!(verify_error.code(), super::super::DiagnosticCode::SnapshotCorrupt);
+
+        fs::remove_file(store.active_path(&plan.bottle.id).unwrap()).unwrap();
+        let import_error = store.import(&plan).unwrap_err();
+        assert_eq!(import_error.code(), super::super::DiagnosticCode::TargetCollision);
+        assert_eq!(fs::read(version.join("foreign-extra")).unwrap(), b"foreign");
+    }
+
+    #[test]
     #[cfg(unix)]
     fn cleanup_refuses_same_bytes_replacement_of_an_owned_file() {
         let temporary = TemporaryDirectory::new("cleanup-identity");
@@ -1612,5 +1761,16 @@ mod tests {
         super::fail_next_write();
         assert!(super::create_transaction(&transaction).is_err());
         assert!(!transaction.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn create_transaction_never_removes_a_replaced_owner_marker() {
+        let temporary = TemporaryDirectory::new("transaction-marker-replacement");
+        let transaction = temporary.path().join("transaction");
+        super::fail_next_write_with_replacement();
+        assert!(super::create_transaction(&transaction).is_err());
+        assert!(transaction.exists());
+        assert_eq!(fs::read(transaction.join(".owner")).unwrap(), b"foreign replacement");
     }
 }
