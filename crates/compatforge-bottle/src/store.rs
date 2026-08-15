@@ -343,6 +343,8 @@ impl BottleStore {
         let _guard = IMPORT_LOCK.lock().map_err(|_| transaction_failed())?;
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
+        let active_parent = active_path.parent().ok_or_else(rollback_corrupt)?;
+        let active_parent_identity = verify_directory_chain(active_parent, rollback_corrupt)?;
         let current_bytes = read_active_bytes(&active_path, bottle_id).map_err(map_rollback_error)?;
         let (current, current_ref_bytes, current_identity) = current_bytes.as_ref().ok_or_else(rollback_unavailable)?;
         let current = current.clone();
@@ -391,6 +393,8 @@ impl BottleStore {
         ensure_store_layout(self.root(), bottle_id).map_err(map_rollback_error)?;
         let transaction_root = self.root().join("transactions").join(bottle_id);
         let transaction_identity = create_transaction(&transaction_root).map_err(map_rollback_error)?;
+        let transaction_parent = transaction_root.parent().ok_or_else(transaction_failed)?;
+        let transaction_parent_identity = verify_directory_chain(transaction_parent, transaction_failed)?;
         let owner_expectation = CleanupExpectation::new(CleanupKind::Bytes(OWNER_MARKER.to_vec()));
         let mut expectations = BTreeMap::from([(PathBuf::from(".owner"), owner_expectation)]);
         bind_cleanup_expectation(&transaction_root, Path::new(".owner"), &mut expectations)
@@ -404,8 +408,12 @@ impl BottleStore {
                 CleanupExpectation::new(CleanupKind::Bytes(ref_bytes.clone())),
             );
             bind_cleanup_expectation(&transaction_root, Path::new("current.json"), &mut expectations)?;
+            let staged_identity = expectations
+                .get(Path::new("current.json"))
+                .and_then(|expectation| expectation.identity)
+                .ok_or_else(transaction_failed)?;
             rollback_checkpoint()?;
-            verify_file_bytes(&staged_ref, &ref_bytes)?;
+            verify_owned_bytes(&staged_ref, staged_identity, &ref_bytes)?;
             rollback_checkpoint()?;
 
             // Re-read and byte-compare the current ref immediately before the
@@ -418,8 +426,20 @@ impl BottleStore {
             if latest_ref != current || latest_bytes != *current_ref_bytes || latest_identity != *current_identity {
                 return Err(rollback_corrupt());
             }
+            if verify_directory_chain(active_parent, rollback_corrupt)? != active_parent_identity
+                || verify_directory_chain(transaction_parent, transaction_failed)? != transaction_parent_identity
+                || cleanup_identity(&transaction_root).map_err(|_| transaction_failed())? != transaction_identity
+            {
+                return Err(rollback_corrupt());
+            }
             rollback_checkpoint()?;
             publish_ref(&staged_ref, &active_path)?;
+            let Some((committed_ref, committed_bytes, _)) = read_active_bytes(&active_path, bottle_id)? else {
+                return Err(transaction_failed());
+            };
+            if committed_ref != next_ref || committed_bytes != ref_bytes {
+                return Err(transaction_failed());
+            }
             Ok(())
         })();
 
@@ -887,6 +907,30 @@ fn verify_directory_identity(path: &Path) -> Result<(), BottleMigrationError> {
     Ok(())
 }
 
+/// Bind every directory component of a store path without following a
+/// symlink/reparse point.  The returned identity is checked again by callers
+/// immediately before publication so a replaced transaction/ref parent is
+/// rejected before any namespace switch.
+fn verify_directory_chain(
+    path: &Path,
+    error: fn() -> BottleMigrationError,
+) -> Result<CleanupIdentity, BottleMigrationError> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        let metadata = fs::symlink_metadata(candidate).map_err(|_| error())?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(error());
+        }
+        let parent = candidate.parent();
+        current = parent.filter(|value| *value != candidate);
+    }
+    let identity = cleanup_identity(path).map_err(|_| error())?;
+    if cleanup_identity(path).map_err(|_| error())? != identity {
+        return Err(error());
+    }
+    Ok(identity)
+}
+
 fn enumerate_children(root: &Path) -> Result<BTreeSet<String>, BottleMigrationError> {
     let mut paths = BTreeSet::new();
     for entry in fs::read_dir(root).map_err(|_| target_collision())? {
@@ -1159,6 +1203,21 @@ fn verify_file_bytes(path: &Path, expected: &[u8]) -> Result<(), BottleMigration
     } else {
         Err(target_collision())
     }
+}
+
+fn verify_owned_bytes(
+    path: &Path,
+    expected_identity: CleanupIdentity,
+    expected: &[u8],
+) -> Result<(), BottleMigrationError> {
+    if cleanup_identity(path).map_err(|_| transaction_failed())? != expected_identity {
+        return Err(transaction_failed());
+    }
+    verify_file_bytes(path, expected)?;
+    if cleanup_identity(path).map_err(|_| transaction_failed())? != expected_identity {
+        return Err(transaction_failed());
+    }
+    Ok(())
 }
 
 fn verify_file_digest(path: &Path, expected_size: u64, expected_digest: &str) -> Result<(), BottleMigrationError> {
