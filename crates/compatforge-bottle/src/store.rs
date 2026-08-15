@@ -1520,36 +1520,72 @@ fn open_regular(path: &Path) -> io::Result<File> {
     }
 }
 
+struct SyncTreeFrame {
+    path: PathBuf,
+    depth: usize,
+    children: Option<fs::ReadDir>,
+}
+
 fn sync_tree(path: &Path, depth: usize, entries_seen: &mut usize) -> Result<(), BottleMigrationError> {
-    if depth > MAX_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
-        return Err(transaction_failed());
-    }
-    *entries_seen = entries_seen.saturating_add(1);
-    let metadata = fs::symlink_metadata(path).map_err(|_| transaction_failed())?;
-    if metadata.file_type().is_symlink() {
-        // Snapshot links are already normalized and authenticated.  Syncing a
-        // link means persisting the directory entry itself; never follow its
-        // target during the transaction.
-        checkpoint()?;
-        return Ok(());
-    }
-    if metadata.file_type().is_dir() {
-        for entry in fs::read_dir(path).map_err(|_| transaction_failed())? {
-            sync_tree(
-                &entry.map_err(|_| transaction_failed())?.path(),
-                depth.saturating_add(1),
-                entries_seen,
-            )?;
+    // Keep the post-order fsync walk on the heap.  Recursive sync over a
+    // legal MAX_PATH_DEPTH tree can exhaust the Windows thread stack.
+    let mut stack = vec![SyncTreeFrame {
+        path: path.to_path_buf(),
+        depth,
+        children: None,
+    }];
+    while !stack.is_empty() {
+        let index = stack.len().saturating_sub(1);
+        if stack[index].children.is_none() {
+            if stack[index].depth > MAX_PATH_DEPTH || *entries_seen >= MAX_TRANSACTION_ENTRIES {
+                return Err(transaction_failed());
+            }
+            *entries_seen = entries_seen.saturating_add(1);
+            let current = stack[index].path.clone();
+            let metadata = fs::symlink_metadata(&current).map_err(|_| transaction_failed())?;
+            if metadata.file_type().is_symlink() {
+                // Snapshot links are already normalized and authenticated.
+                // Syncing a link means persisting the directory entry itself;
+                // never follow its target during the transaction.
+                checkpoint()?;
+                stack.pop();
+                continue;
+            }
+            if metadata.file_type().is_dir() {
+                stack[index].children = Some(fs::read_dir(&current).map_err(|_| transaction_failed())?);
+                continue;
+            }
+            if metadata.file_type().is_file() {
+                #[cfg(unix)]
+                File::open(&current)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|_| transaction_failed())?;
+                checkpoint()?;
+            }
+            stack.pop();
+            continue;
         }
-        #[cfg(unix)]
-        File::open(path)
-            .and_then(|directory| directory.sync_all())
+
+        let next = stack[index]
+            .children
+            .as_mut()
+            .expect("directory frame has an iterator")
+            .next()
+            .transpose()
             .map_err(|_| transaction_failed())?;
-        checkpoint()?;
-    } else if metadata.file_type().is_file() {
+        if let Some(entry) = next {
+            stack.push(SyncTreeFrame {
+                path: entry.path(),
+                depth: stack[index].depth.saturating_add(1),
+                children: None,
+            });
+            continue;
+        }
+
+        let _frame = stack.pop().expect("non-empty sync stack");
         #[cfg(unix)]
-        File::open(path)
-            .and_then(|file| file.sync_all())
+        File::open(&_frame.path)
+            .and_then(|directory| directory.sync_all())
             .map_err(|_| transaction_failed())?;
         checkpoint()?;
     }
@@ -1562,21 +1598,38 @@ fn enumerate_tree(root: &Path) -> Result<BTreeSet<String>, BottleMigrationError>
     Ok(paths.into_iter().collect())
 }
 
+struct EnumerateTreeFrame {
+    relative: PathBuf,
+    children: fs::ReadDir,
+}
+
 fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -> Result<(), BottleMigrationError> {
     if relative.components().count() > MAX_PATH_DEPTH {
         return Err(target_collision());
     }
-    let entries = fs::read_dir(root).map_err(|_| target_collision())?;
-    for entry in entries {
+    let mut stack = vec![EnumerateTreeFrame {
+        relative: relative.to_path_buf(),
+        children: fs::read_dir(root).map_err(|_| target_collision())?,
+    }];
+    while !stack.is_empty() {
+        let index = stack.len().saturating_sub(1);
+        let next = stack[index]
+            .children
+            .next()
+            .transpose()
+            .map_err(|_| target_collision())?;
+        let Some(entry) = next else {
+            stack.pop();
+            continue;
+        };
         if paths.len() >= 100_000 {
             return Err(target_collision());
         }
-        let entry = entry.map_err(|_| target_collision())?;
         let name = entry.file_name();
-        let child_relative = if relative.as_os_str().is_empty() {
+        let child_relative = if stack[index].relative.as_os_str().is_empty() {
             PathBuf::from(&name)
         } else {
-            relative.join(&name)
+            stack[index].relative.join(&name)
         };
         let child = entry.path();
         let metadata = fs::symlink_metadata(&child).map_err(|_| target_collision())?;
@@ -1586,7 +1639,10 @@ fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -
         }
         paths.push(relative_text);
         if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-            enumerate_tree_owned(&child, &child_relative, paths)?;
+            stack.push(EnumerateTreeFrame {
+                relative: child_relative,
+                children: fs::read_dir(&child).map_err(|_| target_collision())?,
+            });
         }
     }
     Ok(())
@@ -2548,6 +2604,32 @@ mod tests {
         super::cleanup_transaction(&transaction, transaction_identity, &expected).unwrap();
 
         assert!(!transaction.exists());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn import_walks_a_depth_127_tree_without_recursion_overflow() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        let source = temporary.path().join("source");
+        let mut nested = source.join("deep");
+        for _ in 0..(super::MAX_PATH_DEPTH - 1) {
+            fs::create_dir(&nested).unwrap();
+            nested.push("d");
+        }
+
+        let snapshot = store.snapshot(&source).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: first_plan.runtime_pack.id.clone(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let plan = store
+            .plan(&snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+        let receipt = store.import_with_runtime(&plan, &runtime_store).unwrap();
+
+        assert!(receipt.activated);
+        store.verify_active(&plan.bottle.id).unwrap();
     }
 
     #[test]
