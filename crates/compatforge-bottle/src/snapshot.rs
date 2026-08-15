@@ -856,6 +856,11 @@ impl BottleStore {
         Self { root: root.into() }
     }
 
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn snapshot(&self, source: &Path) -> Result<SnapshotReceipt, BottleMigrationError> {
         #[cfg(target_os = "macos")]
         {
@@ -1006,6 +1011,39 @@ impl BottleStore {
             store.snapshots().map_err(|_| snapshot_corrupt())?,
             &store.objects,
         )
+    }
+
+    pub(crate) fn read_verified_legacy_manifest(
+        &self,
+        digest: &str,
+    ) -> Result<LegacyBottleManifest, BottleMigrationError> {
+        let snapshot = self.verify_snapshot(digest)?;
+        let store = SnapshotStoreBinding::bind_existing(&self.root)?;
+        store.verify().map_err(|_| snapshot_corrupt())?;
+        let (size, object_digest) = snapshot
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                SnapshotEntry::File { path, size, digest } if path == "manifest.json" => Some((*size, digest)),
+                _ => None,
+            })
+            .ok_or_else(snapshot_corrupt)?;
+        if size > u64::try_from(MAX_MANIFEST_BYTES).expect("manifest bound fits u64") {
+            return Err(snapshot_corrupt());
+        }
+        let digest_hex = digest_hex(object_digest).ok_or_else(snapshot_corrupt)?;
+        let (mut file, identity, _) = store
+            .objects
+            .bind_regular(std::ffi::OsStr::new(digest_hex))
+            .map_err(|_| snapshot_corrupt())?;
+        let bytes = read_bounded_file(&mut file, MAX_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
+        let json = std::str::from_utf8(&bytes).map_err(|_| snapshot_corrupt())?;
+        let manifest = LegacyBottleManifest::from_json(json).map_err(|_| snapshot_corrupt())?;
+        if manifest.id != snapshot.bottle_id {
+            return Err(snapshot_corrupt());
+        }
+        Ok(manifest)
     }
 
     fn verify_snapshot_at(

@@ -6,6 +6,7 @@ pub mod contract;
 mod digest;
 pub mod error;
 mod path;
+pub mod plan;
 mod platform;
 pub mod snapshot;
 
@@ -14,4 +15,5 @@ pub use contract::{
     MAX_MANIFEST_BYTES, MAX_TEXT_BYTES,
 };
 pub use error::{BottleMigrationError, DiagnosticCode};
+pub use plan::{BottleMigrationPlan, EnvironmentEntry, MigrationLauncher, RuntimeMap, RuntimeMapping};
 pub use snapshot::{BottleSnapshot, BottleStore, SnapshotEntry, SnapshotReceipt};

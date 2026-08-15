@@ -22,6 +22,7 @@ name = "compatforge-bottle"
 version = "0.10.0"
 dependencies = [
  "compatforge-domain",
+ "compatforge-runtime",
  "libc",
  "serde",
  "serde_json",
