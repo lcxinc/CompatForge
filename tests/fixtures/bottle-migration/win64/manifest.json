@@ -1,0 +1,50 @@
+{
+  "arch": "win64",
+  "createdAt": "2026-08-08T00:00:00Z",
+  "engineId": "wine-9",
+  "envOverrides": {
+    "BOTTLE_ONLY": "yes",
+    "LANG": "en_US.UTF-8",
+    "SHARED": "bottle"
+  },
+  "id": "bottle-win64",
+  "installedApps": [
+    {
+      "appId": "app-zeta",
+      "args": [
+        "--safe",
+        "--name",
+        "Zeta"
+      ],
+      "bottleId": "bottle-win64",
+      "displayName": "Zeta App",
+      "envOverrides": {
+        "LAUNCHER_ONLY": "zeta",
+        "SHARED": "launcher-zeta"
+      },
+      "exePath": "drive_c/Public/Zeta.exe",
+      "iconPath": "icons/zeta.png",
+      "id": "launcher-zeta",
+      "showInHome": false
+    },
+    {
+      "appId": "app-example",
+      "args": [
+        "--safe"
+      ],
+      "bottleId": "bottle-win64",
+      "displayName": "Example App",
+      "envOverrides": {
+        "A_MODE": "on",
+        "SHARED": "launcher-example"
+      },
+      "exePath": "drive_c/Public/Example.exe",
+      "iconPath": null,
+      "id": "launcher-example",
+      "showInHome": true
+    }
+  ],
+  "name": "MacWin Public Win64",
+  "updatedAt": "2026-08-08T00:00:01Z",
+  "windowsVersion": "win10"
+}

@@ -1,0 +1,44 @@
+{
+  "bottle": {
+    "createdAt": "2026-08-08T00:00:00Z",
+    "guest": {
+      "architecture": "i386",
+      "windowsVersion": "win7"
+    },
+    "id": "bottle-win32",
+    "name": "MacWin Public Win32",
+    "runtimePack": {
+      "digest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+      "id": "fixture-runtime"
+    },
+    "schemaVersion": "1",
+    "storage": {
+      "layoutVersion": 1,
+      "state": "ready"
+    },
+    "updatedAt": "2026-08-08T00:00:01Z"
+  },
+  "bottleDigest": "sha256:1ef873c3226e2afe48530e3c3fd79181a8f6f16ce05bf95a47507664a5439c69",
+  "diagnostics": [],
+  "launchers": [
+    {
+      "appId": "app-legacy",
+      "arguments": [],
+      "bottleId": "bottle-win32",
+      "displayName": "Legacy App",
+      "environment": [],
+      "executable": "drive_c/Public/Legacy.exe",
+      "id": "launcher-legacy",
+      "showInHome": true
+    }
+  ],
+  "legacyEngineId": "wine-9",
+  "legacyFormat": "macwin-bottle-v1",
+  "planDigest": "sha256:0fd681397b014e699a5e1251ee0045e4d1a95408b6cec97791bb2f70805d12da",
+  "runtimePack": {
+    "digest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+    "id": "fixture-runtime"
+  },
+  "schemaVersion": "1",
+  "snapshotDigest": "sha256:7a2661322918a821a597d0ccfd1736e8c9f490d6bf41e4f1778c74a121e37523"
+}

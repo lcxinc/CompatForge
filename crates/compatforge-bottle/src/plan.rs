@@ -565,7 +565,7 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     use crate::{BottleSnapshot, BottleStore, DiagnosticCode};
     #[cfg(not(target_os = "macos"))]
-    use compatforge_domain::{HostOs, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest};
+    use compatforge_domain::{HostOs, LaunchPlan, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest};
     #[cfg(not(target_os = "macos"))]
     use compatforge_runtime::{RejectAllSignatures, RuntimePackStore};
     #[cfg(not(target_os = "macos"))]
@@ -909,5 +909,56 @@ mod tests {
             .plan(&snapshot_digest, &runtime_store, &runtime_map)
             .unwrap_err();
         assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn planning_golden_matches_independent_fixture_and_launch_schema() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bottle-migration");
+        let runtime_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/runtime-packs/basic-v2");
+        let temporary = TestDirectory::new("planning-golden");
+        let runtime_store = RuntimePackStore::new(temporary.path().join("runtime-store"));
+        runtime_store
+            .install_bundle(&runtime_fixture, "manifest.json", &RejectAllSignatures)
+            .unwrap();
+        let runtime_map =
+            RuntimeMap::from_json(&fs::read_to_string(fixture_root.join("runtime-map.json")).unwrap()).unwrap();
+
+        for case in ["win64", "win32"] {
+            let source = temporary.path().join(case);
+            copy_fixture_tree(&fixture_root.join(case), &source);
+            let bottle_store = BottleStore::new(temporary.path().join(format!("store-{case}")));
+            let receipt = bottle_store.snapshot(&source).unwrap();
+            let plan = bottle_store
+                .plan(&receipt.snapshot_digest, &runtime_store, &runtime_map)
+                .unwrap();
+            let expected: BottleMigrationPlan = serde_json::from_slice(
+                &fs::read(fixture_root.join("goldens").join(format!("{case}-migration-plan.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan, expected, "migration golden mismatch for {case}");
+            expected.validate().unwrap();
+
+            let launch: LaunchPlan = serde_json::from_slice(
+                &fs::read(fixture_root.join("goldens").join(format!("{case}-launch-plan.json"))).unwrap(),
+            )
+            .unwrap();
+            launch.validate().unwrap();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn copy_fixture_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if source_path.is_dir() {
+                copy_fixture_tree(&source_path, &destination_path);
+            } else {
+                fs::copy(source_path, destination_path).unwrap();
+            }
+        }
     }
 }

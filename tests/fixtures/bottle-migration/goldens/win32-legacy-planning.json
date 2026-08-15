@@ -1,0 +1,23 @@
+{
+  "architecture": "i386",
+  "bottleId": "bottle-win32",
+  "launchers": [
+    {
+      "appId": "app-legacy",
+      "arguments": [],
+      "bottleId": "bottle-win32",
+      "displayName": "Legacy App",
+      "environment": [],
+      "executable": "drive_c/Public/Legacy.exe",
+      "id": "launcher-legacy",
+      "showInHome": true
+    }
+  ],
+  "legacyEngineId": "wine-9",
+  "name": "MacWin Public Win32",
+  "runtimePack": {
+    "digest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+    "id": "fixture-runtime"
+  },
+  "windowsVersion": "win7"
+}

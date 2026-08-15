@@ -1409,5 +1409,325 @@ class BottleMigrationSchemaTests(unittest.TestCase):
         }
 
 
+class BottleMigrationGoldenTests(unittest.TestCase):
+    """Independent parity checks for the representative Bottle fixtures.
+
+    These checks intentionally derive their expected values from the closed
+    legacy JSON rather than asking Rust to serialize an expected object.  The
+    Rust planning test consumes the same checked-in bytes, while this oracle
+    independently seals the source projection and every golden digest.
+    """
+
+    FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "bottle-migration"
+    CASES = ("win64", "win32")
+    GOLDEN_DIGESTS = {
+        "win64-legacy-planning.json": "sha256:664ed33a9a5743a5d9367c9ac628309fb958e95764630d50c197b126c86bd8b2",
+        "win64-migration-plan.json": "sha256:4be176308c112323f01fe6b21e440d06b2ae828c4d8c2cefb93cc053402a57b4",
+        "win64-launch-plan.json": "sha256:e9477955494b6469397a5b1651355b5fd876d7b0814f720243aeee55307373ec",
+        "win32-legacy-planning.json": "sha256:4db891c9b1524fc7cab947e7cb331d42a9a4067e2b53c849e8c8ef600b4fefe7",
+        "win32-migration-plan.json": "sha256:1a7c47bb3491431c9750288e67d85acf8a3d92e854b9afe8646d8a81e044d321",
+        "win32-launch-plan.json": "sha256:041c16b7aa1040395e685db817c2360b57208d8c5d502bec843ee7944845335d",
+    }
+    RUNTIME_PACK_ID = "fixture-runtime"
+    RUNTIME_PACK_DIGEST = (
+        "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af"
+    )
+    FIXTURE_FILE_EVIDENCE = {
+        "win64/drive_c/Public/example.txt": (
+            21,
+            "sha256:bf3e5fba8bf05ea8ac96e264263ac896c31d7d6b4158d32b1aecf3b6d334864e",
+        ),
+        "win64/manifest.json": (
+            1131,
+            "sha256:354a64db465bd24939190cab5d3f994ca8a810975ca25c38d1d83ac28ce2e708",
+        ),
+        "win32/drive_c/Public/example.txt": (
+            21,
+            "sha256:bfbf39f393a9f6377038a9a9c84d55712c0ab684bdad24037ec5485cf5cb7303",
+        ),
+        "win32/manifest.json": (
+            537,
+            "sha256:80fd43df02519025556ecf8ba6c679fbcaa61c83e79b2ed090ed91c0528f30f0",
+        ),
+    }
+
+    def test_fixture_bytes_and_snapshot_counts_are_literal(self) -> None:
+        for relative, (size, digest) in self.FIXTURE_FILE_EVIDENCE.items():
+            with self.subTest(fixture=relative):
+                raw = (self.FIXTURE_ROOT / relative).read_bytes()
+                self.assertEqual(len(raw), size)
+                self.assertEqual(self._digest(raw), digest)
+        self.assertEqual(
+            self._snapshot_projection(self._load_json(Path("win64") / "manifest.json")),
+            {
+                "digest": "sha256:672021ed04ed3e53eff0df940e214bb580bb1690506440867666cd8370288c35",
+                "entryCount": 4,
+                "totalFileBytes": 1152,
+            },
+        )
+        self.assertEqual(
+            self._snapshot_projection(self._load_json(Path("win32") / "manifest.json")),
+            {
+                "digest": "sha256:7a2661322918a821a597d0ccfd1736e8c9f490d6bf41e4f1778c74a121e37523",
+                "entryCount": 4,
+                "totalFileBytes": 558,
+            },
+        )
+
+    def test_representative_fixtures_and_goldens_have_independent_parity(self) -> None:
+        for case in self.CASES:
+            with self.subTest(case=case):
+                manifest = self._load_json(Path(case) / "manifest.json")
+                runtime_map = self._load_json(Path("runtime-map.json"))
+                self._assert_valid(runtime_map, self._schema("bottle-runtime-map.schema.json"))
+                expected = self._legacy_projection(manifest, runtime_map)
+                legacy = self._load_golden(f"{case}-legacy-planning.json")
+                self.assertEqual(legacy, expected)
+
+                plan = self._load_golden(f"{case}-migration-plan.json")
+                self._assert_migration_plan(manifest, runtime_map, plan)
+
+                launch = self._load_golden(f"{case}-launch-plan.json")
+                self._assert_launch_plan(manifest, plan, launch)
+
+    def test_literal_golden_digests_are_sealed(self) -> None:
+        for name, expected_digest in self.GOLDEN_DIGESTS.items():
+            with self.subTest(golden=name):
+                self.assertRegex(expected_digest, r"^sha256:[0-9a-f]{64}$")
+                raw = (self.FIXTURE_ROOT / "goldens" / name).read_bytes()
+                self.assertEqual(raw, self._pretty_json_bytes(json.loads(raw)))
+                self.assertEqual(self._digest(raw), expected_digest)
+
+    def test_independent_oracle_rejects_self_consistent_forgery(self) -> None:
+        manifest = self._load_json(Path("win64") / "manifest.json")
+        runtime_map = self._load_json(Path("runtime-map.json"))
+        plan = self._load_golden("win64-migration-plan.json")
+        for mutate in (
+            self._mutate_launcher,
+            self._mutate_runtime_digest,
+            self._mutate_environment,
+        ):
+            with self.subTest(mutator=mutate.__name__):
+                forged = copy.deepcopy(plan)
+                mutate(forged)
+                forged["planDigest"] = self._unsigned_plan_digest(forged)
+                with self.assertRaises(AssertionError):
+                    self._assert_migration_plan(manifest, runtime_map, forged)
+
+    def _load_json(self, relative: Path) -> dict[str, object]:
+        raw = (self.FIXTURE_ROOT / relative).read_bytes()
+        self.assertEqual(raw, self._pretty_json_bytes(json.loads(raw)))
+        return json.loads(raw)
+
+    def _load_golden(self, name: str) -> dict[str, object]:
+        return self._load_json(Path("goldens") / name)
+
+    @staticmethod
+    def _pretty_json_bytes(value: object) -> bytes:
+        return (
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _canonical_bytes(value: object) -> bytes:
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+
+    @classmethod
+    def _digest(cls, value: bytes) -> str:
+        import hashlib
+
+        return "sha256:" + hashlib.sha256(value).hexdigest()
+
+    @classmethod
+    def _legacy_projection(
+        cls, manifest: dict[str, object], runtime_map: dict[str, object]
+    ) -> dict[str, object]:
+        if set(manifest) != {
+            "id",
+            "name",
+            "windowsVersion",
+            "arch",
+            "engineId",
+            "envOverrides",
+            "installedApps",
+            "createdAt",
+            "updatedAt",
+        }:
+            raise AssertionError("legacy fixture fields are not closed")
+        mapping = next(
+            item
+            for item in runtime_map["mappings"]
+            if item["legacyEngineId"] == manifest["engineId"]
+        )
+        if mapping["runtimePackId"] != cls.RUNTIME_PACK_ID:
+            raise AssertionError("legacy fixture Runtime Pack ID drifted")
+        if mapping["runtimePackDigest"] != cls.RUNTIME_PACK_DIGEST:
+            raise AssertionError("legacy fixture Runtime Pack digest drifted")
+        bottle_environment = manifest["envOverrides"]
+        launchers = []
+        for launcher in sorted(manifest["installedApps"], key=lambda item: item["id"]):
+            environment = dict(bottle_environment)
+            environment.update(launcher["envOverrides"])
+            launchers.append(
+                {
+                    "id": launcher["id"],
+                    "appId": launcher["appId"],
+                    "bottleId": launcher["bottleId"],
+                    "displayName": launcher["displayName"],
+                    "executable": launcher["exePath"],
+                    "arguments": launcher["args"],
+                    **(
+                        {"iconPath": launcher["iconPath"]}
+                        if launcher.get("iconPath") is not None
+                        else {}
+                    ),
+                    "environment": [
+                        {"name": name, "value": value}
+                        for name, value in sorted(environment.items())
+                    ],
+                    "showInHome": launcher["showInHome"],
+                }
+            )
+        return {
+            "bottleId": manifest["id"],
+            "name": manifest["name"],
+            "windowsVersion": manifest["windowsVersion"],
+            "architecture": {"win32": "i386", "win64": "x86_64"}[manifest["arch"]],
+            "legacyEngineId": manifest["engineId"],
+            "runtimePack": {
+                "id": mapping["runtimePackId"],
+                "digest": mapping["runtimePackDigest"],
+            },
+            "launchers": launchers,
+        }
+
+    def _assert_migration_plan(
+        self,
+        manifest: dict[str, object],
+        runtime_map: dict[str, object],
+        plan: dict[str, object],
+    ) -> None:
+        self._assert_valid(plan, self._schema("bottle-migration-plan.schema.json"))
+        expected_legacy = self._legacy_projection(manifest, runtime_map)
+        self.assertEqual(plan["schemaVersion"], "1")
+        self.assertEqual(plan["legacyFormat"], "macwin-bottle-v1")
+        self.assertEqual(plan["legacyEngineId"], expected_legacy["legacyEngineId"])
+        self.assertEqual(plan["runtimePack"], expected_legacy["runtimePack"])
+        self.assertEqual(plan["bottle"]["id"], manifest["id"])
+        self.assertEqual(plan["bottle"]["name"], manifest["name"])
+        self.assertEqual(plan["bottle"]["createdAt"], manifest["createdAt"])
+        self.assertEqual(plan["bottle"]["updatedAt"], manifest["updatedAt"])
+        self.assertEqual(plan["bottle"]["guest"]["windowsVersion"], manifest["windowsVersion"])
+        self.assertEqual(
+            plan["bottle"]["guest"]["architecture"], expected_legacy["architecture"]
+        )
+        self.assertEqual(plan["launchers"], expected_legacy["launchers"])
+        self.assertEqual(plan["bottle"]["runtimePack"], plan["runtimePack"])
+        self.assertEqual(plan["diagnostics"], [])
+        expected_bottle_digest = self._digest(self._canonical_bytes(plan["bottle"]))
+        self.assertEqual(plan["bottleDigest"], expected_bottle_digest)
+        self.assertEqual(plan["planDigest"], self._unsigned_plan_digest(plan))
+
+        snapshot = self._snapshot_projection(manifest)
+        self.assertEqual(plan["snapshotDigest"], snapshot["digest"])
+
+    def _assert_launch_plan(
+        self,
+        manifest: dict[str, object],
+        migration_plan: dict[str, object],
+        launch: dict[str, object],
+    ) -> None:
+        self._assert_valid(launch, self._launch_schema())
+        self.assertEqual(launch["schemaVersion"], "1")
+        self.assertEqual(launch["runtime"]["packId"], migration_plan["runtimePack"]["id"])
+        self.assertEqual(
+            launch["runtime"]["packDigest"], migration_plan["runtimePack"]["digest"]
+        )
+        self.assertEqual(launch["runtime"]["provider"], "wine")
+        self.assertEqual(launch["sandbox"], {"allowDevices": [], "network": "deny", "profile": "strict"})
+        self.assertEqual(launch["process"]["workingDirectory"], f"/compatforge/bottles/{manifest['id']}/prefix")
+        launcher = sorted(manifest["installedApps"], key=lambda item: item["id"])[0]
+        self.assertEqual(launch["process"]["arguments"][0], launcher["exePath"])
+        self.assertEqual(launch["process"]["arguments"][1:], launcher["args"])
+
+    def _snapshot_projection(self, manifest: dict[str, object]) -> dict[str, object]:
+        case = "win64" if manifest["arch"] == "win64" else "win32"
+        root = self.FIXTURE_ROOT / case
+        entries = []
+        total = 0
+        for path in sorted(
+            candidate.relative_to(root).as_posix()
+            for candidate in root.rglob("*")
+            if candidate.is_file() or candidate.is_dir()
+        ):
+            candidate = root / path
+            if candidate.is_dir():
+                entries.append({"kind": "directory", "path": path})
+                continue
+            data = candidate.read_bytes()
+            entries.append(
+                {
+                    "digest": self._digest(data),
+                    "kind": "file",
+                    "path": path,
+                    "size": len(data),
+                }
+            )
+            total += len(data)
+        snapshot = {
+            "bottleId": manifest["id"],
+            "entries": entries,
+            "entryCount": len(entries),
+            "legacyFormat": "macwin-bottle-v1",
+            "schemaVersion": "1",
+            "totalFileBytes": total,
+        }
+        # Snapshot seals use the streaming renderer's fixed member order.
+        return {
+            "digest": self._digest(self._snapshot_compact_bytes(snapshot)),
+            "entryCount": len(entries),
+            "totalFileBytes": total,
+        }
+
+    @staticmethod
+    def _snapshot_compact_bytes(snapshot: dict[str, object]) -> bytes:
+        # json.dumps preserves insertion order, matching snapshot.rs.
+        return json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def _unsigned_plan_digest(self, plan: dict[str, object]) -> str:
+        unsigned = copy.deepcopy(plan)
+        unsigned.pop("planDigest", None)
+        return self._digest(self._canonical_bytes(unsigned))
+
+    @staticmethod
+    def _schema(name: str) -> dict[str, object]:
+        return json.loads((ROOT / "schemas" / name).read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _launch_schema() -> dict[str, object]:
+        return json.loads((ROOT / "schemas" / "launch-plan.schema.json").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _assert_valid(value: object, schema: dict[str, object]) -> None:
+        # Reuse the already independent, standard-library schema implementation.
+        BottleMigrationSchemaTests._assert_valid(value, schema, schema)
+
+    @staticmethod
+    def _mutate_launcher(plan: dict[str, object]) -> None:
+        plan["launchers"][0]["displayName"] = "forged"
+
+    @staticmethod
+    def _mutate_runtime_digest(plan: dict[str, object]) -> None:
+        plan["runtimePack"]["digest"] = "sha256:" + "a" * 64
+        plan["bottle"]["runtimePack"]["digest"] = plan["runtimePack"]["digest"]
+
+    @staticmethod
+    def _mutate_environment(plan: dict[str, object]) -> None:
+        plan["launchers"][0]["environment"][0]["value"] = "forged"
+
+
 if __name__ == "__main__":
     unittest.main()
