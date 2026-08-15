@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
       - name: Validate repository contracts
         run: python -B scripts/validate_repository.py
+      - name: Test Bottle migration contracts and independent goldens
+        run: python -S -B -m unittest tests.test_bottle_migration_contracts.BottleMigrationRepositoryTests tests.test_bottle_migration_contracts.BottleMigrationGoldenTests
       - name: Check portable Mac-Win assets
         run: python -B tools/convert_macwin_assets.py --check
       - name: Compile public C header
@@ -88,6 +90,37 @@ jobs:
         run: cargo run -p compatforge-cli --locked -- runtime verify target/runtime-store sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af
       - name: Roll back Runtime Pack fixture
         run: cargo run -p compatforge-cli --locked -- runtime rollback target/runtime-store fixture-runtime
+      - name: Run Bottle migration fixture sequence
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot_receipt="$(cargo run -p compatforge-cli --locked -- bottle snapshot \
+            target/bottle-store tests/fixtures/bottle-migration/win64
+          )"
+          test "$(python -c 'import json,sys; print(json.load(sys.stdin)["snapshotDigest"])' <<<"$snapshot_receipt")" = \
+            "sha256:672021ed04ed3e53eff0df940e214bb580bb1690506440867666cd8370288c35"
+          plan_receipt="$(cargo run -p compatforge-cli --locked -- bottle plan \
+            target/bottle-store \
+            sha256:672021ed04ed3e53eff0df940e214bb580bb1690506440867666cd8370288c35 \
+            target/runtime-store tests/fixtures/bottle-migration/runtime-map.json
+          )"
+          test "$(python -c 'import json,sys; print(json.load(sys.stdin)["planDigest"])' <<<"$plan_receipt")" = \
+            "sha256:ee984e0e15ba9707b8ff9c6a8ac745c6ecc60149d687ffdda5336cf797388dba"
+          cargo run -p compatforge-cli --locked -- bottle import \
+            target/bottle-store \
+            sha256:672021ed04ed3e53eff0df940e214bb580bb1690506440867666cd8370288c35 \
+            target/runtime-store tests/fixtures/bottle-migration/runtime-map.json
+          cargo run -p compatforge-cli --locked -- bottle verify \
+            target/bottle-store bottle-win64
+          if cargo run -p compatforge-cli --locked -- bottle rollback \
+            target/bottle-store bottle-win64; then
+            echo "unexpected Bottle rollback success with no history" >&2
+            exit 1
+          fi
+      - name: Check strict Bottle migration boundary on macOS
+        if: runner.os == 'macOS'
+        run: cargo test -p compatforge-bottle snapshot --locked
       - name: Compile example launch plan
         run: cargo run -p compatforge-cli --locked -- plan examples/context-config.linux-arm64.json examples/launch-request.json
       - name: Probe host capabilities

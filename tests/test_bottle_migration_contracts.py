@@ -2042,5 +2042,188 @@ class BottleMigrationCliTests(unittest.TestCase):
             self.assertEqual(set(diagnostic), {"code", "message"}, command)
 
 
+class BottleMigrationRepositoryTests(unittest.TestCase):
+    """Repository-level trust-root and evidence checks for Bottle migration.
+
+    The repository validator is intentionally loaded as a plain Python module
+    rather than importing any Rust code.  The temporary-tree tests mutate one
+    authenticated input at a time, preserving otherwise valid JSON and
+    checking that a self-consistent forgery is still rejected.
+    """
+
+    FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "bottle-migration"
+    SCHEMA_DIGESTS = {
+        "bottle-active-ref.schema.json": "sha256:511fda223f2bde6a271e668ea4faf87835aebeb9a0fb5ab11bab921d7de6d7cb",
+        "bottle-migration-plan.schema.json": "sha256:ad2c2eba6031ce04155f4d4b13386318006a23ce6e35885c8808e1ce3c72b562",
+        "bottle-runtime-map.schema.json": "sha256:42ce6b2d4bff934e6ed5936aa5f260c17a88ca2c05c671ab01cb4abd8734804c",
+        "bottle-snapshot.schema.json": "sha256:6b97f84b1c6740e25e12392e9aa430c2f4d6fb09d7e85c82ffffd2fb1ba8aa97",
+    }
+    FIXTURE_FILES = {
+        "goldens/win32-launch-plan.json": "sha256:041c16b7aa1040395e685db817c2360b57208d8c5d502bec843ee7944845335d",
+        "goldens/win32-legacy-planning.json": "sha256:4db891c9b1524fc7cab947e7cb331d42a9a4067e2b53c849e8c8ef600b4fefe7",
+        "goldens/win32-migration-plan.json": "sha256:1a7c47bb3491431c9750288e67d85acf8a3d92e854b9afe8646d8a81e044d321",
+        "goldens/win64-launch-plan.json": "sha256:e9477955494b6469397a5b1651355b5fd876d7b0814f720243aeee55307373ec",
+        "goldens/win64-legacy-planning.json": "sha256:664ed33a9a5743a5d9367c9ac628309fb958e95764630d50c197b126c86bd8b2",
+        "goldens/win64-migration-plan.json": "sha256:4be176308c112323f01fe6b21e440d06b2ae828c4d8c2cefb93cc053402a57b4",
+        "runtime-map.json": "sha256:c0fedd9cfa46eee8c0f341c744dc82fead8c05b950b9a25bf13454324c664251",
+        "win32/drive_c/Public/example.txt": "sha256:bfbf39f393a9f6377038a9a9c84d55712c0ab684bdad24037ec5485cf5cb7303",
+        "win32/manifest.json": "sha256:80fd43df02519025556ecf8ba6c679fbcaa61c83e79b2ed090ed91c0528f30f0",
+        "win64/drive_c/Public/example.txt": "sha256:bf3e5fba8bf05ea8ac96e264263ac896c31d7d6b4158d32b1aecf3b6d334864e",
+        "win64/manifest.json": "sha256:354a64db465bd24939190cab5d3f994ca8a810975ca25c38d1d83ac28ce2e708",
+    }
+    REQUIRED_FIXTURE_DIRECTORIES = {
+        "goldens",
+        "win32",
+        "win32/drive_c",
+        "win32/drive_c/Public",
+        "win64",
+        "win64/drive_c",
+        "win64/drive_c/Public",
+    }
+    REQUIRED_DOC_SNIPPETS = {
+        "docs/testing.md": (
+            "compatforge-cli bottle snapshot",
+            "compatforge-cli bottle plan",
+            "compatforge-cli bottle import",
+            "compatforge-cli bottle verify",
+            "compatforge-cli bottle rollback",
+            "b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+        ),
+        "docs/architecture/component-model.md": (
+            "compatforge-bottle",
+            "content-addressed",
+            "verify-before-switch",
+        ),
+        "docs/migration/work-breakdown.md": (
+            "Bottle Bridge",
+            "snapshot",
+            "rollback",
+        ),
+        "docs/implementation/phase-1-bottle-migration.md": (
+            "Source is read-only",
+            "Runtime Pack",
+            "golden",
+            "rollback",
+        ),
+    }
+    REQUIRED_CI_SNIPPETS = (
+        "tests.test_bottle_migration_contracts",
+        "compatforge-bottle",
+        "bottle snapshot",
+        "bottle plan",
+        "bottle import",
+        "bottle verify",
+        "bottle rollback",
+        "b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+    )
+
+    @classmethod
+    def _validator(cls):
+        import importlib.util
+
+        path = ROOT / "scripts" / "validate_repository.py"
+        spec = importlib.util.spec_from_file_location(
+            "compatforge_repository_validator", path
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("repository validator cannot be imported")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @classmethod
+    def _copy_validation_tree(cls, temporary: Path) -> Path:
+        root = temporary / "repo"
+        (root / "schemas").mkdir(parents=True)
+        (root / "tests" / "fixtures").mkdir(parents=True)
+        shutil.copytree(ROOT / "schemas", root / "schemas", dirs_exist_ok=True)
+        shutil.copytree(
+            cls.FIXTURE_ROOT,
+            root / "tests" / "fixtures" / "bottle-migration",
+        )
+        for relative in (
+            "Cargo.toml",
+            ".github/workflows/ci.yml",
+            "docs/testing.md",
+            "docs/migration/work-breakdown.md",
+            "docs/architecture/component-model.md",
+            "docs/implementation/phase-1-bottle-migration.md",
+        ):
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, destination)
+        return root
+
+    def test_validator_authenticates_bottle_migration_evidence(self) -> None:
+        validator = self._validator()
+        self.assertEqual(validator.validate_bottle_migration_repository(), [])
+        self.assertEqual(
+            validator.BOTTLE_MIGRATION_SCHEMA_SHA256,
+            self.SCHEMA_DIGESTS,
+        )
+        self.assertEqual(
+            validator.BOTTLE_MIGRATION_FILE_SHA256,
+            self.FIXTURE_FILES,
+        )
+
+    def test_validator_binds_workspace_and_ci_commands(self) -> None:
+        validator = self._validator()
+        self.assertEqual(validator.validate_bottle_migration_repository(), [])
+        cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        self.assertIn('"apps/cli"', cargo)
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        for snippet in self.REQUIRED_CI_SNIPPETS:
+            self.assertIn(snippet, workflow)
+        for relative, snippets in self.REQUIRED_DOC_SNIPPETS.items():
+            content = (ROOT / relative).read_text(encoding="utf-8")
+            for snippet in snippets:
+                self.assertIn(snippet, content)
+
+    def test_validator_rejects_schema_golden_and_fixture_forgery(self) -> None:
+        validator = self._validator()
+        mutations = ("schema", "golden", "fixture", "extra")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-validator-"
+            ) as temporary:
+                root = self._copy_validation_tree(Path(temporary))
+                if mutation == "schema":
+                    path = root / "schemas" / "bottle-snapshot.schema.json"
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    value["$id"] = "https://compatforge.dev/schemas/forged"
+                    path.write_bytes(
+                        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+                    )
+                elif mutation == "golden":
+                    path = root / "tests" / "fixtures" / "bottle-migration" / "goldens" / "win64-migration-plan.json"
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    value["bottle"]["name"] = "forged"
+                    path.write_bytes(
+                        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+                    )
+                elif mutation == "fixture":
+                    path = root / "tests" / "fixtures" / "bottle-migration" / "win64" / "manifest.json"
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    value["name"] = "forged"
+                    path.write_bytes(
+                        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+                    )
+                else:
+                    (root / "tests" / "fixtures" / "bottle-migration" / "unexpected.txt").write_bytes(b"forged\n")
+                self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+    def test_validator_revalidates_after_source_changes_and_rejects_unsafe_tree(self) -> None:
+        validator = self._validator()
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-validator-") as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            self.assertEqual(validator.validate_bottle_migration_repository(root), [])
+            source = root / "tests" / "fixtures" / "bottle-migration" / "win32" / "drive_c" / "Public" / "example.txt"
+            source.write_bytes(source.read_bytes() + b"mutated")
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+
+
 if __name__ == "__main__":
     unittest.main()

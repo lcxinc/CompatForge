@@ -108,6 +108,103 @@ PATCH_REVIEW_SOURCE = {
     "sourceIndexSha256": "1fc8b071a9c52c5f29d130e47e3bd1cb165effa860eaa45336c82ee07cafe3a3",
     "digestAlgorithm": "sha256",
 }
+
+# Bottle migration evidence is a deliberately small, public trust root.  The
+# validator never asks Rust to produce an expected value; these literal
+# digests and projections are checked by a Python standard-library oracle.
+BOTTLE_MIGRATION_SCHEMA_SHA256 = {
+    "bottle-active-ref.schema.json": "sha256:511fda223f2bde6a271e668ea4faf87835aebeb9a0fb5ab11bab921d7de6d7cb",
+    "bottle-migration-plan.schema.json": "sha256:ad2c2eba6031ce04155f4d4b13386318006a23ce6e35885c8808e1ce3c72b562",
+    "bottle-runtime-map.schema.json": "sha256:42ce6b2d4bff934e6ed5936aa5f260c17a88ca2c05c671ab01cb4abd8734804c",
+    "bottle-snapshot.schema.json": "sha256:6b97f84b1c6740e25e12392e9aa430c2f4d6fb09d7e85c82ffffd2fb1ba8aa97",
+}
+BOTTLE_MIGRATION_FILE_SHA256 = {
+    "goldens/win32-launch-plan.json": "sha256:041c16b7aa1040395e685db817c2360b57208d8c5d502bec843ee7944845335d",
+    "goldens/win32-legacy-planning.json": "sha256:4db891c9b1524fc7cab947e7cb331d42a9a4067e2b53c849e8c8ef600b4fefe7",
+    "goldens/win32-migration-plan.json": "sha256:1a7c47bb3491431c9750288e67d85acf8a3d92e854b9afe8646d8a81e044d321",
+    "goldens/win64-launch-plan.json": "sha256:e9477955494b6469397a5b1651355b5fd876d7b0814f720243aeee55307373ec",
+    "goldens/win64-legacy-planning.json": "sha256:664ed33a9a5743a5d9367c9ac628309fb958e95764630d50c197b126c86bd8b2",
+    "goldens/win64-migration-plan.json": "sha256:4be176308c112323f01fe6b21e440d06b2ae828c4d8c2cefb93cc053402a57b4",
+    "runtime-map.json": "sha256:c0fedd9cfa46eee8c0f341c744dc82fead8c05b950b9a25bf13454324c664251",
+    "win32/drive_c/Public/example.txt": "sha256:bfbf39f393a9f6377038a9a9c84d55712c0ab684bdad24037ec5485cf5cb7303",
+    "win32/manifest.json": "sha256:80fd43df02519025556ecf8ba6c679fbcaa61c83e79b2ed090ed91c0528f30f0",
+    "win64/drive_c/Public/example.txt": "sha256:bf3e5fba8bf05ea8ac96e264263ac896c31d7d6b4158d32b1aecf3b6d334864e",
+    "win64/manifest.json": "sha256:354a64db465bd24939190cab5d3f994ca8a810975ca25c38d1d83ac28ce2e708",
+}
+BOTTLE_MIGRATION_GOLDEN_SHA256 = {
+    relative: digest
+    for relative, digest in BOTTLE_MIGRATION_FILE_SHA256.items()
+    if relative.startswith("goldens/")
+}
+BOTTLE_MIGRATION_DIRECTORY_SET = frozenset(
+    {
+        "goldens",
+        "win32",
+        "win32/drive_c",
+        "win32/drive_c/Public",
+        "win64",
+        "win64/drive_c",
+        "win64/drive_c/Public",
+    }
+)
+BOTTLE_MIGRATION_RUNTIME_PACK_ID = "fixture-runtime"
+BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST = (
+    "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af"
+)
+BOTTLE_MIGRATION_RUNTIME_MAP_DIGEST = (
+    "sha256:c0fedd9cfa46eee8c0f341c744dc82fead8c05b950b9a25bf13454324c664251"
+)
+BOTTLE_MIGRATION_SNAPSHOT_DIGESTS = {
+    "win32": "sha256:7a2661322918a821a597d0ccfd1736e8c9f490d6bf41e4f1778c74a121e37523",
+    "win64": "sha256:672021ed04ed3e53eff0df940e214bb580bb1690506440867666cd8370288c35",
+}
+BOTTLE_MIGRATION_PLAN_DIGESTS = {
+    "win32": "sha256:0fd681397b014e699a5e1251ee0045e4d1a95408b6cec97791bb2f70805d12da",
+    "win64": "sha256:ee984e0e15ba9707b8ff9c6a8ac745c6ecc60149d687ffdda5336cf797388dba",
+}
+BOTTLE_MIGRATION_FIXTURE_COUNTS = {
+    "win32": {"entryCount": 4, "totalFileBytes": 558},
+    "win64": {"entryCount": 4, "totalFileBytes": 1152},
+}
+BOTTLE_MIGRATION_DOC_SNIPPETS = {
+    "docs/testing.md": (
+        "compatforge-cli bottle snapshot",
+        "compatforge-cli bottle plan",
+        "compatforge-cli bottle import",
+        "compatforge-cli bottle verify",
+        "compatforge-cli bottle rollback",
+        BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST.removeprefix("sha256:"),
+    ),
+    "docs/migration/work-breakdown.md": (
+        "Bottle Bridge",
+        "snapshot",
+        "rollback",
+    ),
+    "docs/architecture/component-model.md": (
+        "compatforge-bottle",
+        "content-addressed",
+        "verify-before-switch",
+    ),
+    "docs/implementation/phase-1-bottle-migration.md": (
+        "Source is read-only",
+        "Runtime Pack",
+        "golden",
+        "rollback",
+        "| win32 | 4 | 558 |",
+        "| win64 | 4 | 1152 |",
+        *tuple(digest.removeprefix("sha256:") for digest in BOTTLE_MIGRATION_GOLDEN_SHA256.values()),
+    ),
+}
+BOTTLE_MIGRATION_CI_SNIPPETS = (
+    "tests.test_bottle_migration_contracts",
+    "compatforge-bottle",
+    "bottle snapshot",
+    "bottle plan",
+    "bottle import",
+    "bottle verify",
+    "bottle rollback",
+    BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST.removeprefix("sha256:"),
+)
 PATCH_UPSTREAM_JASP = {
     "repository": "https://github.com/jasp-stats/jasp-desktop",
     "referenceKind": "tag",
@@ -375,6 +472,551 @@ def validate_json() -> list[str]:
             identifiers[schema_id] = path
 
     return errors
+
+
+def _bottle_reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _bottle_reject_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _bottle_json(raw: bytes) -> object:
+    text = raw.decode("utf-8", errors="strict")
+    return json.loads(
+        text,
+        object_pairs_hook=_bottle_reject_duplicate_keys,
+        parse_constant=_bottle_reject_constant,
+    )
+
+
+def _bottle_pretty_json(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _bottle_compact_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def _bottle_digest(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _bottle_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_mode),
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+    )
+
+
+def _bottle_regular_metadata(path: Path) -> os.stat_result:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+        raise ValueError(f"Bottle migration fixture contains a link: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Bottle migration fixture contains a non-regular entry: {path}")
+    return metadata
+
+
+def _bottle_read_regular(path: Path, maximum: int = 2 * 1024 * 1024) -> tuple[bytes, tuple[int, ...]]:
+    before = _bottle_regular_metadata(path)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if _bottle_identity(opened) != _bottle_identity(before):
+            raise ValueError(f"Bottle migration fixture changed while opening: {path}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum:
+                raise ValueError(f"Bottle migration fixture file is too large: {path}")
+            chunks.append(chunk)
+        after_open = os.fstat(descriptor)
+        after_path = _bottle_regular_metadata(path)
+        if _bottle_identity(after_open) != _bottle_identity(after_path):
+            raise ValueError(f"Bottle migration fixture changed while reading: {path}")
+        return b"".join(chunks), _bottle_identity(after_open)
+    finally:
+        os.close(descriptor)
+
+
+def _bottle_path_component_is_safe(component: str) -> bool:
+    if not component or component in {".", ".."}:
+        return False
+    if "\\" in component or ":" in component or any(ord(char) < 0x20 for char in component):
+        return False
+    if component.endswith((".", " ")):
+        return False
+    if component.casefold().split(".", 1)[0] in {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }:
+        return False
+    return len(component.encode("utf-8")) <= 255
+
+
+def _bottle_relative_path_is_safe(relative: str) -> bool:
+    if not relative or relative.startswith("/") or "//" in relative:
+        return False
+    parts = relative.split("/")
+    if len(parts) > 128 or len(relative.encode("utf-8")) > 4096:
+        return False
+    return all(_bottle_path_component_is_safe(part) for part in parts)
+
+
+def _bottle_walk_fixture(
+    root: Path,
+) -> tuple[dict[str, tuple[str, tuple[int, ...], bytes | None]], int, tuple[int, ...]]:
+    identities: dict[str, tuple[str, tuple[int, ...], bytes | None]] = {}
+    total_bytes = 0
+    root_metadata = root.lstat()
+    if stat.S_ISLNK(root_metadata.st_mode) or getattr(root_metadata, "st_reparse_tag", 0):
+        raise ValueError(f"Bottle migration fixture root is a link: {root}")
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError(f"Bottle migration fixture root is not a directory: {root}")
+    root_identity = _bottle_identity(root_metadata)
+    pending: list[tuple[Path, str, int]] = [(root, "", 0)]
+    while pending:
+        directory, relative, depth = pending.pop()
+        metadata = directory.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0):
+            raise ValueError(f"Bottle migration fixture contains a link: {directory}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"Bottle migration fixture root is not a directory: {directory}")
+        if depth > 128:
+            raise ValueError("Bottle migration fixture exceeds path depth")
+        try:
+            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+        except OSError as error:
+            raise ValueError(f"Bottle migration fixture enumeration failed: {error}") from error
+        for entry in entries:
+            name = entry.name
+            child_relative = name if not relative else f"{relative}/{name}"
+            if not _bottle_path_component_is_safe(name) or not _bottle_relative_path_is_safe(child_relative):
+                raise ValueError(f"Bottle migration fixture has an unsafe path: {child_relative}")
+            child = directory / name
+            child_metadata = child.lstat()
+            identity = _bottle_identity(child_metadata)
+            if stat.S_ISLNK(child_metadata.st_mode) or getattr(child_metadata, "st_reparse_tag", 0):
+                raise ValueError(f"Bottle migration fixture contains a link: {child_relative}")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                identities[child_relative] = ("directory", identity, None)
+                if len(identities) > 100_000:
+                    raise ValueError("Bottle migration fixture has too many entries")
+                pending.append((child, child_relative, depth + 1))
+                continue
+            if not stat.S_ISREG(child_metadata.st_mode):
+                raise ValueError(f"Bottle migration fixture contains a non-regular entry: {child_relative}")
+            raw, read_identity = _bottle_read_regular(child)
+            if read_identity != identity:
+                raise ValueError(f"Bottle migration fixture changed while reading: {child_relative}")
+            total_bytes += len(raw)
+            if total_bytes > 64 * 1024 * 1024:
+                raise ValueError("Bottle migration fixture exceeds the byte bound")
+            identities[child_relative] = ("file", read_identity, raw)
+            if len(identities) > 100_000:
+                raise ValueError("Bottle migration fixture has too many entries")
+    return identities, total_bytes, root_identity
+
+
+def _bottle_revalidate_fixture(
+    root: Path,
+    identities: dict[str, tuple[str, tuple[int, ...], bytes | None]],
+    root_identity: tuple[int, ...],
+) -> None:
+    fresh, _, fresh_root_identity = _bottle_walk_fixture(root)
+    if fresh_root_identity != root_identity:
+        raise ValueError("Bottle migration fixture root changed during validation")
+    if set(fresh) != set(identities):
+        raise ValueError("Bottle migration fixture changed during validation")
+    for relative, (kind, identity, raw) in identities.items():
+        current_kind, current_identity, current_raw = fresh[relative]
+        if kind != current_kind or identity != current_identity:
+            raise ValueError(f"Bottle migration fixture identity changed: {relative}")
+        if kind == "file" and raw != current_raw:
+            raise ValueError(f"Bottle migration fixture bytes changed: {relative}")
+
+
+def _bottle_load_document(path: Path, maximum: int = 64 * 1024 * 1024) -> object:
+    raw, _ = _bottle_read_regular(path, maximum)
+    value = _bottle_json(raw)
+    if _bottle_pretty_json(value) != raw:
+        raise ValueError(f"Bottle migration document is not canonical: {path}")
+    if not isinstance(value, dict):
+        raise ValueError(f"Bottle migration document is not an object: {path}")
+    return value
+
+
+def _bottle_require_keys(value: object, keys: set[str], label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError(f"{label} has an unexpected field set")
+    return value
+
+
+def _bottle_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _bottle_bool(value: object, label: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{label} must be a JSON boolean")
+    return value
+
+
+def _bottle_snapshot_projection(case: str, manifest: dict[str, object], root: Path) -> dict[str, object]:
+    case_root = root / case
+    entries: list[dict[str, object]] = []
+    total = 0
+    paths: list[str] = []
+    for candidate in sorted(case_root.rglob("*"), key=lambda path: path.relative_to(case_root).as_posix()):
+        relative = candidate.relative_to(case_root).as_posix()
+        if candidate.is_dir():
+            paths.append(relative)
+        elif candidate.is_file():
+            paths.append(relative)
+    for relative in paths:
+        candidate = case_root / relative
+        if candidate.is_dir():
+            entries.append({"kind": "directory", "path": relative})
+            continue
+        raw, _ = _bottle_read_regular(candidate)
+        entries.append(
+            {
+                "digest": _bottle_digest(raw),
+                "kind": "file",
+                "path": relative,
+                "size": len(raw),
+            }
+        )
+        total += len(raw)
+    snapshot = {
+        "bottleId": manifest["id"],
+        "entries": entries,
+        "entryCount": len(entries),
+        "legacyFormat": "macwin-bottle-v1",
+        "schemaVersion": "1",
+        "totalFileBytes": total,
+    }
+    return {
+        "digest": _bottle_digest(
+            json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ),
+        "entryCount": len(entries),
+        "totalFileBytes": total,
+    }
+
+
+def _bottle_legacy_projection(manifest: dict[str, object], runtime_map: dict[str, object]) -> dict[str, object]:
+    _bottle_require_keys(
+        manifest,
+        {
+            "id",
+            "name",
+            "windowsVersion",
+            "arch",
+            "engineId",
+            "envOverrides",
+            "installedApps",
+            "createdAt",
+            "updatedAt",
+        },
+        "legacy manifest",
+    )
+    if manifest["arch"] not in {"win32", "win64"}:
+        raise ValueError("legacy manifest architecture is unsupported")
+    if not isinstance(manifest["envOverrides"], dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in manifest["envOverrides"].items()
+    ):
+        raise ValueError("legacy Bottle environment is invalid")
+    mappings = runtime_map.get("mappings")
+    if not isinstance(mappings, list) or len(mappings) != 1:
+        raise ValueError("Runtime map must contain exactly one mapping")
+    mapping = _bottle_require_keys(
+        mappings[0],
+        {"legacyEngineId", "runtimePackId", "runtimePackDigest"},
+        "Runtime mapping",
+    )
+    if mapping["legacyEngineId"] != manifest["engineId"]:
+        raise ValueError("legacy engine is not mapped")
+    if mapping["runtimePackId"] != BOTTLE_MIGRATION_RUNTIME_PACK_ID:
+        raise ValueError("Runtime Pack ID drifted")
+    if mapping["runtimePackDigest"] != BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST:
+        raise ValueError("Runtime Pack digest drifted")
+    installed = manifest["installedApps"]
+    if not isinstance(installed, list) or not installed:
+        raise ValueError("legacy Bottle has no launcher")
+    launchers: list[dict[str, object]] = []
+    launcher_ids: set[str] = set()
+    bottle_id = _bottle_string(manifest["id"], "legacy Bottle ID")
+    for launcher in sorted(installed, key=lambda item: item.get("id", "") if isinstance(item, dict) else ""):
+        launcher = _bottle_require_keys(
+            launcher,
+            {
+                "id",
+                "appId",
+                "bottleId",
+                "displayName",
+                "exePath",
+                "args",
+                "iconPath",
+                "envOverrides",
+                "showInHome",
+            },
+            "legacy launcher",
+        )
+        launcher_id = _bottle_string(launcher["id"], "launcher ID")
+        if launcher_id in launcher_ids:
+            raise ValueError("legacy launcher IDs are not unique")
+        launcher_ids.add(launcher_id)
+        if launcher["bottleId"] != bottle_id:
+            raise ValueError("launcher Bottle ID does not match")
+        if not isinstance(launcher["args"], list) or not all(isinstance(item, str) for item in launcher["args"]):
+            raise ValueError("launcher arguments are invalid")
+        if launcher["iconPath"] is not None and not isinstance(launcher["iconPath"], str):
+            raise ValueError("launcher icon path is invalid")
+        if not isinstance(launcher["envOverrides"], dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in launcher["envOverrides"].items()
+        ):
+            raise ValueError("launcher environment is invalid")
+        _bottle_bool(launcher["showInHome"], "launcher showInHome")
+        environment = dict(manifest["envOverrides"])
+        environment.update(launcher["envOverrides"])
+        output = {
+            "id": launcher_id,
+            "appId": _bottle_string(launcher["appId"], "launcher app ID"),
+            "bottleId": bottle_id,
+            "displayName": _bottle_string(launcher["displayName"], "launcher display name"),
+            "executable": _bottle_string(launcher["exePath"], "launcher executable"),
+            "arguments": launcher["args"],
+        }
+        if launcher["iconPath"] is not None:
+            output["iconPath"] = launcher["iconPath"]
+        output["environment"] = [
+            {"name": name, "value": value} for name, value in sorted(environment.items())
+        ]
+        output["showInHome"] = launcher["showInHome"]
+        launchers.append(output)
+    return {
+        "bottleId": bottle_id,
+        "name": _bottle_string(manifest["name"], "legacy Bottle name"),
+        "windowsVersion": _bottle_string(manifest["windowsVersion"], "Windows version"),
+        "architecture": {"win32": "i386", "win64": "x86_64"}[manifest["arch"]],
+        "legacyEngineId": _bottle_string(manifest["engineId"], "legacy engine ID"),
+        "runtimePack": {
+            "id": mapping["runtimePackId"],
+            "digest": mapping["runtimePackDigest"],
+        },
+        "launchers": launchers,
+    }
+
+
+def _bottle_expected_plan(case: str, manifest: dict[str, object], runtime_map: dict[str, object], root: Path) -> dict[str, object]:
+    legacy = _bottle_legacy_projection(manifest, runtime_map)
+    runtime_pack = legacy["runtimePack"]
+    bottle = {
+        "schemaVersion": "1",
+        "id": manifest["id"],
+        "name": manifest["name"],
+        "guest": {
+            "windowsVersion": manifest["windowsVersion"],
+            "architecture": legacy["architecture"],
+        },
+        "runtimePack": runtime_pack,
+        "storage": {"layoutVersion": 1, "state": "ready"},
+        "createdAt": manifest["createdAt"],
+        "updatedAt": manifest["updatedAt"],
+    }
+    snapshot = _bottle_snapshot_projection(case, manifest, root)
+    expected = {
+        "schemaVersion": "1",
+        "snapshotDigest": snapshot["digest"],
+        "legacyFormat": "macwin-bottle-v1",
+        "legacyEngineId": manifest["engineId"],
+        "bottle": bottle,
+        "bottleDigest": _bottle_digest(_bottle_compact_json(bottle)),
+        "runtimePack": runtime_pack,
+        "launchers": legacy["launchers"],
+        "diagnostics": [],
+        "planDigest": "",
+    }
+    unsigned = dict(expected)
+    unsigned.pop("planDigest")
+    expected["planDigest"] = _bottle_digest(_bottle_compact_json(unsigned))
+    return expected
+
+
+def _bottle_expected_launch(case: str, manifest: dict[str, object], runtime_map: dict[str, object]) -> dict[str, object]:
+    launcher = sorted(manifest["installedApps"], key=lambda item: item["id"])[0]
+    environment = dict(manifest["envOverrides"])
+    environment.update(launcher["envOverrides"])
+    runtime_pack = _bottle_legacy_projection(manifest, runtime_map)["runtimePack"]
+    request_ids = {
+        "bottle-win64": "018fe3cb-9d12-7b52-b334-1cce0e857fc9",
+        "bottle-win32": "018fe3cb-9d12-7b52-b334-1cce0e857fca",
+    }
+    return {
+        "schemaVersion": "1",
+        "requestId": request_ids[manifest["id"]],
+        "runtime": {"provider": "wine", "packId": runtime_pack["id"], "packDigest": runtime_pack["digest"]},
+        "translator": {"provider": "native", "version": "fixture-preview"},
+        "graphics": {"backend": "wined3d", "version": "fixture-preview", "options": {}},
+        "process": {
+            "executable": "/compatforge/runtime/bin/wine",
+            "arguments": [launcher["exePath"], *launcher["args"]],
+            "environment": environment,
+            "workingDirectory": f"/compatforge/bottles/{manifest['id']}/prefix",
+        },
+        "sandbox": {"profile": "strict", "network": "deny", "allowDevices": []},
+        "lifecycle": {"terminationGraceMilliseconds": 3000, "maximumRuntimeMilliseconds": 600000},
+        "decisionTrace": [
+            "legacy Bottle launcher mapped to verified preview Runtime Pack",
+            "environment merge uses launcher override precedence",
+        ],
+    }
+
+
+def _bottle_validate_schema_documents(root: Path) -> None:
+    schema_root = root / "schemas"
+    try:
+        extra = sorted(
+            path.name
+            for path in schema_root.iterdir()
+            if path.name.startswith("bottle-") and path.name.endswith(".schema.json")
+        )
+    except OSError as error:
+        raise ValueError(f"Bottle schema directory cannot be enumerated: {error}") from error
+    if set(extra) != set(BOTTLE_MIGRATION_SCHEMA_SHA256):
+        raise ValueError("Bottle schema set drifted")
+    for name, expected_digest in BOTTLE_MIGRATION_SCHEMA_SHA256.items():
+        path = schema_root / name
+        raw, _ = _bottle_read_regular(path)
+        if _bottle_digest(raw) != expected_digest:
+            raise ValueError(f"Bottle schema digest drifted: {name}")
+        schema = _bottle_json(raw)
+        if not isinstance(schema, dict) or schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+            raise ValueError(f"Bottle schema is not Draft 2020-12: {name}")
+        if schema.get("$id") != f"https://compatforge.dev/schemas/{name}":
+            raise ValueError(f"Bottle schema ID drifted: {name}")
+        if _bottle_pretty_json(schema) != raw:
+            raise ValueError(f"Bottle schema is not canonical: {name}")
+
+
+def _bottle_validate_fixture(root: Path) -> None:
+    fixture_root = root / "tests" / "fixtures" / "bottle-migration"
+    identities, _, root_identity = _bottle_walk_fixture(fixture_root)
+    expected_entries = {
+        **{relative: ("file", digest) for relative, digest in BOTTLE_MIGRATION_FILE_SHA256.items()},
+        **{relative: ("directory", None) for relative in BOTTLE_MIGRATION_DIRECTORY_SET},
+    }
+    if set(identities) != set(expected_entries):
+        missing = sorted(set(expected_entries) - set(identities))
+        extra = sorted(set(identities) - set(expected_entries))
+        raise ValueError(f"Bottle fixture tree drifted (missing={missing}, extra={extra})")
+    for relative, (kind, expected_digest) in expected_entries.items():
+        actual_kind, _, raw = identities[relative]
+        if actual_kind != kind:
+            raise ValueError(f"Bottle fixture entry kind drifted: {relative}")
+        if kind == "file" and _bottle_digest(raw or b"") != expected_digest:
+            raise ValueError(f"Bottle fixture digest drifted: {relative}")
+    runtime_map = _bottle_load_document(fixture_root / "runtime-map.json")
+    _bottle_require_keys(runtime_map, {"schemaVersion", "mappings"}, "Runtime map")
+    if runtime_map != {
+        "schemaVersion": "1",
+        "mappings": [
+            {
+                "legacyEngineId": "wine-9",
+                "runtimePackDigest": BOTTLE_MIGRATION_RUNTIME_PACK_DIGEST,
+                "runtimePackId": BOTTLE_MIGRATION_RUNTIME_PACK_ID,
+            }
+        ],
+    }:
+        raise ValueError("Runtime map projection drifted")
+    for case in ("win32", "win64"):
+        manifest = _bottle_load_document(fixture_root / case / "manifest.json")
+        legacy = _bottle_legacy_projection(manifest, runtime_map)
+        legacy_golden = _bottle_load_document(fixture_root / "goldens" / f"{case}-legacy-planning.json")
+        if legacy != legacy_golden:
+            raise ValueError(f"Bottle legacy planning golden drifted: {case}")
+        plan = _bottle_load_document(fixture_root / "goldens" / f"{case}-migration-plan.json")
+        expected_plan = _bottle_expected_plan(case, manifest, runtime_map, fixture_root)
+        if plan != expected_plan or plan["planDigest"] != BOTTLE_MIGRATION_PLAN_DIGESTS[case]:
+            raise ValueError(f"Bottle migration plan golden drifted: {case}")
+        snapshot = _bottle_snapshot_projection(case, manifest, fixture_root)
+        if snapshot["digest"] != BOTTLE_MIGRATION_SNAPSHOT_DIGESTS[case]:
+            raise ValueError(f"Bottle snapshot digest drifted: {case}")
+        if snapshot["entryCount"] != BOTTLE_MIGRATION_FIXTURE_COUNTS[case]["entryCount"] or snapshot["totalFileBytes"] != BOTTLE_MIGRATION_FIXTURE_COUNTS[case]["totalFileBytes"]:
+            raise ValueError(f"Bottle snapshot counts drifted: {case}")
+        launch = _bottle_load_document(fixture_root / "goldens" / f"{case}-launch-plan.json")
+        if launch != _bottle_expected_launch(case, manifest, runtime_map):
+            raise ValueError(f"Bottle launch golden drifted: {case}")
+    _bottle_revalidate_fixture(fixture_root, identities, root_identity)
+
+
+def _bottle_validate_docs_and_ci(root: Path) -> None:
+    for relative, snippets in BOTTLE_MIGRATION_DOC_SNIPPETS.items():
+        path = root / relative
+        raw, _ = _bottle_read_regular(path, 2 * 1024 * 1024)
+        content = raw.decode("utf-8", errors="strict")
+        for snippet in snippets:
+            if snippet not in content:
+                raise ValueError(f"Bottle migration documentation is incomplete: {relative}")
+    cargo, _ = _bottle_read_regular(root / "Cargo.toml", 2 * 1024 * 1024)
+    cargo_text = cargo.decode("utf-8", errors="strict")
+    if '"apps/cli"' not in cargo_text or '"crates/compatforge-bottle"' not in cargo_text:
+        raise ValueError("Bottle migration workspace membership is not bound")
+    workflow, _ = _bottle_read_regular(root / ".github" / "workflows" / "ci.yml", 2 * 1024 * 1024)
+    workflow_text = workflow.decode("utf-8", errors="strict")
+    for snippet in BOTTLE_MIGRATION_CI_SNIPPETS:
+        if snippet not in workflow_text:
+            raise ValueError("Bottle migration CI sequence is incomplete")
+
+
+def validate_bottle_migration_repository(root: Path | None = None) -> list[str]:
+    """Authenticate the public Bottle migration evidence tree.
+
+    ``root`` is injectable solely for mutation tests.  Production validation
+    uses the repository root and performs a final identity/byte revalidation
+    after every read, so a replacement race cannot turn an accepted fixture
+    into a different artifact.
+    """
+    repository_root = (root or ROOT).resolve()
+    try:
+        _bottle_validate_schema_documents(repository_root)
+        _bottle_validate_fixture(repository_root)
+        _bottle_validate_docs_and_ci(repository_root)
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as error:
+        return [f"Bottle migration repository validation failed: {error}"]
+    return []
 
 
 def validate_workspace_members() -> list[str]:
@@ -2563,6 +3205,7 @@ def validate_pe_inspection_fixture() -> list[str]:
 def main() -> int:
     errors = (
         validate_macwin_asset_migration()
+        + validate_bottle_migration_repository()
         + validate_json()
         + validate_workspace_members()
         + validate_markdown_links()

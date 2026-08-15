@@ -32,7 +32,7 @@ Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未�
 | `compatforge-translator` | Native/Rosetta/FEX/Box64/QEMU | `WineRunner` 的 `/usr/bin/arch` 路径 |
 | `compatforge-graphics` | WineD3D/DXVK/vkd3d/D3DMetal/MoltenVK | `GraphicsPreset.swift` |
 | `compatforge-process` | 进程组、事件、取消、超时 | `WineRunner`、RuntimeProcess 服务 |
-| `compatforge-bottle` | manifest、锁、事务、快照、迁移 | `BottleService.swift` |
+| `compatforge-bottle` | manifest、锁、事务、快照、content-addressed 迁移、verify-before-switch rollback | `BottleService.swift` |
 | `compatforge-catalog` | Recipe 索引、签名、缓存、回滚保护 | `CatalogService.swift` |
 | `compatforge-diagnostics` | 结构化事件、规则分类、脱敏、支持包 | Log/Diagnostics/Support 服务 |
 | `compatforge-lab` | 测试计划、矩阵、产物、认证结果 | Smoke/Test/Sample 服务 |
@@ -72,3 +72,10 @@ Kotlin/Compose 通过 JNI/C ABI 调用同一 Rust Core。显示、触摸、IME�
 | CompatibilityResult | compat-lab | policy scorer、catalog publishing pipeline |
 
 任何组件不得绕过权威所有者直接修改其文件。尤其 UI 不直接编辑 Bottle JSON，Provider 不直接更新 Recipe，测试结果不直接提升兼容等级。
+
+Bottle migration is an offline Core boundary. `compatforge-bottle` owns the
+held, read-only source traversal, immutable snapshot objects, exact Runtime
+Pack binding, and active/history references. The UI receives receipts and
+diagnostics through the CLI/Core API; it does not read the Bottle store or
+rewrite a ref. Verify-before-switch is required for both import and rollback,
+and the independent repository oracle seals the public fixtures and goldens.
