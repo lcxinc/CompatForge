@@ -492,7 +492,7 @@ fn materialized_link_target(link_path: &str, target: &str) -> Result<PathBuf, Bo
         relative.push(component);
     }
     if relative.as_os_str().is_empty() {
-        return Err(snapshot_corrupt());
+        relative.push(".");
     }
     Ok(relative)
 }
@@ -815,6 +815,9 @@ fn remove_owned_file(path: &Path, expected: Option<CleanupIdentity>, expected_by
         return Ok(false);
     }
     if cleanup_identity(path)? != expected {
+        return Ok(false);
+    }
+    if metadata.len() != u64::try_from(expected_bytes.len()).unwrap_or(u64::MAX) {
         return Ok(false);
     }
     if fs::read(path)? != expected_bytes {
@@ -1685,6 +1688,7 @@ mod tests {
         let (temporary, store, runtime_store, first_plan) = setup_case();
         let source = temporary.path().join("source");
         std::os::unix::fs::symlink("example.exe", source.join("drive_c/Example/alias.exe")).unwrap();
+        std::os::unix::fs::symlink(".", source.join("drive_c/Example/parent-link")).unwrap();
         let snapshot = store.snapshot(&source).unwrap();
         let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
             legacy_engine_id: "wine-9".into(),
@@ -1705,6 +1709,10 @@ mod tests {
         assert_eq!(
             fs::read_link(version.join("prefix/drive_c/Example/alias.exe")).unwrap(),
             PathBuf::from("example.exe")
+        );
+        assert_eq!(
+            fs::read_link(version.join("prefix/drive_c/Example/parent-link")).unwrap(),
+            PathBuf::from(".")
         );
         store.verify_active(&plan.bottle.id).unwrap();
         assert!(!store.root().join("transactions").join("bottle-fixture").exists());
@@ -1772,5 +1780,19 @@ mod tests {
         assert!(super::create_transaction(&transaction).is_err());
         assert!(transaction.exists());
         assert_eq!(fs::read(transaction.join(".owner")).unwrap(), b"foreign replacement");
+    }
+
+    #[test]
+    fn owned_marker_cleanup_rejects_an_oversized_replacement_before_reading() {
+        let temporary = TemporaryDirectory::new("transaction-marker-oversized");
+        let marker = temporary.path().join(".owner");
+        fs::write(&marker, super::OWNER_MARKER).unwrap();
+        let identity = super::cleanup_identity(&marker).unwrap();
+        fs::write(&marker, vec![b'x'; super::MAX_VERSION_JSON_BYTES.saturating_add(1)]).unwrap();
+        assert!(!super::remove_owned_file(&marker, Some(identity), super::OWNER_MARKER).unwrap());
+        assert_eq!(
+            fs::metadata(marker).unwrap().len(),
+            super::MAX_VERSION_JSON_BYTES as u64 + 1
+        );
     }
 }
