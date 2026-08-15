@@ -25,6 +25,7 @@ typedef uint32_t cf_status_t;
 #define CF_STATUS_PROBE_FAILED ((cf_status_t)10)
 #define CF_STATUS_INSPECTION_FAILED ((cf_status_t)11)
 #define CF_STATUS_PREPARATION_FAILED ((cf_status_t)12)
+#define CF_STATUS_BOOTSTRAP_FAILED ((cf_status_t)13)
 #define CF_STATUS_PANIC ((cf_status_t)255)
 
 const char *cf_api_version(void);
@@ -36,6 +37,11 @@ cf_status_t cf_inspect_executable(
 );
 
 cf_status_t cf_context_create(const char *config_json, cf_context_t **out_context);
+cf_status_t cf_macos_local_context_create(
+    const char *request_json,
+    cf_context_t **out_context,
+    char **out_receipt_json
+);
 cf_status_t cf_capabilities_get(
     const cf_context_t *context,
     char **out_report_json

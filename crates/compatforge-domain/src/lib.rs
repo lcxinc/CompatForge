@@ -351,11 +351,21 @@ impl CapabilityReport {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ExecutableMode {
+    #[default]
+    ImmutableArtifact,
+    BottleInPlace,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutableRequest {
     pub path: String,
     pub architecture: CpuArchitecture,
+    #[serde(default)]
+    pub mode: ExecutableMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -583,8 +593,54 @@ impl GuestArtifactBinding {
         if self.image_kind != "executable" {
             return Err(ContractError::UnsupportedValue("guestArtifact.imageKind"));
         }
-        if self.subsystem != "windowsConsole" {
+        if !matches!(self.subsystem.as_str(), "windowsConsole" | "windowsGui") {
             return Err(ContractError::UnsupportedValue("guestArtifact.subsystem"));
+        }
+        validate_schema_version(&self.inspection_schema_version)
+    }
+}
+
+/// Digest-bound executable that remains in an authorized Bottle prefix so
+/// Wine can resolve its sibling DLLs, plugins and resources.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BottleExecutableBinding {
+    pub bottle_id: String,
+    pub digest: String,
+    pub size_bytes: u64,
+    pub path: String,
+    pub original_name: String,
+    pub architecture: CpuArchitecture,
+    pub image_kind: String,
+    pub subsystem: String,
+    pub inspection_schema_version: String,
+}
+
+impl BottleExecutableBinding {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_id("bottleExecutable.bottleId", &self.bottle_id)?;
+        validate_digest("bottleExecutable.digest", &self.digest)?;
+        if self.size_bytes == 0 {
+            return Err(ContractError::UnsupportedValue("bottleExecutable.sizeBytes"));
+        }
+        if self.path.is_empty() {
+            return Err(ContractError::MissingField("bottleExecutable.path"));
+        }
+        if self.original_name.is_empty()
+            || self.original_name.contains('/')
+            || self.original_name.contains('\\')
+            || matches!(self.original_name.as_str(), "." | "..")
+        {
+            return Err(ContractError::UnsupportedValue("bottleExecutable.originalName"));
+        }
+        if !matches!(self.architecture, CpuArchitecture::I386 | CpuArchitecture::X86_64) {
+            return Err(ContractError::UnsupportedValue("bottleExecutable.architecture"));
+        }
+        if self.image_kind != "executable" {
+            return Err(ContractError::UnsupportedValue("bottleExecutable.imageKind"));
+        }
+        if !matches!(self.subsystem.as_str(), "windowsConsole" | "windowsGui") {
+            return Err(ContractError::UnsupportedValue("bottleExecutable.subsystem"));
         }
         validate_schema_version(&self.inspection_schema_version)
     }
@@ -672,6 +728,8 @@ pub struct LaunchPlan {
     pub process: NativeCommand,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest_artifact: Option<GuestArtifactBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottle_executable: Option<BottleExecutableBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<Mount>,
     pub sandbox: SandboxPolicy,
@@ -696,8 +754,20 @@ impl LaunchPlan {
             return Err(ContractError::MissingField("process.workingDirectory"));
         }
         if let Some(binding) = &self.guest_artifact {
+            if self.bottle_executable.is_some() {
+                return Err(ContractError::UnsupportedValue("guestArtifact/bottleExecutable"));
+            }
             binding.validate()?;
             if self.process.arguments.first() != Some(&binding.stored_path) {
+                return Err(ContractError::UnsupportedValue("process.arguments[0]"));
+            }
+        }
+        if let Some(binding) = &self.bottle_executable {
+            if self.guest_artifact.is_some() {
+                return Err(ContractError::UnsupportedValue("guestArtifact/bottleExecutable"));
+            }
+            binding.validate()?;
+            if self.process.arguments.first() != Some(&binding.path) {
                 return Err(ContractError::UnsupportedValue("process.arguments[0]"));
             }
         }

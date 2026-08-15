@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "absolutePath": {
+      "minLength": 1,
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\).+",
+      "type": "string"
+    },
+    "relativePath": {
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\:])[^/]+(?:/[^/]+)*$",
+      "type": "string"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/macos-bootstrap-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "materializedRoot": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "runtimeStoreRoot": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "storageRoot": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "wine": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "wineserver": {
+      "$ref": "#/$defs/relativePath"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runtimeStoreRoot",
+    "storageRoot"
+  ],
+  "title": "CompatForge macOS Local Context Bootstrap Request",
+  "type": "object"
+}

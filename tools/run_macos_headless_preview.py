@@ -68,33 +68,48 @@ def executable(path: Path, field: str) -> None:
         raise AcceptanceError(f"invalid {field}")
 
 
-def validate(arguments: argparse.Namespace, host_system: str, host_machine: str) -> dict[str, object]:
+def validate(
+    arguments: argparse.Namespace,
+    host_system: str,
+    host_machine: str,
+    *,
+    require_runtime: bool = True,
+) -> dict[str, object]:
     if host_system != "Darwin" or host_machine != "arm64":
         raise AcceptanceError("host must be Darwin/arm64")
     cli = absolute(arguments.compatforge_cli, "compatforge-cli", must_exist=True)
     cc = absolute(arguments.cc, "cc", must_exist=True)
-    wine_root = absolute(arguments.wine_root, "wine-root", must_exist=True)
+    wine_root = absolute(arguments.wine_root, "wine-root", must_exist=True) if require_runtime else None
     runtime_store = absolute(arguments.runtime_store, "runtime-store", must_exist=False)
     storage_root = absolute(arguments.storage_root, "storage-root", must_exist=False)
     work_root = absolute(arguments.work_root, "work-root", must_exist=True)
-    wine_relative = portable(arguments.wine, "wine")
-    wineserver_relative = portable(arguments.wineserver, "wineserver")
+    wine_relative = portable(arguments.wine, "wine") if require_runtime else None
+    wineserver_relative = portable(arguments.wineserver, "wineserver") if require_runtime else None
     executable(cli, "compatforge-cli")
     executable(cc, "cc")
-    if not wine_root.is_dir() or not work_root.is_dir() or any(work_root.iterdir()):
-        raise AcceptanceError("wine-root and empty work-root must be directories")
-    wine = wine_root.joinpath(*wine_relative.parts)
-    wineserver = wine_root.joinpath(*wineserver_relative.parts)
-    executable(wine, "wine")
-    executable(wineserver, "wineserver")
-    protected = [ROOT.resolve(), wine_root, runtime_store, storage_root]
+    if require_runtime and (not isinstance(wine_root, Path) or not wine_root.is_dir()):
+        raise AcceptanceError("wine-root must be a directory")
+    if not work_root.is_dir() or any(work_root.iterdir()):
+        raise AcceptanceError("empty work-root must be a directory")
+    if require_runtime:
+        assert isinstance(wine_root, Path)
+        assert wine_relative is not None and wineserver_relative is not None
+        wine = wine_root.joinpath(*wine_relative.parts)
+        wineserver = wine_root.joinpath(*wineserver_relative.parts)
+        executable(wine, "wine")
+        executable(wineserver, "wineserver")
+    protected = [ROOT.resolve(), runtime_store, storage_root]
+    if isinstance(wine_root, Path):
+        protected.append(wine_root)
     if any(overlaps(work_root, path) for path in protected):
         raise AcceptanceError("work-root overlaps a protected root")
     if overlaps(runtime_store, storage_root) or any(
-        overlaps(store, path) for store in (runtime_store, storage_root) for path in (ROOT.resolve(), wine_root)
+        overlaps(store, path)
+        for store in (runtime_store, storage_root)
+        for path in ([ROOT.resolve(), wine_root] if isinstance(wine_root, Path) else [ROOT.resolve()])
     ):
         raise AcceptanceError("store roots overlap")
-    if not arguments.pack_id or not arguments.version:
+    if require_runtime and (not arguments.pack_id or not arguments.version):
         raise AcceptanceError("pack-id and version are required")
     return {
         "cli": cli,
@@ -159,29 +174,13 @@ def parse_json(result: subprocess.CompletedProcess[str], field: str) -> dict[str
     return value
 
 
-def prepare_bottle_directory(plan: dict[str, object], storage_root: Path) -> None:
-    process = plan.get("process")
-    if not isinstance(process, dict):
-        raise AcceptanceError("plan omitted process")
-    working_value = process.get("workingDirectory")
-    environment = process.get("environment")
-    if not isinstance(working_value, str) or not isinstance(environment, dict):
-        raise AcceptanceError("plan omitted Wine directory evidence")
-    prefix_value = environment.get("WINEPREFIX")
-    if not isinstance(prefix_value, str):
-        raise AcceptanceError("plan omitted WINEPREFIX")
-    working_directory = absolute(working_value, "plan working directory", must_exist=False)
-    prefix = absolute(prefix_value, "plan WINEPREFIX", must_exist=False)
-    if storage_root not in working_directory.parents or working_directory not in prefix.parents:
-        raise AcceptanceError("plan Wine directories escape the isolated storage root")
-    if working_directory.exists():
-        raise AcceptanceError("plan working directory already exists")
-    working_directory.mkdir(parents=True)
-
-
 def run(arguments: argparse.Namespace, runner: Runner = subprocess.run) -> dict[str, object]:
-    arguments = resolve_wine(arguments, runner)
-    paths = validate(arguments, platform.system(), platform.machine())
+    use_rust_bootstrap = runner is subprocess.run
+    if use_rust_bootstrap:
+        paths = validate(arguments, platform.system(), platform.machine(), require_runtime=False)
+    else:
+        arguments = resolve_wine(arguments, runner)
+        paths = validate(arguments, platform.system(), platform.machine())
     cli = str(paths["cli"])
     work_root = paths["workRoot"]
     assert isinstance(work_root, Path)
@@ -213,65 +212,101 @@ def run(arguments: argparse.Namespace, runner: Runner = subprocess.run) -> dict[
         raise AcceptanceError("probe is not an x86_64 Windows Console executable")
     write_json(work_root / "inspection.json", inspection)
 
-    registration_root = work_root / "registration"
-    registration = parse_json(
-        invoke(
-            [
-                sys.executable,
-                "-S",
-                "-B",
-                str(REGISTER),
-                "--output-root",
-                str(registration_root),
-                "--runtime-store-root",
-                str(paths["runtimeStore"]),
-                "--materialized-root",
-                str(paths["wineRoot"]),
-                "--wine",
-                str(paths["wine"]),
-                "--wineserver",
-                str(paths["wineserver"]),
-                "--pack-id",
-                arguments.pack_id,
-                "--version",
-                arguments.version,
-            ],
-            runner,
-        ),
-        "registration",
-    )
-    pack_digest = registration.get("packDigest")
-    if not isinstance(pack_digest, str):
-        raise AcceptanceError("registration omitted pack digest")
+    context_path = work_root / "context.json"
+    if use_rust_bootstrap:
+        bootstrap_request_path = work_root / "bootstrap-request.json"
+        write_json(
+            bootstrap_request_path,
+            {
+                "schemaVersion": "1",
+                "runtimeStoreRoot": str(paths["runtimeStore"]),
+                "storageRoot": str(paths["storageRoot"]),
+            },
+        )
+        receipt = parse_json(
+            invoke([cli, "local", "macos", "context", str(bootstrap_request_path), str(context_path)], runner),
+            "bootstrap receipt",
+        )
+        pack_digest = receipt.get("packDigest")
+        pack_id = receipt.get("packId")
+        pack_version = receipt.get("version")
+        runtime_source = receipt.get("source")
+        if not all(isinstance(value, str) and value for value in (pack_digest, pack_id, pack_version, runtime_source)):
+            raise AcceptanceError("bootstrap receipt omitted Runtime identity")
+        context = parse_json(
+            subprocess.CompletedProcess(
+                [str(context_path)], 0, context_path.read_text(encoding="utf-8"), ""
+            ),
+            "context",
+        )
+        capabilities = {
+            "runtimeProviders": [{"kind": "wine", "available": True}],
+            "translators": [{"kind": "rosetta", "available": True}],
+            "graphicsBackends": [{"kind": "wined3d", "available": True}],
+        }
+        arguments.pack_id = pack_id
+        arguments.version = pack_version
+        arguments.wine_source = runtime_source
+        write_json(work_root / "bootstrap-receipt.json", receipt)
+    else:
+        registration_root = work_root / "registration"
+        registration = parse_json(
+            invoke(
+                [
+                    sys.executable,
+                    "-S",
+                    "-B",
+                    str(REGISTER),
+                    "--output-root",
+                    str(registration_root),
+                    "--runtime-store-root",
+                    str(paths["runtimeStore"]),
+                    "--materialized-root",
+                    str(paths["wineRoot"]),
+                    "--wine",
+                    str(paths["wine"]),
+                    "--wineserver",
+                    str(paths["wineserver"]),
+                    "--pack-id",
+                    arguments.pack_id,
+                    "--version",
+                    arguments.version,
+                ],
+                runner,
+            ),
+            "registration",
+        )
+        pack_digest = registration.get("packDigest")
+        if not isinstance(pack_digest, str):
+            raise AcceptanceError("registration omitted pack digest")
 
-    install = parse_json(
-        invoke(
-            [cli, "runtime", "install", str(paths["runtimeStore"]), str(registration_root / "bundle"), "manifest.json"],
-            runner,
-        ),
-        "install receipt",
-    )
-    verify = parse_json(
-        invoke([cli, "runtime", "verify", str(paths["runtimeStore"]), pack_digest], runner),
-        "verify receipt",
-    )
-    if install.get("digest") != pack_digest or verify.get("digest") != pack_digest:
-        raise AcceptanceError("Runtime receipt digest mismatch")
-    write_json(work_root / "runtime-install.json", install)
-    write_json(work_root / "runtime-verify.json", verify)
+        install = parse_json(
+            invoke(
+                [cli, "runtime", "install", str(paths["runtimeStore"]), str(registration_root / "bundle"), "manifest.json"],
+                runner,
+            ),
+            "install receipt",
+        )
+        verify = parse_json(
+            invoke([cli, "runtime", "verify", str(paths["runtimeStore"]), pack_digest], runner),
+            "verify receipt",
+        )
+        if install.get("digest") != pack_digest or verify.get("digest") != pack_digest:
+            raise AcceptanceError("Runtime receipt digest mismatch")
+        write_json(work_root / "runtime-install.json", install)
+        write_json(work_root / "runtime-verify.json", verify)
 
-    provider_path = registration_root / "provider.json"
-    capabilities = parse_json(invoke([cli, "provider", "macos", "probe", str(provider_path)], runner), "capabilities")
-    context = parse_json(
-        invoke([cli, "provider", "macos", "context", str(provider_path), str(paths["storageRoot"])], runner),
-        "context",
-    )
+        provider_path = registration_root / "provider.json"
+        capabilities = parse_json(invoke([cli, "provider", "macos", "probe", str(provider_path)], runner), "capabilities")
+        context = parse_json(
+            invoke([cli, "provider", "macos", "context", str(provider_path), str(paths["storageRoot"])], runner),
+            "context",
+        )
     supervisor = context.get("supervisor")
     if not isinstance(supervisor, dict):
         raise AcceptanceError("context omitted supervisor policy")
     supervisor["maximumRuntimeMilliseconds"] = 60_000
     write_json(work_root / "capabilities.json", capabilities)
-    context_path = work_root / "context.json"
     write_json(context_path, context)
 
     file_digest = inspection.get("fileDigest")
@@ -297,10 +332,6 @@ def run(arguments: argparse.Namespace, runner: Runner = subprocess.run) -> dict[
     write_json(request_path, request)
     plan = parse_json(invoke([cli, "prepared-plan", str(context_path), str(probe), str(request_path)], runner), "plan")
     write_json(work_root / "prepared-launch-plan.json", plan)
-    storage_root = paths["storageRoot"]
-    assert isinstance(storage_root, Path)
-    prepare_bottle_directory(plan, storage_root)
-
     event_result = invoke([cli, "prepared-launch", str(context_path), str(probe), str(request_path)], runner)
     try:
         events = [json.loads(line) for line in event_result.stdout.splitlines() if line]

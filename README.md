@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.10.0`。PE inspection 已通过独立 Guest Artifact 内容库接入 opaque `PreparedLaunch`；CLI 提供 `prepared-plan`/`prepared-launch`，macOS Provider 产生的 Wine 与 wineserver 摘要会在 spawn 前再次复验。默认 CI 仍只执行公开 fixture，不执行真实 Windows 应用；Apple Silicon 开发者可以让 opt-in 验收工具从受限已知位置自动发现并实际验证合法安装的 x86_64 Wine，也可显式覆盖路径，再运行 Console PE 本地预览。该预览不代表 Tier 1、GUI PE、发行包或通用应用兼容结论。ABI major 保持 1；Runtime 通用物化、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
+> 当前状态：Core/API `0.11.0`，ABI major `1`。Rust Core 现在统一负责受限 macOS Wine 自动发现、Preview Pack 登记、GUI/Console PE inspection，以及 `bottleInPlace` 的 Bottle 路径/哈希复验；C ABI 提供 `cf_macos_local_context_create`。`apps/desktop` 是 Qt 6/QML 薄壳，所有阻塞 FFI 都在工作线程，默认中文文案并支持 offscreen smoke。默认 CI 不下载或运行真实 Windows GUI 应用；Apple Silicon 开发者可用仓库外缓存和显式 `--allow-network` 执行三个固定 GUI 基线的 opt-in 验收。真实窗口、应用行为和清理证据不扩大为通用兼容结论。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -51,7 +51,7 @@ flowchart TD
 ## 仓库结构
 
 ```text
-apps/                         CLI 与待建立的 Qt/QML 桌面薄前端
+apps/                         CLI 与 Qt/QML 桌面薄前端
 crates/                       领域模型、存储、编排、进程监督与 C ABI
 schemas/                      稳定的跨进程/跨语言数据契约
 examples/                     契约示例，不是可发布 Runtime
@@ -75,6 +75,7 @@ cargo run -p compatforge-cli -- inspect tests/fixtures/hello-x86_64.exe
 cargo run -p compatforge-cli -- demo-plan
 cargo run -p compatforge-cli -- provider macos probe <provider-config.json>
 cargo run -p compatforge-cli -- provider macos context <provider-config.json> <storage-root>
+cargo run -p compatforge-cli -- local macos context <bootstrap-request.json>
 cargo run -p compatforge-cli -- prepared-plan <context-config.json> <absolute-console-pe> <launch-request.json>
 cargo run -p compatforge-cli -- prepared-launch <context-config.json> <absolute-console-pe> <launch-request.json>
 cargo run -p compatforge-cli -- runtime manifest-digest \
@@ -91,7 +92,30 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、Context/plan/process API，以及 API `0.10.0` 新增的 `cf_launch_prepare`、PreparedLaunch getter/start/release。正式外部 PE 路径应使用 PreparedLaunch；`cf_compile_launch` 与不含 `guestArtifact` 的旧计划仅保留给受信任 helper 和兼容测试。ABI major 仍为 1，调用方必须先检查 API 版本再解析 additive symbol。
+C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_macos_local_context_create`、Context/plan/process API，以及 `cf_launch_prepare`、PreparedLaunch getter/start/release。`ExecutableRequest.mode` 默认为 `immutableArtifact`；安装后需要保留 Bottle 内相邻 DLL/资源时使用 `bottleInPlace`，Core 会在 spawn 前再次检查 `<storageRoot>/bottles/<bottleId>/prefix/drive_c` 内的普通文件和 SHA-256。Bottle 不是安全沙箱。调用方必须先检查 API 版本再解析 additive symbol。
+
+构建 Qt 薄壳（最低 Qt 6.8，本机可用 Qt 6.11.1）：
+
+```bash
+cmake -S apps/desktop -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/desktop --parallel 2
+QT_QPA_PLATFORM=offscreen ctest --test-dir build/desktop --output-on-failure
+```
+
+三个 GUI 基线的下载与验收必须使用仓库外目录；下载命令默认拒绝网络：
+
+```bash
+python tools/download_gui_assets.py list --cache-root /absolute/external/cache
+python tools/run_gui_baseline.py \
+  --compatforge-cli target/release/compatforge-cli \
+  --cache-root /absolute/external/cache \
+  --runtime-store /absolute/external/runtime-store \
+  --storage-root /absolute/external/storage \
+  --work-root /absolute/external/gui-evidence \
+  --allow-network
+```
+
+验收结果逐应用标记为 `accepted`、`failed` 或 `unverified`；截图和 RuntimeEvent 证据不会进入 Git，也不由默认 CI 生成。
 
 ## 设计入口
 

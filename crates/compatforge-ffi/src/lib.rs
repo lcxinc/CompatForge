@@ -7,6 +7,7 @@ use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest};
 use compatforge_inspect::inspect_path;
 use compatforge_orchestrator::{PolicyEngine, PreparedLaunch};
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
+use compatforge_provider_macos::{create_local_context, MacOsLocalContextRequest};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -36,6 +37,7 @@ pub enum CfStatus {
     ProbeFailed = 10,
     InspectionFailed = 11,
     PreparationFailed = 12,
+    BootstrapFailed = 13,
     Panic = 255,
 }
 
@@ -205,6 +207,61 @@ pub unsafe extern "C" fn cf_context_create(config_json: *const c_char, out_conte
 
         let context = Box::into_raw(Box::new(CfContext { config }));
         unsafe { ptr::write(out_context, context) };
+        Ok(())
+    })
+}
+
+/// Discover and verify a local macOS Wine Runtime, register a preview Pack,
+/// and create the opaque Core context in one Rust-owned operation. The public
+/// receipt deliberately contains no user paths.
+///
+/// # Safety
+///
+/// `request_json` must be a UTF-8 NUL-terminated JSON request. Both output
+/// pointers must be valid for one write and are cleared before validation.
+/// The returned context is released with [`cf_context_release`] and the
+/// receipt with [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_macos_local_context_create(
+    request_json: *const c_char,
+    out_context: *mut *mut CfContext,
+    out_receipt_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_context.is_null() || out_receipt_json.is_null() {
+            return Err(FfiFailure::new(
+                CfStatus::NullPointer,
+                "out_context or out_receipt_json is null",
+            ));
+        }
+        unsafe {
+            ptr::write(out_context, ptr::null_mut());
+            ptr::write(out_receipt_json, ptr::null_mut());
+        }
+        let request_text = unsafe { read_utf8(request_json, "request_json") }?;
+        let request: MacOsLocalContextRequest = serde_json::from_str(&request_text).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::InvalidJson,
+                format!("invalid bootstrap request JSON: {error}"),
+            )
+        })?;
+        let host = HostProbe::probe().map_err(|error| {
+            FfiFailure::new(
+                CfStatus::BootstrapFailed,
+                format!("host probe failed during bootstrap: {error}"),
+            )
+        })?;
+        let local = create_local_context(&host, &request)
+            .map_err(|error| FfiFailure::new(CfStatus::BootstrapFailed, error.to_string()))?;
+        let receipt = serde_json::to_string_pretty(&local.receipt).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::BootstrapFailed,
+                format!("bootstrap receipt serialization failed: {error}"),
+            )
+        })?;
+        let context = Box::new(CfContext { config: local.config });
+        unsafe { write_owned_string(receipt, out_receipt_json) }?;
+        unsafe { ptr::write(out_context, Box::into_raw(context)) };
         Ok(())
     })
 }
@@ -1065,6 +1122,7 @@ mod tests {
                 working_directory: root,
             },
             guest_artifact: None,
+            bottle_executable: None,
             mounts: Vec::new(),
             sandbox: compatforge_domain::SandboxPolicy {
                 profile: config.sandbox_profile,

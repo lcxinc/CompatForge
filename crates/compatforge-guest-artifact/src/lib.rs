@@ -2,9 +2,12 @@
 
 #![forbid(unsafe_code)]
 
-use compatforge_domain::{ContractError, CpuArchitecture, GuestArtifactBinding, SCHEMA_VERSION_V1};
+use compatforge_domain::{
+    BottleExecutableBinding, ContractError, CpuArchitecture, GuestArtifactBinding, SCHEMA_VERSION_V1,
+};
 use compatforge_inspect::{
-    inspect_bytes, InspectionError, PeArchitecture, PeImageKind, PeInspectionReport, PeSubsystem, MAX_PE_FILE_BYTES,
+    inspect_bytes, inspect_path, InspectionError, PeArchitecture, PeImageKind, PeInspectionReport, PeSubsystem,
+    MAX_PE_FILE_BYTES,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -18,6 +21,12 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedGuestArtifact {
     pub binding: GuestArtifactBinding,
+    pub inspection: PeInspectionReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedBottleExecutable {
+    pub binding: BottleExecutableBinding,
     pub inspection: PeInspectionReport,
 }
 
@@ -54,7 +63,7 @@ impl GuestArtifactStore {
             original_name,
             architecture,
             image_kind: "executable".into(),
-            subsystem: "windowsConsole".into(),
+            subsystem: subsystem_name(inspection.subsystem).into(),
             inspection_schema_version: SCHEMA_VERSION_V1.into(),
         };
         self.verify(&binding)?;
@@ -71,6 +80,56 @@ impl GuestArtifactStore {
             });
         }
         verify_binding_contents(binding)
+    }
+
+    /// Inspect and bind an executable in the Bottle's Wine `drive_c` tree
+    /// without copying it. The complete path is checked for symlinks and the
+    /// resulting digest/size is revalidated immediately before spawn.
+    pub fn prepare_bottle_in_place(
+        &self,
+        bottle_id: &str,
+        source: &Path,
+    ) -> Result<PreparedBottleExecutable, GuestArtifactError> {
+        let storage_root = self
+            .root
+            .parent()
+            .ok_or_else(|| GuestArtifactError::RelativeStorageRoot(self.root.clone()))?;
+        let bottle_root = storage_root
+            .join("bottles")
+            .join(bottle_id)
+            .join("prefix")
+            .join("drive_c");
+        validate_bottle_path(storage_root, &bottle_root, source)?;
+        let inspection = inspect_path(source).map_err(GuestArtifactError::Inspection)?;
+        validate_supported_inspection(&inspection)?;
+        let architecture = map_architecture(inspection.architecture)?;
+        let original_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty() && !matches!(*name, "." | ".."))
+            .ok_or_else(|| GuestArtifactError::InvalidFileName(source.to_owned()))?
+            .to_owned();
+        let binding = BottleExecutableBinding {
+            bottle_id: bottle_id.to_owned(),
+            digest: inspection.file_digest.clone(),
+            size_bytes: inspection.file_size_bytes,
+            path: source.to_string_lossy().into_owned(),
+            original_name,
+            architecture,
+            image_kind: "executable".into(),
+            subsystem: subsystem_name(inspection.subsystem).into(),
+            inspection_schema_version: SCHEMA_VERSION_V1.into(),
+        };
+        verify_bottle_binding_contents(storage_root, &binding)?;
+        Ok(PreparedBottleExecutable { binding, inspection })
+    }
+
+    pub fn verify_bottle(&self, binding: &BottleExecutableBinding) -> Result<(), GuestArtifactError> {
+        let storage_root = self
+            .root
+            .parent()
+            .ok_or_else(|| GuestArtifactError::RelativeStorageRoot(self.root.clone()))?;
+        verify_bottle_binding_contents(storage_root, binding)
     }
 
     fn object_path(&self, digest: &str) -> Result<PathBuf, GuestArtifactError> {
@@ -110,6 +169,140 @@ pub fn verify_binding_contents(binding: &GuestArtifactBinding) -> Result<(), Gue
             expected: binding.digest.clone(),
             actual,
         });
+    }
+    Ok(())
+}
+
+/// Re-hash an in-place Bottle executable immediately before a process is
+/// created. This intentionally does not claim to sandbox sibling resources.
+pub fn verify_bottle_binding_contents(
+    storage_root: &Path,
+    binding: &BottleExecutableBinding,
+) -> Result<(), GuestArtifactError> {
+    binding.validate().map_err(GuestArtifactError::InvalidBottleBinding)?;
+    let bottle_root = storage_root
+        .join("bottles")
+        .join(&binding.bottle_id)
+        .join("prefix")
+        .join("drive_c");
+    let path = Path::new(&binding.path);
+    validate_bottle_path(storage_root, &bottle_root, path)?;
+    verify_in_place_binding_contents(binding)
+}
+
+/// Re-hash an in-place binding without making assumptions about the storage
+/// root. Policy authorization is responsible for the Bottle boundary; this
+/// final check closes the symlink/race window immediately before spawn.
+pub fn verify_in_place_binding_contents(binding: &BottleExecutableBinding) -> Result<(), GuestArtifactError> {
+    binding.validate().map_err(GuestArtifactError::InvalidBottleBinding)?;
+    let path = Path::new(&binding.path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(GuestArtifactError::AmbiguousSource(path.to_owned()));
+    }
+    let components = path.components().collect::<Vec<_>>();
+    let drive_c_index = components
+        .windows(4)
+        .position(|window| {
+            window[0].as_os_str() == std::ffi::OsStr::new("bottles")
+                && window[2].as_os_str() == std::ffi::OsStr::new("prefix")
+                && window[3].as_os_str() == std::ffi::OsStr::new("drive_c")
+        })
+        .map(|index| index + 3)
+        .ok_or_else(|| GuestArtifactError::BottlePathOutsideRoot {
+            root: PathBuf::from("<bottle>/prefix/drive_c"),
+            actual: path.to_owned(),
+        })?;
+    let mut cursor = PathBuf::new();
+    for (index, component) in components.iter().enumerate() {
+        cursor.push(component.as_os_str());
+        if index < drive_c_index {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&cursor).map_err(|source| GuestArtifactError::Filesystem {
+            path: cursor.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(GuestArtifactError::SymbolicLink(cursor));
+        }
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|source| GuestArtifactError::Filesystem {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(GuestArtifactError::NotRegularFile(path.to_owned()));
+    }
+    if metadata.len() != binding.size_bytes {
+        return Err(GuestArtifactError::SizeMismatch {
+            expected: binding.size_bytes,
+            actual: metadata.len(),
+        });
+    }
+    let actual = digest_file(path)?;
+    if !actual.eq_ignore_ascii_case(&binding.digest) {
+        return Err(GuestArtifactError::DigestMismatch {
+            expected: binding.digest.clone(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn validate_bottle_path(storage_root: &Path, bottle_root: &Path, source: &Path) -> Result<(), GuestArtifactError> {
+    if !storage_root.is_absolute() || !source.is_absolute() {
+        return Err(GuestArtifactError::RelativeSource(source.to_owned()));
+    }
+    if source
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(GuestArtifactError::AmbiguousSource(source.to_owned()));
+    }
+    if !source.starts_with(bottle_root) || source == bottle_root {
+        return Err(GuestArtifactError::BottlePathOutsideRoot {
+            root: bottle_root.to_owned(),
+            actual: source.to_owned(),
+        });
+    }
+    let storage_metadata =
+        fs::symlink_metadata(storage_root).map_err(|source_error| GuestArtifactError::Filesystem {
+            path: storage_root.to_owned(),
+            source: source_error,
+        })?;
+    if storage_metadata.file_type().is_symlink() || !storage_metadata.is_dir() {
+        return Err(GuestArtifactError::SymbolicLink(storage_root.to_owned()));
+    }
+    let relative = source
+        .strip_prefix(storage_root)
+        .map_err(|_| GuestArtifactError::BottlePathOutsideRoot {
+            root: bottle_root.to_owned(),
+            actual: source.to_owned(),
+        })?;
+    let mut cursor = storage_root.to_owned();
+    for component in relative.components() {
+        cursor.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&cursor).map_err(|source_error| GuestArtifactError::Filesystem {
+            path: cursor.clone(),
+            source: source_error,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(GuestArtifactError::SymbolicLink(cursor));
+        }
+    }
+    let metadata = fs::symlink_metadata(source).map_err(|source_error| GuestArtifactError::Filesystem {
+        path: source.to_owned(),
+        source: source_error,
+    })?;
+    if !metadata.is_file() {
+        return Err(GuestArtifactError::NotRegularFile(source.to_owned()));
+    }
+    if metadata.len() > MAX_PE_FILE_BYTES {
+        return Err(GuestArtifactError::FileTooLarge(metadata.len()));
     }
     Ok(())
 }
@@ -162,10 +355,18 @@ fn validate_supported_inspection(report: &PeInspectionReport) -> Result<(), Gues
     if report.image_kind != PeImageKind::Executable {
         return Err(GuestArtifactError::UnsupportedImageKind(report.image_kind));
     }
-    if report.subsystem != PeSubsystem::WindowsConsole {
+    if !matches!(report.subsystem, PeSubsystem::WindowsConsole | PeSubsystem::WindowsGui) {
         return Err(GuestArtifactError::UnsupportedSubsystem(report.subsystem));
     }
     map_architecture(report.architecture).map(|_| ())
+}
+
+fn subsystem_name(subsystem: PeSubsystem) -> &'static str {
+    match subsystem {
+        PeSubsystem::WindowsConsole => "windowsConsole",
+        PeSubsystem::WindowsGui => "windowsGui",
+        _ => "unknown",
+    }
 }
 
 fn map_architecture(architecture: PeArchitecture) -> Result<CpuArchitecture, GuestArtifactError> {
@@ -286,6 +487,7 @@ pub enum GuestArtifactError {
     FileTooLarge(u64),
     InvalidDigest(String),
     InvalidBinding(ContractError),
+    InvalidBottleBinding(ContractError),
     Inspection(InspectionError),
     UnsupportedArchitecture(PeArchitecture),
     UnsupportedImageKind(PeImageKind),
@@ -294,6 +496,8 @@ pub enum GuestArtifactError {
     SizeMismatch { expected: u64, actual: u64 },
     DigestMismatch { expected: String, actual: String },
     ObjectCollision(String),
+    BottlePathOutsideRoot { root: PathBuf, actual: PathBuf },
+    SymbolicLink(PathBuf),
     Filesystem { path: PathBuf, source: io::Error },
 }
 
@@ -327,6 +531,7 @@ impl fmt::Display for GuestArtifactError {
             Self::FileTooLarge(size) => write!(formatter, "guest artifact exceeds the inspection limit: {size} bytes"),
             Self::InvalidDigest(digest) => write!(formatter, "invalid guest artifact digest: {digest}"),
             Self::InvalidBinding(error) => write!(formatter, "invalid guest artifact binding: {error}"),
+            Self::InvalidBottleBinding(error) => write!(formatter, "invalid Bottle executable binding: {error}"),
             Self::Inspection(error) => write!(formatter, "guest artifact inspection failed: {error}"),
             Self::UnsupportedArchitecture(value) => write!(formatter, "unsupported guest architecture: {value:?}"),
             Self::UnsupportedImageKind(value) => write!(formatter, "unsupported guest image kind: {value:?}"),
@@ -346,6 +551,17 @@ impl fmt::Display for GuestArtifactError {
                 "guest artifact digest mismatch: expected {expected}, got {actual}"
             ),
             Self::ObjectCollision(digest) => write!(formatter, "guest artifact object collision at {digest}"),
+            Self::BottlePathOutsideRoot { root, actual } => write!(
+                formatter,
+                "Bottle executable path {} is outside authorized drive_c root {}",
+                actual.display(),
+                root.display()
+            ),
+            Self::SymbolicLink(path) => write!(
+                formatter,
+                "Bottle executable path contains a symbolic link: {}",
+                path.display()
+            ),
             Self::Filesystem { path, source } => write!(
                 formatter,
                 "guest artifact filesystem error at {}: {source}",
@@ -358,7 +574,7 @@ impl fmt::Display for GuestArtifactError {
 impl std::error::Error for GuestArtifactError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InvalidBinding(error) => Some(error),
+            Self::InvalidBinding(error) | Self::InvalidBottleBinding(error) => Some(error),
             Self::Inspection(error) => Some(error),
             Self::Filesystem { source, .. } => Some(source),
             _ => None,
@@ -383,6 +599,14 @@ mod tests {
             .join("../../tests/fixtures/hello-x86_64.exe")
             .canonicalize()
             .unwrap()
+    }
+
+    fn gui_fixture_bytes() -> Vec<u8> {
+        let path = fixture();
+        let mut bytes = fs::read(path).unwrap();
+        // PE32+ optional header subsystem field: 0x98 + 68.
+        bytes[0xdc..0xde].copy_from_slice(&2_u16.to_le_bytes());
+        bytes
     }
 
     fn make_writable(path: &Path) {
@@ -427,6 +651,37 @@ mod tests {
         fs::write(&source, b"replaced after inspection").unwrap();
         store.verify(&prepared.binding).unwrap();
         make_writable(Path::new(&prepared.binding.stored_path));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn binds_gui_executable_in_place_and_rejects_tampering_or_escape() {
+        let root = temp_root("bottle-in-place");
+        let storage = root.join("storage");
+        let executable = storage.join("bottles/gui-test/prefix/drive_c/Program Files/Example/Example.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, gui_fixture_bytes()).unwrap();
+        let store = GuestArtifactStore::new(&storage);
+        let prepared = store.prepare_bottle_in_place("gui-test", &executable).unwrap();
+        assert_eq!(prepared.binding.subsystem, "windowsGui");
+        assert_eq!(prepared.binding.path, executable.to_string_lossy());
+        store.verify_bottle(&prepared.binding).unwrap();
+
+        fs::write(&executable, b"tampered").unwrap();
+        assert!(matches!(
+            store.verify_bottle(&prepared.binding),
+            Err(GuestArtifactError::SizeMismatch { .. }) | Err(GuestArtifactError::DigestMismatch { .. })
+        ));
+        let outside = root.join("outside.exe");
+        fs::write(&outside, gui_fixture_bytes()).unwrap();
+        let escaped = BottleExecutableBinding {
+            path: outside.to_string_lossy().into_owned(),
+            ..prepared.binding
+        };
+        assert!(matches!(
+            store.verify_bottle(&escaped),
+            Err(GuestArtifactError::BottlePathOutsideRoot { .. })
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

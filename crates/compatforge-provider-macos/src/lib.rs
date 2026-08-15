@@ -5,15 +5,16 @@
 use compatforge_domain::{
     validate_digest, validate_id, validate_portable_relative_path, validate_schema_version, CapabilityObservation,
     CapabilityReport, CapabilityValue, ContractError, CoreConfig, CpuArchitecture, HostOs, ProbeSource, ProbeStatus,
-    ProviderDescriptor, RuntimeBinding, SandboxProfile, SupervisorPolicy,
+    ProviderDescriptor, RuntimeBinding, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest,
+    SandboxProfile, SupervisorPolicy, SCHEMA_VERSION_V1,
 };
-use compatforge_runtime::RuntimePackStore;
+use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -21,6 +22,9 @@ use std::time::{Duration, Instant};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT_BYTES: u64 = 64 * 1024;
+const AUTO_PACK_ID: &str = "wine-macos-auto-preview";
+const AUTO_CAPABILITIES: &[&str] = &["guest-i386", "guest-x86_64", "new-wow64"];
+const AUTO_WINED3D_CAPABILITIES: &[&str] = &["d3d9", "d3d11", "opengl"];
 
 /// Configuration emitted by a trusted Runtime Pack materializer.
 ///
@@ -66,6 +70,86 @@ pub struct GraphicsPluginConfig {
     pub version: String,
     pub probe_file: VerifiedEntrypoint,
     pub capabilities: Vec<String>,
+}
+
+/// Minimal, path-bearing input accepted by the Rust bootstrap boundary. The
+/// optional override is all-or-nothing so callers cannot mix a discovered
+/// executable with an unverified root or version.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MacOsLocalContextRequest {
+    pub schema_version: String,
+    pub runtime_store_root: String,
+    pub storage_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub materialized_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wineserver: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl MacOsLocalContextRequest {
+    fn validate(&self) -> Result<(), MacOsBootstrapError> {
+        validate_schema_version(&self.schema_version).map_err(MacOsBootstrapError::Contract)?;
+        if !serialized_path_is_absolute(&self.runtime_store_root) {
+            return Err(MacOsBootstrapError::InvalidRequest("runtimeStoreRoot"));
+        }
+        if !serialized_path_is_absolute(&self.storage_root) {
+            return Err(MacOsBootstrapError::InvalidRequest("storageRoot"));
+        }
+        let supplied = [
+            self.materialized_root.is_some(),
+            self.wine.is_some(),
+            self.wineserver.is_some(),
+            self.version.is_some(),
+        ];
+        if supplied.iter().any(|value| *value) && !supplied.iter().all(|value| *value) {
+            return Err(MacOsBootstrapError::InvalidRequest("runtime override quartet"));
+        }
+        if let Some(root) = &self.materialized_root {
+            if !serialized_path_is_absolute(root) {
+                return Err(MacOsBootstrapError::InvalidRequest("materializedRoot"));
+            }
+            validate_portable_relative_path("wine", self.wine.as_deref().unwrap())
+                .map_err(MacOsBootstrapError::Contract)?;
+            validate_portable_relative_path("wineserver", self.wineserver.as_deref().unwrap())
+                .map_err(MacOsBootstrapError::Contract)?;
+            if self.version.as_deref().unwrap().is_empty() {
+                return Err(MacOsBootstrapError::InvalidRequest("version"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MacOsLocalContextReceipt {
+    pub schema_version: String,
+    pub source: String,
+    pub version: String,
+    pub architecture: CpuArchitecture,
+    pub pack_id: String,
+    pub pack_digest: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacOsLocalContext {
+    pub config: CoreConfig,
+    pub receipt: MacOsLocalContextReceipt,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredWine {
+    source: String,
+    materialized_root: PathBuf,
+    wine: String,
+    wineserver: String,
+    version: String,
 }
 
 impl MacOsProviderConfig {
@@ -135,6 +219,12 @@ impl MacOsProviderSnapshot {
         if !serialized_path_is_absolute(&storage_root) {
             return Err(MacOsProviderError::InvalidConfig("storageRoot"));
         }
+        let storage_root_path = Path::new(&storage_root);
+        fs::create_dir_all(storage_root_path).map_err(|_| MacOsProviderError::InvalidConfig("storageRoot"))?;
+        let storage_root = fs::canonicalize(storage_root_path)
+            .map_err(|_| MacOsProviderError::InvalidConfig("storageRoot"))?
+            .to_string_lossy()
+            .into_owned();
         let runtime_binding = self
             .runtime_binding
             .clone()
@@ -333,6 +423,324 @@ impl MacOsProviderSet {
             runtime_binding,
         })
     }
+}
+
+/// Discover a verified local x86_64 Wine from the closed candidate list and
+/// register it as a local preview Runtime Pack. No PATH lookup, shell, network,
+/// or recursive directory traversal is involved.
+pub fn create_local_context(
+    host_report: &CapabilityReport,
+    request: &MacOsLocalContextRequest,
+) -> Result<MacOsLocalContext, MacOsBootstrapError> {
+    create_local_context_with(host_report, request, &SystemProbeCommand)
+}
+
+pub fn create_local_context_with(
+    host_report: &CapabilityReport,
+    request: &MacOsLocalContextRequest,
+    command: &dyn ProbeCommand,
+) -> Result<MacOsLocalContext, MacOsBootstrapError> {
+    request.validate()?;
+    host_report.validate().map_err(MacOsBootstrapError::Contract)?;
+    if host_report.host.os != HostOs::MacOs || host_report.host.architecture != CpuArchitecture::Arm64 {
+        return Err(MacOsBootstrapError::UnsupportedHost);
+    }
+    let runtime_store_root = canonical_bootstrap_directory(&request.runtime_store_root, "runtimeStoreRoot")?;
+    let storage_root = canonical_bootstrap_directory(&request.storage_root, "storageRoot")?;
+    if runtime_store_root == storage_root
+        || runtime_store_root.starts_with(&storage_root)
+        || storage_root.starts_with(&runtime_store_root)
+    {
+        return Err(MacOsBootstrapError::InvalidRequest("runtime/storage root overlap"));
+    }
+    let discovered = if let (Some(materialized_root), Some(wine), Some(wineserver), Some(version)) = (
+        request.materialized_root.as_deref(),
+        request.wine.as_deref(),
+        request.wineserver.as_deref(),
+        request.version.as_deref(),
+    ) {
+        verify_discovered_candidate(
+            "explicit-override",
+            Path::new(materialized_root),
+            wine,
+            wineserver,
+            version,
+            command,
+        )?
+    } else {
+        discover_local_wine(host_report, command)?
+    };
+
+    let pack_digest = register_preview_pack(&runtime_store_root.to_string_lossy(), &discovered)?;
+    let provider_config = MacOsProviderConfig {
+        schema_version: SCHEMA_VERSION_V1.into(),
+        runtime_store_root: runtime_store_root.to_string_lossy().into_owned(),
+        wine_runtime: WineRuntimeConfig {
+            provider_id: AUTO_PACK_ID.into(),
+            pack_id: AUTO_PACK_ID.into(),
+            pack_digest: pack_digest.clone(),
+            version: discovered.version.clone(),
+            architecture: CpuArchitecture::X86_64,
+            materialized_root: discovered.materialized_root.to_string_lossy().into_owned(),
+            wine: VerifiedEntrypoint {
+                path: discovered.wine.clone(),
+                digest: sha256_file(&discovered.materialized_root.join(&discovered.wine))
+                    .map_err(|_| MacOsBootstrapError::RegistrationFailed("wine digest"))?,
+            },
+            wineserver: VerifiedEntrypoint {
+                path: discovered.wineserver.clone(),
+                digest: sha256_file(&discovered.materialized_root.join(&discovered.wineserver))
+                    .map_err(|_| MacOsBootstrapError::RegistrationFailed("wineserver digest"))?,
+            },
+            capabilities: AUTO_CAPABILITIES.iter().map(|value| (*value).into()).collect(),
+            wined3d_capabilities: AUTO_WINED3D_CAPABILITIES.iter().map(|value| (*value).into()).collect(),
+            d3dmetal: None,
+        },
+    };
+    let snapshot =
+        MacOsProviderSet::probe_with(host_report, &provider_config, command).map_err(MacOsBootstrapError::Provider)?;
+    let config = snapshot
+        .core_config(storage_root.to_string_lossy().into_owned())
+        .map_err(MacOsBootstrapError::Provider)?;
+    let mut capabilities = provider_config.wine_runtime.capabilities.clone();
+    capabilities.push("windows-gui".into());
+    capabilities.sort();
+    capabilities.dedup();
+    Ok(MacOsLocalContext {
+        config,
+        receipt: MacOsLocalContextReceipt {
+            schema_version: SCHEMA_VERSION_V1.into(),
+            source: discovered.source,
+            version: discovered.version,
+            architecture: CpuArchitecture::X86_64,
+            pack_id: AUTO_PACK_ID.into(),
+            pack_digest,
+            capabilities,
+        },
+    })
+}
+
+fn discover_local_wine(
+    host_report: &CapabilityReport,
+    command: &dyn ProbeCommand,
+) -> Result<DiscoveredWine, MacOsBootstrapError> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    let mut add = |source: &str, root: PathBuf, wine: &str, wineserver: &str| {
+        candidates.push((source.to_owned(), root, wine.to_owned(), wineserver.to_owned()));
+    };
+    add(
+        "crossover-app",
+        PathBuf::from("/Applications/CrossOver.app/Contents/SharedSupport/CrossOver"),
+        "bin/wine",
+        "bin/wineserver",
+    );
+    if let Some(home) = &home {
+        add(
+            "crossover-app",
+            home.join("Applications/CrossOver.app/Contents/SharedSupport/CrossOver"),
+            "bin/wine",
+            "bin/wineserver",
+        );
+    }
+    add(
+        "whisky-app",
+        PathBuf::from("/Applications/Whisky.app/Contents/Resources/Libraries/Wine"),
+        "bin/wine64",
+        "bin/wineserver",
+    );
+    add(
+        "whisky-app",
+        PathBuf::from("/Applications/Whisky.app/Contents/Resources/Wine"),
+        "bin/wine64",
+        "bin/wineserver",
+    );
+    if let Some(home) = &home {
+        add(
+            "whisky-app",
+            home.join("Applications/Whisky.app/Contents/Resources/Libraries/Wine"),
+            "bin/wine64",
+            "bin/wineserver",
+        );
+        add(
+            "whisky-app",
+            home.join("Applications/Whisky.app/Contents/Resources/Wine"),
+            "bin/wine64",
+            "bin/wineserver",
+        );
+        add(
+            "whisky-library",
+            home.join("Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine"),
+            "bin/wine64",
+            "bin/wineserver",
+        );
+        add(
+            "whisky-library",
+            home.join("Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine"),
+            "bin/wine",
+            "bin/wineserver",
+        );
+    }
+    let development_refs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../Mac-Win/refs");
+    for build in [
+        "Whisky-wow64-game-build",
+        "Whisky-x86_64-build",
+        "Whisky-x86_64-game-build",
+    ] {
+        add(
+            "mac-win-development-build",
+            development_refs.join(build),
+            "loader/wine",
+            "server/wineserver",
+        );
+    }
+
+    for (source, root, wine, wineserver) in candidates {
+        if let Ok(discovered) = verify_discovered_candidate(&source, &root, &wine, &wineserver, "", command) {
+            return Ok(discovered);
+        }
+    }
+    let _ = host_report;
+    Err(MacOsBootstrapError::DiscoveryFailed)
+}
+
+fn verify_discovered_candidate(
+    source: &str,
+    root: &Path,
+    wine_relative: &str,
+    wineserver_relative: &str,
+    requested_version: &str,
+    command: &dyn ProbeCommand,
+) -> Result<DiscoveredWine, MacOsBootstrapError> {
+    let root = fs::canonicalize(root).map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    if !root.is_dir() {
+        return Err(MacOsBootstrapError::CandidateRejected);
+    }
+    validate_portable_relative_path("wine", wine_relative).map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    validate_portable_relative_path("wineserver", wineserver_relative)
+        .map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    let wine_path = root.join(wine_relative);
+    let wineserver_path = root.join(wineserver_relative);
+    let wine_path = verify_entrypoint(
+        &root,
+        &VerifiedEntrypoint {
+            path: wine_relative.into(),
+            digest: sha256_file(&wine_path).map_err(|_| MacOsBootstrapError::CandidateRejected)?,
+        },
+        CpuArchitecture::X86_64,
+        true,
+    )
+    .map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    let wineserver_path = verify_entrypoint(
+        &root,
+        &VerifiedEntrypoint {
+            path: wineserver_relative.into(),
+            digest: sha256_file(&wineserver_path).map_err(|_| MacOsBootstrapError::CandidateRejected)?,
+        },
+        CpuArchitecture::X86_64,
+        true,
+    )
+    .map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    let version_output = command
+        .run(&wine_path, &["--version"], &root, PROBE_TIMEOUT)
+        .map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    let line = version_output.stdout.trim().lines().next().unwrap_or_default();
+    if !version_output.success || !line.starts_with("wine-") {
+        return Err(MacOsBootstrapError::CandidateRejected);
+    }
+    let version = line.trim_start_matches("wine-").trim();
+    if version.is_empty() || (!requested_version.is_empty() && version != requested_version) {
+        return Err(MacOsBootstrapError::CandidateRejected);
+    }
+    let wineserver_output = command
+        .run(&wineserver_path, &["--version"], &root, PROBE_TIMEOUT)
+        .map_err(|_| MacOsBootstrapError::CandidateRejected)?;
+    if !wineserver_output.success {
+        return Err(MacOsBootstrapError::CandidateRejected);
+    }
+    Ok(DiscoveredWine {
+        source: source.into(),
+        materialized_root: root,
+        wine: wine_relative.into(),
+        wineserver: wineserver_relative.into(),
+        version: version.into(),
+    })
+}
+
+fn register_preview_pack(runtime_store_root: &str, discovered: &DiscoveredWine) -> Result<String, MacOsBootstrapError> {
+    let wine_path = discovered.materialized_root.join(&discovered.wine);
+    let wineserver_path = discovered.materialized_root.join(&discovered.wineserver);
+    let wine_digest = sha256_file(&wine_path).map_err(|_| MacOsBootstrapError::RegistrationFailed("wine digest"))?;
+    let wineserver_digest =
+        sha256_file(&wineserver_path).map_err(|_| MacOsBootstrapError::RegistrationFailed("wineserver digest"))?;
+    let mut manifest = RuntimePackManifest {
+        schema_version: SCHEMA_VERSION_V1.into(),
+        id: AUTO_PACK_ID.into(),
+        version: discovered.version.clone(),
+        channel: Some(RuntimeChannel::Preview),
+        host: RuntimeHost {
+            os: HostOs::MacOs,
+            architecture: CpuArchitecture::X86_64,
+            minimum_version: None,
+        },
+        components: vec![
+            RuntimeComponent {
+                name: "wine-entrypoint".into(),
+                version: discovered.version.clone(),
+                license: "LGPL-2.1-or-later".into(),
+                source: None,
+                artifact: Some("components/wine-entrypoint.bin".into()),
+                digest: wine_digest,
+                entrypoints: [("wine".into(), discovered.wine.clone())].into_iter().collect(),
+            },
+            RuntimeComponent {
+                name: "wineserver-entrypoint".into(),
+                version: discovered.version.clone(),
+                license: "LGPL-2.1-or-later".into(),
+                source: None,
+                artifact: Some("components/wineserver-entrypoint.bin".into()),
+                digest: wineserver_digest,
+                entrypoints: [("wineserver".into(), discovered.wineserver.clone())]
+                    .into_iter()
+                    .collect(),
+            },
+        ],
+        capabilities: AUTO_CAPABILITIES.iter().map(|value| (*value).into()).collect(),
+        digest: String::new(),
+        signature: None,
+        sbom: None,
+    };
+    manifest.digest = sha256_digest_bytes(
+        &manifest
+            .canonical_unsigned_bytes()
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("manifest"))?,
+    );
+    let pack_digest = manifest.digest.clone();
+    let temporary = std::env::temp_dir().join(format!("compatforge-bootstrap-{}", std::process::id()));
+    if temporary.exists() {
+        fs::remove_dir_all(&temporary).map_err(|_| MacOsBootstrapError::RegistrationFailed("temporary bundle"))?;
+    }
+    fs::create_dir_all(temporary.join("components"))
+        .map_err(|_| MacOsBootstrapError::RegistrationFailed("temporary bundle"))?;
+    let result = (|| {
+        fs::copy(&wine_path, temporary.join("components/wine-entrypoint.bin"))
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("wine copy"))?;
+        fs::copy(&wineserver_path, temporary.join("components/wineserver-entrypoint.bin"))
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("wineserver copy"))?;
+        let manifest_bytes =
+            serde_json::to_vec_pretty(&manifest).map_err(|_| MacOsBootstrapError::RegistrationFailed("manifest"))?;
+        let mut file = File::create(temporary.join("manifest.json"))
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("manifest"))?;
+        file.write_all(&manifest_bytes)
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("manifest"))?;
+        RuntimePackStore::new(runtime_store_root)
+            .install(&temporary, &manifest, &RejectAllSignatures)
+            .map_err(|_| MacOsBootstrapError::RegistrationFailed("Runtime Pack install"))?;
+        Ok::<(), MacOsBootstrapError>(())
+    })();
+    let _ = fs::remove_dir_all(&temporary);
+    result.map(|()| pack_digest)
 }
 
 fn rosetta_unavailable_reason(
@@ -719,12 +1127,58 @@ fn serialized_path_is_absolute(path: &str) -> bool {
         || path.starts_with("\\\\")
 }
 
+fn canonical_bootstrap_directory(value: &str, field: &'static str) -> Result<PathBuf, MacOsBootstrapError> {
+    let path = Path::new(value);
+    fs::create_dir_all(path).map_err(|_| MacOsBootstrapError::InvalidRequest(field))?;
+    let canonical = fs::canonicalize(path).map_err(|_| MacOsBootstrapError::InvalidRequest(field))?;
+    if canonical.is_dir() {
+        Ok(canonical)
+    } else {
+        Err(MacOsBootstrapError::InvalidRequest(field))
+    }
+}
+
 #[derive(Debug)]
 pub enum MacOsProviderError {
     Contract(ContractError),
     InvalidConfig(&'static str),
     UnsupportedHost,
     ProviderUnavailable,
+}
+
+#[derive(Debug)]
+pub enum MacOsBootstrapError {
+    Contract(ContractError),
+    InvalidRequest(&'static str),
+    UnsupportedHost,
+    DiscoveryFailed,
+    CandidateRejected,
+    RegistrationFailed(&'static str),
+    Provider(MacOsProviderError),
+}
+
+impl fmt::Display for MacOsBootstrapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contract(error) => write!(formatter, "invalid macOS bootstrap contract: {error}"),
+            Self::InvalidRequest(field) => write!(formatter, "invalid macOS bootstrap request: {field}"),
+            Self::UnsupportedHost => formatter.write_str("automatic macOS bootstrap requires Darwin/arm64"),
+            Self::DiscoveryFailed => formatter.write_str("no executable-verified x86_64 Wine candidate was found"),
+            Self::CandidateRejected => formatter.write_str("Wine candidate failed bounded verification"),
+            Self::RegistrationFailed(field) => write!(formatter, "local Runtime Pack registration failed: {field}"),
+            Self::Provider(error) => write!(formatter, "macOS Provider bootstrap failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MacOsBootstrapError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Contract(error) => Some(error),
+            Self::Provider(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for MacOsProviderError {
@@ -999,6 +1453,7 @@ mod tests {
             executable: ExecutableRequest {
                 path: "C:\\compatforge-smoke.exe".into(),
                 architecture: CpuArchitecture::X86_64,
+                mode: compatforge_domain::ExecutableMode::ImmutableArtifact,
                 sha256: None,
             },
             arguments: Vec::new(),
@@ -1017,6 +1472,63 @@ mod tests {
         assert_eq!(plan.process.executable, core.runtime_bindings[0].executable);
         PolicyEngine::authorize(&core, &plan).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_bootstrap_registers_idempotent_preview_pack_without_paths_in_receipt() {
+        let (root, _config, host) = installed_fixture(CpuArchitecture::Arm64, CpuArchitecture::X86_64, false);
+        let command = SuccessfulCommand {
+            calls: AtomicUsize::new(0),
+        };
+        let request = MacOsLocalContextRequest {
+            schema_version: SCHEMA_VERSION_V1.into(),
+            runtime_store_root: root.join("auto-store").to_string_lossy().into_owned(),
+            storage_root: root.join("auto-storage").to_string_lossy().into_owned(),
+            materialized_root: Some(root.join("materialized").to_string_lossy().into_owned()),
+            wine: Some("bin/wine".into()),
+            wineserver: Some("bin/wineserver".into()),
+            version: Some("11.0".into()),
+        };
+        let first = create_local_context_with(&host, &request, &command).unwrap();
+        let second = create_local_context_with(&host, &request, &command).unwrap();
+        assert_eq!(first.receipt.pack_digest, second.receipt.pack_digest);
+        assert_eq!(first.receipt.source, "explicit-override");
+        let receipt_json = serde_json::to_string(&first.receipt).unwrap();
+        assert!(!receipt_json.contains(root.to_string_lossy().as_ref()));
+        assert_eq!(first.config.runtime_bindings.len(), 1);
+        let materialized = root.join("materialized").canonicalize().unwrap();
+        assert!(first.config.runtime_bindings[0]
+            .executable
+            .starts_with(materialized.to_string_lossy().as_ref()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_bootstrap_requires_a_complete_override_quartet() {
+        let runtime_store_root = if cfg!(windows) {
+            r"C:\\tmp\\runtime-store"
+        } else {
+            "/tmp/runtime-store"
+        };
+        let storage_root = if cfg!(windows) {
+            r"C:\\tmp\\storage"
+        } else {
+            "/tmp/storage"
+        };
+        let materialized_root = if cfg!(windows) { r"C:\\tmp\\root" } else { "/tmp/root" };
+        let request = MacOsLocalContextRequest {
+            schema_version: SCHEMA_VERSION_V1.into(),
+            runtime_store_root: runtime_store_root.into(),
+            storage_root: storage_root.into(),
+            materialized_root: Some(materialized_root.into()),
+            wine: None,
+            wineserver: None,
+            version: None,
+        };
+        assert!(matches!(
+            request.validate(),
+            Err(MacOsBootstrapError::InvalidRequest("runtime override quartet"))
+        ));
     }
 
     #[test]
