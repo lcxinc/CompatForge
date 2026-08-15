@@ -116,10 +116,14 @@ pub(crate) fn bind_directory(path: &Path) -> io::Result<(HeldFile, FileIdentity)
 }
 
 #[cfg(windows)]
-pub(crate) fn bind_regular_at(_parent: &HeldFile, _name: &OsStr, path: &Path) -> io::Result<(HeldFile, FileIdentity)> {
+pub(crate) fn bind_regular_at(
+    _parent: &HeldFile,
+    _name: &OsStr,
+    path: &Path,
+) -> io::Result<(HeldFile, FileIdentity, u64)> {
     let file = open_regular_no_follow(path)?;
     let identity = file_identity(&file)?;
-    Ok((file, identity))
+    Ok((file, identity, identity.len))
 }
 
 #[cfg(windows)]
@@ -141,10 +145,14 @@ pub(crate) fn bind_link_at(
 }
 
 #[cfg(unix)]
-pub(crate) fn bind_regular_at(parent: &HeldFile, name: &OsStr, _path: &Path) -> io::Result<(HeldFile, FileIdentity)> {
+pub(crate) fn bind_regular_at(
+    parent: &HeldFile,
+    name: &OsStr,
+    _path: &Path,
+) -> io::Result<(HeldFile, FileIdentity, u64)> {
     let file = openat_no_follow(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
     let identity = file_identity(&file)?;
-    Ok((file, identity))
+    Ok((file, identity, identity.len))
 }
 
 #[cfg(unix)]
@@ -273,6 +281,100 @@ pub(crate) fn verify_regular(file: &HeldFile, expected: FileIdentity) -> io::Res
     }
 }
 
+pub(crate) fn regular_identity(file: &HeldFile) -> io::Result<FileIdentity> {
+    file_identity(file)
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_regular_name_at(
+    parent: &HeldFile,
+    name: &OsStr,
+    path: &Path,
+    expected: FileIdentity,
+) -> io::Result<()> {
+    let (file, actual, _) = bind_regular_at(parent, name, path)?;
+    verify_regular(&file, expected)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "regular path identity changed",
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_regular_name_at(
+    _parent: &HeldFile,
+    _name: &OsStr,
+    path: &Path,
+    expected: FileIdentity,
+) -> io::Result<()> {
+    let file = open_regular_identity_probe(path)?;
+    verify_regular(&file, expected)
+}
+
+#[cfg(unix)]
+pub(crate) fn bind_regular_for_removal_at(
+    parent: &HeldFile,
+    name: &OsStr,
+    path: &Path,
+) -> io::Result<(HeldFile, FileIdentity, u64)> {
+    bind_regular_at(parent, name, path)
+}
+
+#[cfg(windows)]
+pub(crate) fn bind_regular_for_removal_at(
+    _parent: &HeldFile,
+    _name: &OsStr,
+    path: &Path,
+) -> io::Result<(HeldFile, FileIdentity, u64)> {
+    let file = open_regular_for_removal(path)?;
+    let identity = file_identity(&file)?;
+    Ok((file, identity, identity.len))
+}
+
+#[cfg(unix)]
+pub(crate) fn remove_regular_if_identity_at(
+    parent: &HeldFile,
+    name: &OsStr,
+    path: &Path,
+    owned: &HeldFile,
+    expected: FileIdentity,
+) -> io::Result<bool> {
+    verify_regular(owned, expected)?;
+    match verify_regular_name_at(parent, name, &path.join(name), expected) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::InvalidData => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    }
+    remove_file_at(parent, name, path)?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_regular_if_identity_at(
+    parent: &HeldFile,
+    name: &OsStr,
+    path: &Path,
+    owned: &HeldFile,
+    expected: FileIdentity,
+) -> io::Result<bool> {
+    verify_regular(owned, expected)?;
+    match verify_regular_name_at(parent, name, &path.join(name), expected) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::InvalidData => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    }
+    mark_file_for_deletion(owned)?;
+    Ok(true)
+}
+
 pub(crate) fn verify_directory(file: &HeldFile, expected: FileIdentity) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_dir() || metadata_is_link_or_reparse(&metadata) {
@@ -345,8 +447,17 @@ pub(crate) fn create_regular_at(parent: &HeldFile, name: &OsStr, _path: &Path) -
 
 #[cfg(windows)]
 pub(crate) fn create_regular_at(_parent: &HeldFile, _name: &OsStr, path: &Path) -> io::Result<HeldFile> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const DELETE: u32 = 0x0001_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
     OpenOptions::new()
+        .read(true)
         .write(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+        .share_mode(FILE_SHARE_READ)
         .create_new(true)
         .open(path)
         .map(HeldFile::new)
@@ -397,11 +508,6 @@ pub(crate) fn remove_file_at(directory: &HeldFile, name: &OsStr, _path: &Path) -
     } else {
         Err(io::Error::last_os_error())
     }
-}
-
-#[cfg(windows)]
-pub(crate) fn remove_file_at(_directory: &HeldFile, name: &OsStr, path: &Path) -> io::Result<()> {
-    std::fs::remove_file(path.join(name))
 }
 
 #[cfg(unix)]
@@ -512,6 +618,86 @@ fn open_regular_no_follow(path: &Path) -> io::Result<HeldFile> {
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map(HeldFile::new)
+}
+
+#[cfg(windows)]
+fn open_regular_identity_probe(path: &Path) -> io::Result<HeldFile> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map(HeldFile::new)
+}
+
+#[cfg(windows)]
+fn open_regular_for_removal(path: &Path) -> io::Result<HeldFile> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    const DELETE: u32 = 0x0001_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .access_mode(GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map(HeldFile::new)
+}
+
+#[cfg(windows)]
+fn mark_file_for_deletion(file: &HeldFile) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+
+    #[repr(C)]
+    struct FileDispositionInformationEx {
+        flags: u32,
+    }
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        #[link_name = "SetFileInformationByHandle"]
+        fn set_file_information_by_handle(
+            file: *mut core::ffi::c_void,
+            information_class: i32,
+            information: *const core::ffi::c_void,
+            information_size: u32,
+        ) -> i32;
+    }
+
+    const FILE_DISPOSITION_INFO_EX: i32 = 21;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x0000_0001;
+    const FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: u32 = 0x0000_0002;
+    const FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE: u32 = 0x0000_0010;
+    let information = FileDispositionInformationEx {
+        flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: `file` owns a live handle opened with DELETE access and the
+    // disposition structure is valid for the duration of the call.
+    let succeeded = unsafe {
+        set_file_information_by_handle(
+            file.as_raw_handle().cast(),
+            FILE_DISPOSITION_INFO_EX,
+            std::ptr::addr_of!(information).cast(),
+            u32::try_from(std::mem::size_of::<FileDispositionInformationEx>())
+                .expect("the disposition structure size fits u32"),
+        )
+    };
+    if succeeded == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]

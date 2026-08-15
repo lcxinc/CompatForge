@@ -33,6 +33,8 @@ thread_local! {
     static SNAPSHOT_COMPARISON_BYTES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static SNAPSHOT_STAGE_HOOK: std::cell::RefCell<Option<SnapshotTestHook>> = const { std::cell::RefCell::new(None) };
     static SNAPSHOT_MANIFEST_LIMIT_OVERRIDE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static SOURCE_FILE_LIMIT_OVERRIDE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static SOURCE_PREFLIGHT_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -45,6 +47,7 @@ struct SnapshotTestHook {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SnapshotTestStage {
     AfterRootBind,
+    AfterSourceLeafMetadata,
     AfterSourcePreflight,
     AfterStoreObjectsMaterialized,
     AfterFileCopy,
@@ -55,6 +58,7 @@ enum SnapshotTestStage {
     BeforeObjectPublish,
     BeforeSnapshotPublish,
     AfterSnapshotPublish,
+    BeforeSnapshotRollbackRemove,
     BeforeSnapshotReturn,
 }
 
@@ -129,6 +133,7 @@ struct OwnedTemporaryPath {
     path: PathBuf,
     name: Option<std::ffi::OsString>,
     directory: Option<HeldFile>,
+    handle: Option<HeldFile>,
     owned: bool,
 }
 
@@ -137,6 +142,7 @@ struct SnapshotPublication {
     target_name: std::ffi::OsString,
     created: bool,
     identity: Option<FileIdentity>,
+    handle: Option<HeldFile>,
 }
 
 impl OwnedTemporaryPath {
@@ -146,6 +152,7 @@ impl OwnedTemporaryPath {
             path: path.into(),
             name: None,
             directory: None,
+            handle: None,
             owned: false,
         }
     }
@@ -159,6 +166,7 @@ impl OwnedTemporaryPath {
             path,
             name: Some(name),
             directory: Some(directory.handle.try_clone()?),
+            handle: None,
             owned: false,
         })
     }
@@ -169,35 +177,76 @@ impl OwnedTemporaryPath {
             (Some(directory), Some(name)) => platform::create_regular_at(directory, name, &self.path)?,
             _ => HeldFile::new(OpenOptions::new().write(true).create_new(true).open(&self.path)?),
         };
+        self.handle = Some(file.try_clone()?);
         self.owned = true;
         Ok(file)
     }
 
+    fn identity(&self) -> io::Result<FileIdentity> {
+        platform::regular_identity(
+            self.handle
+                .as_ref()
+                .ok_or_else(|| io::Error::other("temporary file has no held handle"))?,
+        )
+    }
+
+    fn verify_path(&self, expected: FileIdentity) -> io::Result<()> {
+        let handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| io::Error::other("temporary file has no held handle"))?;
+        platform::verify_regular(handle, expected)?;
+        match (&self.directory, &self.name) {
+            (Some(directory), Some(name)) => platform::verify_regular_name_at(directory, name, &self.path, expected),
+            _ => Ok(()),
+        }
+    }
+
+    fn try_clone_handle(&self) -> io::Result<HeldFile> {
+        let mut handle = self
+            .handle
+            .as_ref()
+            .ok_or_else(|| io::Error::other("temporary file has no held handle"))?
+            .try_clone()?;
+        handle.rewind()?;
+        Ok(handle)
+    }
+
     fn remove(&mut self) -> io::Result<()> {
         debug_assert!(self.owned);
-        match (&self.directory, &self.name) {
-            (Some(directory), Some(name)) => platform::remove_file_at(directory, name, &self.path.with_file_name(""))?,
-            _ => fs::remove_file(&self.path)?,
+        let expected = self.identity()?;
+        let removed = match (&self.directory, &self.name, &self.handle) {
+            (Some(directory), Some(name), Some(handle)) => platform::remove_regular_if_identity_at(
+                directory,
+                name,
+                &self.path.with_file_name(""),
+                handle,
+                expected,
+            )?,
+            _ => {
+                fs::remove_file(&self.path)?;
+                true
+            }
+        };
+        if !removed {
+            return Err(io::Error::other("temporary path is no longer owned"));
         }
         self.owned = false;
+        drop(self.handle.take());
         Ok(())
     }
 
     #[cfg(test)]
     fn disarm(&mut self) {
         self.owned = false;
+        drop(self.handle.take());
     }
 }
 
 impl Drop for OwnedTemporaryPath {
     fn drop(&mut self) {
         if self.owned {
-            let _ = match (&self.directory, &self.name) {
-                (Some(directory), Some(name)) => {
-                    platform::remove_file_at(directory, name, &self.path.with_file_name(""))
-                }
-                _ => fs::remove_file(&self.path),
-            };
+            let _ = self.remove();
         }
     }
 }
@@ -241,7 +290,7 @@ impl BoundDirectory {
         }
     }
 
-    fn bind_regular(&self, name: &std::ffi::OsStr) -> io::Result<(HeldFile, FileIdentity)> {
+    fn bind_regular(&self, name: &std::ffi::OsStr) -> io::Result<(HeldFile, FileIdentity, u64)> {
         self.verify()?;
         platform::bind_regular_at(&self.handle, name, &self.path.join(name))
     }
@@ -249,11 +298,6 @@ impl BoundDirectory {
     fn hard_link(&self, source: &std::ffi::OsStr, target: &std::ffi::OsStr) -> io::Result<()> {
         self.verify()?;
         platform::hard_link_at(&self.handle, source, target, &self.path)
-    }
-
-    fn remove_file(&self, name: &std::ffi::OsStr) -> io::Result<()> {
-        self.verify()?;
-        platform::remove_file_at(&self.handle, name, &self.path)
     }
 
     fn sync(&self) -> Result<(), BottleMigrationError> {
@@ -767,7 +811,7 @@ impl BottleStore {
     ) -> Result<BottleSnapshot, BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
         let name = std::ffi::OsString::from(format!("{digest_hex}.json"));
-        let (mut file, identity) = snapshot_directory.bind_regular(&name).map_err(|_| snapshot_corrupt())?;
+        let (mut file, identity, _) = snapshot_directory.bind_regular(&name).map_err(|_| snapshot_corrupt())?;
         if file.metadata().map_err(|_| snapshot_corrupt())?.len()
             > u64::try_from(MAX_SNAPSHOT_MANIFEST_BYTES).expect("manifest bound fits u64")
         {
@@ -818,10 +862,21 @@ impl BottleStore {
             platform::verify_regular(&source.file, source.identity).map_err(|_| source_changed())?;
             output.sync_all().map_err(|_| transaction_failed())?;
             drop(output);
+            let owned_identity = temporary.identity().map_err(|_| transaction_failed())?;
+            temporary
+                .verify_path(owned_identity)
+                .map_err(|_| transaction_failed())?;
+            self.verify_object_handle(
+                temporary.try_clone_handle().map_err(|_| transaction_failed())?,
+                owned_identity,
+                &digest,
+                copied,
+            )
+            .map_err(|_| transaction_failed())?;
             let digest_hex = digest_hex(&digest).ok_or_else(transaction_failed)?;
             let target_name = std::ffi::OsStr::new(digest_hex);
             match object_directory.bind_regular(target_name) {
-                Ok((file, identity)) => {
+                Ok((file, identity, _)) => {
                     self.verify_object_handle(file, identity, &digest, copied)?;
                     temporary.remove().map_err(|_| transaction_failed())?;
                     return Ok(digest);
@@ -830,6 +885,16 @@ impl BottleStore {
                 Err(_) => return Err(snapshot_corrupt()),
             }
             run_snapshot_test_hook(SnapshotTestStage::BeforeObjectPublish, &source.relative_path);
+            temporary
+                .verify_path(owned_identity)
+                .map_err(|_| transaction_failed())?;
+            self.verify_object_handle(
+                temporary.try_clone_handle().map_err(|_| transaction_failed())?,
+                owned_identity,
+                &digest,
+                copied,
+            )
+            .map_err(|_| transaction_failed())?;
             let temporary_name = temporary.name.as_deref().ok_or_else(transaction_failed)?;
             match object_directory.hard_link(temporary_name, target_name) {
                 Ok(()) => {}
@@ -840,6 +905,16 @@ impl BottleStore {
                 }
                 Err(_) => return Err(transaction_failed()),
             }
+            temporary
+                .verify_path(owned_identity)
+                .map_err(|_| transaction_failed())?;
+            platform::verify_regular_name_at(
+                &object_directory.handle,
+                target_name,
+                &object_directory.path.join(target_name),
+                owned_identity,
+            )
+            .map_err(|_| transaction_failed())?;
             temporary.remove().map_err(|_| transaction_failed())?;
             object_directory.sync()?;
             self.verify_object_at(object_directory, &digest, copied)?;
@@ -854,7 +929,7 @@ impl BottleStore {
         size: u64,
     ) -> Result<(), BottleMigrationError> {
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
-        let (file, identity) = directory
+        let (file, identity, _) = directory
             .bind_regular(std::ffi::OsStr::new(digest_hex))
             .map_err(|_| snapshot_corrupt())?;
         self.verify_object_handle(file, identity, digest, size)
@@ -886,12 +961,13 @@ impl BottleStore {
         let digest_hex = digest_hex(digest).ok_or_else(transaction_failed)?;
         let target_name = std::ffi::OsString::from(format!("{digest_hex}.json"));
         match directory.bind_regular(&target_name) {
-            Ok((file, identity)) => {
+            Ok((file, identity, _)) => {
                 compare_existing_snapshot_model_handle(file, identity, snapshot)?;
                 return Ok(SnapshotPublication {
                     target_name,
                     created: false,
                     identity: None,
+                    handle: None,
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -906,33 +982,70 @@ impl BottleStore {
             file.write_all(b"\n").map_err(|_| transaction_failed())?;
             file.sync_all().map_err(|_| transaction_failed())?;
             drop(file);
-            let temporary_name = temporary.name.as_deref().ok_or_else(transaction_failed)?;
-            let (owned_handle, owned_identity) = directory
-                .bind_regular(temporary_name)
+            let owned_identity = temporary.identity().map_err(|_| transaction_failed())?;
+            temporary
+                .verify_path(owned_identity)
                 .map_err(|_| transaction_failed())?;
+            compare_existing_snapshot_model_handle(
+                temporary.try_clone_handle().map_err(|_| transaction_failed())?,
+                owned_identity,
+                snapshot,
+            )
+            .map_err(|_| transaction_failed())?;
+            let temporary_name = temporary.name.as_deref().ok_or_else(transaction_failed)?;
             run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotPublish, "");
+            temporary
+                .verify_path(owned_identity)
+                .map_err(|_| transaction_failed())?;
+            compare_existing_snapshot_model_handle(
+                temporary.try_clone_handle().map_err(|_| transaction_failed())?,
+                owned_identity,
+                snapshot,
+            )
+            .map_err(|_| transaction_failed())?;
             match directory.hard_link(temporary_name, &target_name) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    let (file, identity) = directory.bind_regular(&target_name).map_err(|_| snapshot_corrupt())?;
+                    let (file, identity, _) = directory.bind_regular(&target_name).map_err(|_| snapshot_corrupt())?;
                     compare_existing_snapshot_model_handle(file, identity, snapshot)?;
-                    drop(owned_handle);
                     temporary.remove().map_err(|_| transaction_failed())?;
                     return Ok(SnapshotPublication {
                         target_name,
                         created: false,
                         identity: None,
+                        handle: None,
                     });
                 }
                 Err(_) => return Err(transaction_failed()),
             }
-            drop(owned_handle);
+            temporary
+                .verify_path(owned_identity)
+                .map_err(|_| transaction_failed())?;
+            platform::verify_regular_name_at(
+                &directory.handle,
+                &target_name,
+                &directory.path.join(&target_name),
+                owned_identity,
+            )
+            .map_err(|_| transaction_failed())?;
             temporary.remove().map_err(|_| transaction_failed())?;
             directory.sync()?;
+            let (target_handle, target_identity, _) =
+                directory.bind_regular(&target_name).map_err(|_| transaction_failed())?;
+            if target_identity != owned_identity {
+                return Err(transaction_failed());
+            }
+            compare_existing_snapshot_model_handle(
+                target_handle.try_clone().map_err(|_| transaction_failed())?,
+                target_identity,
+                snapshot,
+            )
+            .map_err(|_| transaction_failed())?;
             Ok(SnapshotPublication {
                 target_name,
                 created: true,
-                identity: Some(owned_identity),
+                identity: Some(target_identity),
+                handle: Some(target_handle),
             })
         })()
     }
@@ -947,24 +1060,53 @@ impl BottleStore {
             return Ok(());
         }
         let expected_identity = publication.identity.ok_or_else(snapshot_corrupt)?;
-        let (mut target, actual_identity) = match directory.bind_regular(&publication.target_name) {
-            Ok(bound) => bound,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => return Err(snapshot_corrupt()),
-        };
-        if actual_identity != expected_identity {
-            return Ok(());
-        }
+        let mut target = publication.handle.ok_or_else(snapshot_corrupt)?;
+        target.rewind().map_err(|_| snapshot_corrupt())?;
         let bytes = read_bounded_file(&mut target, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
         platform::verify_regular(&target, expected_identity).map_err(|_| snapshot_corrupt())?;
         if !snapshot_json_matches(snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
             return Err(snapshot_corrupt());
         }
+        match platform::verify_regular_name_at(
+            &directory.handle,
+            &publication.target_name,
+            &directory.path.join(&publication.target_name),
+            expected_identity,
+        ) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::InvalidData => {
+                return Ok(());
+            }
+            Err(_) => return Err(snapshot_corrupt()),
+        }
+        run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotRollbackRemove, "");
         drop(target);
-        directory
-            .remove_file(&publication.target_name)
-            .map_err(|_| snapshot_corrupt())?;
-        directory.sync()
+        let (removal_handle, removal_identity, _) = match platform::bind_regular_for_removal_at(
+            &directory.handle,
+            &publication.target_name,
+            &directory.path.join(&publication.target_name),
+        ) {
+            Ok(bound) => bound,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(snapshot_corrupt()),
+        };
+        if removal_identity != expected_identity {
+            return Ok(());
+        }
+        let removed = platform::remove_regular_if_identity_at(
+            &directory.handle,
+            &publication.target_name,
+            &directory.path,
+            &removal_handle,
+            expected_identity,
+        )
+        .map_err(|_| snapshot_corrupt())?;
+        drop(removal_handle);
+        if removed {
+            directory.sync()
+        } else {
+            Ok(())
+        }
     }
 
     fn verify_legacy_manifest_object_at(
@@ -984,7 +1126,7 @@ impl BottleStore {
             return Err(snapshot_corrupt());
         }
         let digest_hex = digest_hex(digest).ok_or_else(snapshot_corrupt)?;
-        let (mut file, identity) = object_directory
+        let (mut file, identity, _) = object_directory
             .bind_regular(std::ffi::OsStr::new(digest_hex))
             .map_err(|_| snapshot_corrupt())?;
         let bytes = read_bounded_file(&mut file, MAX_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
@@ -1064,6 +1206,56 @@ fn classify_source_metadata(metadata: &fs::Metadata) -> Result<SourceMetadataKin
     }
 }
 
+fn source_preflight_digest(input: &mut impl Read) -> io::Result<(String, u64)> {
+    #[cfg(test)]
+    {
+        struct ReadProbe<'a, R>(&'a mut R);
+
+        impl<R: Read> Read for ReadProbe<'_, R> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let read = self.0.read(buffer)?;
+                SOURCE_PREFLIGHT_BYTES_READ.with(|total| {
+                    total.set(
+                        total
+                            .get()
+                            .saturating_add(u64::try_from(read).expect("a buffer length fits u64")),
+                    );
+                });
+                Ok(read)
+            }
+        }
+
+        digest_reader(&mut ReadProbe(input))
+    }
+    #[cfg(not(test))]
+    {
+        digest_reader(input)
+    }
+}
+
+fn source_file_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = SOURCE_FILE_LIMIT_OVERRIDE.with(std::cell::Cell::get) {
+        return limit;
+    }
+    MAX_FILE_BYTES
+}
+
+#[cfg(test)]
+fn set_source_file_limit_for_test(limit: Option<u64>) {
+    SOURCE_FILE_LIMIT_OVERRIDE.with(|value| value.set(limit));
+}
+
+#[cfg(test)]
+fn reset_source_preflight_bytes_read() {
+    SOURCE_PREFLIGHT_BYTES_READ.with(|value| value.set(0));
+}
+
+#[cfg(test)]
+fn source_preflight_bytes_read() -> u64 {
+    SOURCE_PREFLIGHT_BYTES_READ.with(std::cell::Cell::get)
+}
+
 fn collect_source_entries(
     root: &Path,
     directory: &Path,
@@ -1106,12 +1298,24 @@ fn collect_source_entries(
                 )?;
             }
             SourceMetadataKind::File => {
-                let size = metadata.len();
-                checked_regular_file_size(size, total_file_bytes)?;
-                let (mut file, identity) = platform::bind_regular_at(directory_handle, &child.file_name(), &path)
-                    .map_err(|_| unsafe_entry())?;
-                let (preflight_digest, preflight_size) = digest_reader(&mut file).map_err(|_| source_changed())?;
-                if preflight_size != size {
+                let metadata_size = metadata.len();
+                if metadata_size > source_file_limit() {
+                    return Err(unsafe_entry());
+                }
+                let (mut file, identity, held_size) =
+                    platform::bind_regular_at(directory_handle, &child.file_name(), &path)
+                        .map_err(|_| source_changed())?;
+                if held_size != metadata_size {
+                    return Err(source_changed());
+                }
+                checked_regular_file_size(held_size, total_file_bytes)?;
+                run_snapshot_test_hook(SnapshotTestStage::AfterSourceLeafMetadata, &relative_path);
+                platform::verify_regular(&file, identity).map_err(|_| source_changed())?;
+                let (preflight_digest, preflight_size) = {
+                    let mut bounded = (&mut file).take(held_size.saturating_add(1));
+                    source_preflight_digest(&mut bounded).map_err(|_| source_changed())?
+                };
+                if preflight_size != held_size {
                     return Err(source_changed());
                 }
                 file.rewind().map_err(|_| source_changed())?;
@@ -1120,7 +1324,7 @@ fn collect_source_entries(
                     entries,
                     SourceEntry::File(SourceFile {
                         relative_path,
-                        size,
+                        size: held_size,
                         identity,
                         file,
                         preflight_digest,
@@ -1938,6 +2142,23 @@ mod tests {
     }
 
     #[test]
+    fn owned_temp_guard_rebinds_the_held_identity_before_cleanup() {
+        let temporary = TemporaryDirectory::new("owned-temp-held-identity");
+        let directory = super::BoundDirectory::bind(temporary.path().to_path_buf()).unwrap();
+        let path = temporary.path().join("owned.tmp");
+        let mut guard = super::OwnedTemporaryPath::new_bound(&directory, path.clone()).unwrap();
+        let mut file = guard.create_new().unwrap();
+        file.write_all(b"owned bytes").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let identity = guard.identity().unwrap();
+        guard.verify_path(identity).unwrap();
+        guard.remove().unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn disarmed_temp_guard_never_deletes_a_replacement() {
         let temporary = TemporaryDirectory::new("owned-temp-disarm");
         let temporary_path = temporary.path().join("owned.tmp");
@@ -2125,7 +2346,7 @@ mod tests {
         drop(source);
         fs::remove_file(&source_path).unwrap();
         fs::write(&source_path, b"replaced").unwrap();
-        let (file, _) =
+        let (file, _, _) =
             super::platform::bind_regular_at(&root_handle, std::ffi::OsStr::new("payload.txt"), &source_path).unwrap();
         let mut replaced_source = super::SourceFile {
             relative_path: "payload.txt".into(),
@@ -2143,6 +2364,67 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+    }
+
+    #[test]
+    fn source_preflight_rejects_same_length_replacement_after_held_metadata() {
+        let temporary = TemporaryDirectory::new("snapshot-source-preflight-replacement");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let replacement = b"foreign bytes!!";
+        assert_eq!(replacement.len(), PAYLOAD.len());
+        let replacement_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&replacement_succeeded);
+        set_snapshot_hook(
+            super::SnapshotTestStage::AfterSourceLeafMetadata,
+            "payload.txt",
+            move || {
+                if fs::remove_file(&payload).is_ok() {
+                    fs::write(&payload, replacement).unwrap();
+                    observed.set(true);
+                }
+            },
+        );
+        let store = temporary.path().join("store");
+
+        let result = BottleStore::new(&store).snapshot(&source);
+
+        if replacement_succeeded.get() {
+            assert_eq!(result.unwrap_err().code(), DiagnosticCode::SourceChanged);
+            assert!(!store.join("snapshots").exists());
+        } else {
+            #[cfg(not(windows))]
+            panic!("POSIX permits replacing an open source file");
+            #[cfg(windows)]
+            assert!(result.is_ok(), "a denied replacement leaves the held source unchanged");
+        }
+    }
+
+    #[test]
+    fn source_preflight_rejects_growth_before_reading_past_the_bound() {
+        let temporary = TemporaryDirectory::new("snapshot-source-preflight-growth");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        super::set_source_file_limit_for_test(Some(256));
+        set_snapshot_hook(
+            super::SnapshotTestStage::AfterSourceLeafMetadata,
+            "payload.txt",
+            move || {
+                super::reset_source_preflight_bytes_read();
+                fs::write(payload, vec![b'x'; 1_024]).unwrap();
+            },
+        );
+        let store = temporary.path().join("store");
+
+        let result = BottleStore::new(&store).snapshot(&source);
+        super::set_source_file_limit_for_test(None);
+
+        assert_eq!(result.unwrap_err().code(), DiagnosticCode::SourceChanged);
+        assert!(
+            super::source_preflight_bytes_read() <= 257,
+            "preflight may inspect at most the held length plus one byte"
+        );
+        assert!(!store.join("snapshots").exists());
     }
 
     fn security_snapshot(entries: Vec<SnapshotEntry>) -> BottleSnapshot {
@@ -2301,6 +2583,51 @@ mod tests {
     }
 
     #[test]
+    fn object_temp_replacement_is_never_linked_or_cleaned_as_owned() {
+        let temporary = TemporaryDirectory::new("snapshot-object-temp-replacement");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let temporary_object = store.join("objects/sha256/.object.tmp-controlled");
+        let target = store.join("objects/sha256/fded28721427e68a8055a2f21a3de49f18f6f40eef790ddd0e8aeae7679b64bd");
+        override_next_temporary_path("object", &temporary_object);
+        let replacement_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&replacement_succeeded);
+        let raced_temporary = temporary_object.clone();
+        set_snapshot_hook(
+            super::SnapshotTestStage::BeforeObjectPublish,
+            "manifest.json",
+            move || {
+                if fs::remove_file(&raced_temporary).is_ok() {
+                    fs::write(&raced_temporary, b"foreign object temp").unwrap();
+                    observed.set(true);
+                }
+            },
+        );
+
+        let result = BottleStore::new(&store).snapshot(&source);
+
+        if replacement_succeeded.get() {
+            assert!(result.is_err());
+            assert_eq!(fs::read(&temporary_object).unwrap(), b"foreign object temp");
+            assert!(!target.exists(), "foreign temporary bytes must never become an object");
+        } else {
+            #[cfg(not(windows))]
+            panic!("POSIX permits unlinking an open temporary file");
+            #[cfg(windows)]
+            {
+                assert!(
+                    result.is_ok(),
+                    "a denied replacement does not invalidate owned bytes: {result:?}; temp={}; target={}; target_len={:?}",
+                    temporary_object.exists(),
+                    target.exists(),
+                    fs::read(&target).map(|bytes| bytes.len())
+                );
+                assert!(!temporary_object.exists());
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_security_never_overwrites_a_snapshot_store_race() {
         let temporary = TemporaryDirectory::new("snapshot-manifest-race");
         let source = create_regular_source(temporary.path());
@@ -2318,6 +2645,51 @@ mod tests {
 
         assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
         assert_eq!(fs::read(target).unwrap(), b"foreign snapshot sentinel");
+    }
+
+    #[test]
+    fn snapshot_temp_replacement_or_overwrite_is_never_published_or_cleaned_as_owned() {
+        let temporary = TemporaryDirectory::new("snapshot-temp-replacement-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let temporary_snapshot = store.join("snapshots/sha256/.snapshot.tmp-controlled");
+        let target =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        override_next_temporary_path("snapshot", &temporary_snapshot);
+        let tamper_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&tamper_succeeded);
+        let raced_temporary = temporary_snapshot.clone();
+        set_snapshot_hook(super::SnapshotTestStage::BeforeSnapshotPublish, "", move || {
+            let removed = fs::remove_file(&raced_temporary).is_ok();
+            if removed {
+                fs::write(&raced_temporary, b"foreign snapshot temp").unwrap();
+                observed.set(true);
+            } else if fs::write(&raced_temporary, b"foreign snapshot temp").is_ok() {
+                observed.set(true);
+            }
+        });
+
+        let result = BottleStore::new(&store).snapshot(&source);
+
+        if tamper_succeeded.get() {
+            assert!(result.is_err());
+            assert_eq!(fs::read(&temporary_snapshot).unwrap(), b"foreign snapshot temp");
+            assert!(!target.exists(), "foreign temporary bytes must never become a snapshot");
+        } else {
+            #[cfg(not(windows))]
+            panic!("POSIX permits replacing an open temporary file");
+            #[cfg(windows)]
+            {
+                assert!(
+                    result.is_ok(),
+                    "a denied tamper does not invalidate owned bytes: {result:?}; temp={}; target={}; target_len={:?}",
+                    temporary_snapshot.exists(),
+                    target.exists(),
+                    fs::read(&target).map(|bytes| bytes.len())
+                );
+                assert!(!temporary_snapshot.exists());
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -2554,9 +2926,13 @@ mod tests {
         let raced_target = published.clone();
         let payload = source.join("payload.txt");
         let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let replacement_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&replacement_succeeded);
         set_snapshot_hook(super::SnapshotTestStage::AfterSnapshotPublish, "", move || {
-            fs::remove_file(&raced_target).unwrap();
-            fs::write(&raced_target, b"foreign snapshot sentinel").unwrap();
+            if fs::remove_file(&raced_target).is_ok() {
+                fs::write(&raced_target, b"foreign snapshot sentinel").unwrap();
+                observed.set(true);
+            }
             fs::write(&payload, b"attacker bytes\n").unwrap();
             fs::File::options()
                 .write(true)
@@ -2569,7 +2945,55 @@ mod tests {
         let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
 
         assert_eq!(error.code(), DiagnosticCode::SourceChanged);
-        assert_eq!(fs::read(published).unwrap(), b"foreign snapshot sentinel");
+        if replacement_succeeded.get() {
+            assert_eq!(fs::read(published).unwrap(), b"foreign snapshot sentinel");
+        } else {
+            #[cfg(not(windows))]
+            panic!("POSIX permits replacing the held rollback target");
+            #[cfg(windows)]
+            assert!(!published.exists());
+        }
+    }
+
+    #[test]
+    fn publication_rollback_revalidates_the_target_immediately_before_unlink() {
+        let temporary = TemporaryDirectory::new("snapshot-rollback-final-ownership-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let published =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let replacement_succeeded = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = std::rc::Rc::clone(&replacement_succeeded);
+        let raced_target = published.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSnapshotPublish, "", move || {
+            fs::write(&payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+            set_snapshot_hook(super::SnapshotTestStage::BeforeSnapshotRollbackRemove, "", move || {
+                if fs::remove_file(&raced_target).is_ok() {
+                    fs::write(&raced_target, b"foreign rollback target").unwrap();
+                    observed.set(true);
+                }
+            });
+        });
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        if replacement_succeeded.get() {
+            assert_eq!(fs::read(&published).unwrap(), b"foreign rollback target");
+        } else {
+            #[cfg(not(windows))]
+            panic!("POSIX permits replacing the held rollback target");
+            #[cfg(windows)]
+            assert!(!published.exists(), "the still-owned publication is rolled back");
+        }
     }
 
     #[test]
