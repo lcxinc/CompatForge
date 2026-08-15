@@ -832,9 +832,10 @@ fn verify_prefix(
                 verify_directory_identity(&path)?;
             }
             PrefixEntry::Link { target } => {
+                let identity = cleanup_identity(&path).map_err(|_| target_collision())?;
                 let actual = fs::read_link(&path).map_err(|_| target_collision())?;
                 let normalized = normalize_link_target(relative, &actual)?;
-                if normalized != *target {
+                if normalized != *target || cleanup_identity(&path).map_err(|_| target_collision())? != identity {
                     return Err(target_collision());
                 }
             }
