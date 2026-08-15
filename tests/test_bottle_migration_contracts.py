@@ -1499,7 +1499,7 @@ class BottleMigrationGoldenTests(unittest.TestCase):
                 self._assert_migration_plan(manifest, runtime_map, plan)
 
                 launch = self._load_golden(f"{case}-launch-plan.json")
-                self._assert_launch_plan(manifest, plan, launch)
+                self._assert_launch_plan(manifest, runtime_map, launch)
 
     def test_literal_golden_digests_are_sealed(self) -> None:
         for name, expected_digest in self.GOLDEN_DIGESTS.items():
@@ -1563,7 +1563,28 @@ class BottleMigrationGoldenTests(unittest.TestCase):
                 forged = copy.deepcopy(launch)
                 mutate(forged)
                 with self.assertRaises(AssertionError):
-                    self._assert_launch_plan(manifest, plan, forged)
+                    self._assert_launch_plan(manifest, runtime_map, forged)
+
+    def test_launch_oracle_rejects_synchronized_runtime_binding_forge(self) -> None:
+        manifest = self._load_json(Path("win64") / "manifest.json")
+        runtime_map = self._load_json(Path("runtime-map.json"))
+        plan = self._load_golden("win64-migration-plan.json")
+        launch = self._load_golden("win64-launch-plan.json")
+        forged_plan = copy.deepcopy(plan)
+        forged_runtime = {
+            "id": "forged-runtime",
+            "digest": "sha256:" + "a" * 64,
+        }
+        forged_plan["runtimePack"] = forged_runtime
+        forged_plan["bottle"]["runtimePack"] = forged_runtime
+        forged_launch = copy.deepcopy(launch)
+        forged_launch["runtime"] = {
+            "provider": "wine",
+            "packId": forged_runtime["id"],
+            "packDigest": forged_runtime["digest"],
+        }
+        with self.assertRaises(AssertionError):
+            self._assert_launch_plan(manifest, runtime_map, forged_launch)
 
     def test_launch_schema_rejects_malformed_request_id_format(self) -> None:
         launch = self._load_golden("win64-launch-plan.json")
@@ -1725,27 +1746,28 @@ class BottleMigrationGoldenTests(unittest.TestCase):
     def _assert_launch_plan(
         self,
         manifest: dict[str, object],
-        migration_plan: dict[str, object],
+        runtime_map: dict[str, object],
         launch: dict[str, object],
     ) -> None:
         self._assert_valid(launch, self._launch_schema())
-        self.assertEqual(launch, self._expected_launch_plan(manifest, migration_plan))
+        self.assertEqual(launch, self._expected_launch_plan(manifest, runtime_map))
 
     def _expected_launch_plan(
         self,
         manifest: dict[str, object],
-        migration_plan: dict[str, object],
+        runtime_map: dict[str, object],
     ) -> dict[str, object]:
         launcher = sorted(manifest["installedApps"], key=lambda item: item["id"])[0]
         environment = dict(manifest["envOverrides"])
         environment.update(launcher["envOverrides"])
+        runtime_pack = self._legacy_projection(manifest, runtime_map)["runtimePack"]
         return {
             "schemaVersion": "1",
             "requestId": self.LAUNCH_REQUEST_IDS[manifest["id"]],
             "runtime": {
                 "provider": "wine",
-                "packId": migration_plan["runtimePack"]["id"],
-                "packDigest": migration_plan["runtimePack"]["digest"],
+                "packId": runtime_pack["id"],
+                "packDigest": runtime_pack["digest"],
             },
             "translator": {"provider": "native", "version": "fixture-preview"},
             "graphics": {
