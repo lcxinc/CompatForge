@@ -35,6 +35,7 @@ enum ImportPhase {
 thread_local! {
     static IMPORT_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static IMPORT_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_NEXT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -47,6 +48,11 @@ pub(crate) fn fail_import_at_ordinal(ordinal: usize) {
 pub(crate) fn reset_import_failure() {
     IMPORT_FAILURE_ORDINAL.with(|failure| failure.set(None));
     IMPORT_ORDINAL.with(|current| current.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_write() {
+    FAIL_NEXT_WRITE.with(|failure| failure.set(true));
 }
 
 fn checkpoint() -> Result<(), BottleMigrationError> {
@@ -418,17 +424,23 @@ fn bind_cleanup_expectation(
     Ok(())
 }
 
-fn bind_existing_cleanup_expectations(
+fn bind_cleanup_ancestors(
     transaction_root: &Path,
+    relative: &Path,
     expected: &mut BTreeMap<PathBuf, CleanupExpectation>,
 ) -> Result<(), BottleMigrationError> {
-    let paths = expected.keys().cloned().collect::<Vec<_>>();
-    for relative in paths {
-        let path = transaction_root.join(&relative);
-        match fs::symlink_metadata(&path) {
-            Ok(_) => bind_cleanup_expectation(transaction_root, &relative, expected)?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => return Err(transaction_failed()),
+    let mut candidate = relative.to_owned();
+    loop {
+        if expected.contains_key(&candidate) {
+            let path = transaction_root.join(&candidate);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => bind_cleanup_expectation(transaction_root, &candidate, expected)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err(transaction_failed()),
+            }
+        }
+        if !candidate.pop() {
+            break;
         }
     }
     Ok(())
@@ -477,6 +489,14 @@ fn materialize_version(
 ) -> Result<(), BottleMigrationError> {
     ensure_dir(destination)?;
     let transaction_root = destination.parent().ok_or_else(transaction_failed)?;
+    let directory_paths = snapshot
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            SnapshotEntry::Directory { path } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
     bind_cleanup_expectation(transaction_root, Path::new("version"), cleanup_expectations)?;
     checkpoint()?;
     write_new_file(&destination.join("manifest.json"), manifest_bytes)?;
@@ -511,11 +531,7 @@ fn materialize_version(
             SnapshotEntry::Directory { .. } => ensure_dir(&path)?,
             SnapshotEntry::Link { target, .. } => {
                 ensure_parent(&path)?;
-                let target_is_directory = snapshot
-                    .entries
-                    .iter()
-                    .find(|candidate| entry_path(candidate) == target)
-                    .is_some_and(|candidate| matches!(candidate, SnapshotEntry::Directory { .. }));
+                let target_is_directory = directory_paths.contains(target.as_str());
                 create_link(target, &path, target_is_directory)?;
             }
             SnapshotEntry::File {
@@ -535,7 +551,7 @@ fn materialize_version(
             }
         }
         bind_cleanup_expectation(transaction_root, &relative, cleanup_expectations)?;
-        bind_existing_cleanup_expectations(transaction_root, cleanup_expectations)?;
+        bind_cleanup_ancestors(transaction_root, &relative, cleanup_expectations)?;
         checkpoint()?;
     }
     sync_tree(destination)?;
@@ -790,6 +806,10 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), BottleMigrationError>
     bounded_bytes(bytes)?;
     ensure_parent(path)?;
     let mut file = create_new_regular(path).map_err(|_| transaction_failed())?;
+    #[cfg(test)]
+    if FAIL_NEXT_WRITE.with(|failure| failure.replace(false)) {
+        return Err(transaction_failed());
+    }
     file.write_all(bytes).map_err(|_| transaction_failed())?;
     file.sync_all().map_err(|_| transaction_failed())?;
     verify_file_bytes(path, bytes)
@@ -1583,5 +1603,14 @@ mod tests {
         fs::rename(&replacement, &owner).unwrap();
         assert!(super::cleanup_transaction(&transaction, transaction_identity, &expected).is_err());
         assert_eq!(fs::read(&owner).unwrap(), super::OWNER_MARKER);
+    }
+
+    #[test]
+    fn create_transaction_cleans_a_partially_written_owner_marker() {
+        let temporary = TemporaryDirectory::new("transaction-marker-failure");
+        let transaction = temporary.path().join("transaction");
+        super::fail_next_write();
+        assert!(super::create_transaction(&transaction).is_err());
+        assert!(!transaction.exists());
     }
 }
