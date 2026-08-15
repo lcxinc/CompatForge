@@ -292,6 +292,8 @@ impl BottleStore {
     pub fn verify_active(&self, bottle_id: &str) -> Result<(), BottleMigrationError> {
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
+        let active_parent = active_path.parent().ok_or_else(snapshot_corrupt)?;
+        verify_directory_chain(active_parent, snapshot_corrupt)?;
         let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
         self.verify_ref_target(bottle_id, &active.active_plan_digest, None)?;
         for digest in &active.history {
@@ -308,6 +310,8 @@ impl BottleStore {
     ) -> Result<(), BottleMigrationError> {
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
+        let active_parent = active_path.parent().ok_or_else(snapshot_corrupt)?;
+        verify_directory_chain(active_parent, snapshot_corrupt)?;
         let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
         self.verify_ref_target(bottle_id, &active.active_plan_digest, Some(runtime_store))?;
         for digest in &active.history {
@@ -469,6 +473,8 @@ impl BottleStore {
         runtime_store: Option<&RuntimePackStore>,
     ) -> Result<BottleMigrationPlan, BottleMigrationError> {
         let version = self.version_path(bottle_id, plan_digest)?;
+        let version_parent = version.parent().ok_or_else(snapshot_corrupt)?;
+        verify_directory_chain(version_parent, snapshot_corrupt)?;
         let version_identity = cleanup_identity(&version).map_err(|_| snapshot_corrupt())?;
         let migration_path = version.join("migration.json");
         let migration_bytes = read_bounded(&migration_path, MAX_VERSION_JSON_BYTES)?;
