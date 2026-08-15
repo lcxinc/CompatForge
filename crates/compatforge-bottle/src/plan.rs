@@ -266,7 +266,7 @@ impl BottleStore {
         if snapshot.legacy_format != LEGACY_FORMAT {
             return Err(snapshot_corrupt());
         }
-        let legacy = self.read_verified_legacy_manifest(snapshot_digest)?;
+        let legacy = self.read_legacy_manifest_object(&snapshot)?;
         if legacy.id != snapshot.bottle_id {
             return Err(snapshot_corrupt());
         }
@@ -519,9 +519,48 @@ fn runtime_mismatch() -> BottleMigrationError {
 }
 
 #[cfg(test)]
+type LegacyManifestBytesHook = Box<dyn FnOnce(&mut Vec<u8>)>;
+
+#[cfg(test)]
+thread_local! {
+    static LEGACY_MANIFEST_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static LEGACY_MANIFEST_AFTER_BYTES_HOOK: std::cell::RefCell<Option<LegacyManifestBytesHook>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn set_legacy_manifest_read_hook(hook: Box<dyn FnOnce()>) {
+    LEGACY_MANIFEST_READ_HOOK.with(|value| *value.borrow_mut() = Some(hook));
+}
+
+#[cfg(test)]
+pub(crate) fn run_legacy_manifest_read_hook() {
+    let hook = LEGACY_MANIFEST_READ_HOOK.with(|value| value.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_legacy_manifest_after_bytes_hook(hook: LegacyManifestBytesHook) {
+    LEGACY_MANIFEST_AFTER_BYTES_HOOK.with(|value| *value.borrow_mut() = Some(hook));
+}
+
+#[cfg(test)]
+pub(crate) fn run_legacy_manifest_after_bytes_hook(bytes: &mut Vec<u8>) {
+    let hook = LEGACY_MANIFEST_AFTER_BYTES_HOOK.with(|value| value.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(bytes);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BottleStore, DiagnosticCode};
+    use crate::{BottleSnapshot, BottleStore, DiagnosticCode};
     use compatforge_domain::{HostOs, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest};
     use compatforge_runtime::{RejectAllSignatures, RuntimePackStore};
     use serde_json::json;
@@ -789,5 +828,73 @@ mod tests {
         plan.bottle_digest = digest_serialized(&plan.bottle).unwrap();
         plan.plan_digest = unsigned_plan_digest(&plan).unwrap();
         assert_eq!(plan.validate().unwrap_err().code(), DiagnosticCode::InvalidManifest);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn sealed_plan_validation_rejects_oversized_guest_path_components() {
+        let (_temporary, mut plan) = setup_case("drive_c/Example/example.exe", "win10", "win64");
+        plan.launchers[0].executable = format!("drive_c/{}", "x".repeat(256));
+        plan.plan_digest = unsigned_plan_digest(&plan).unwrap();
+        assert_eq!(plan.validate().unwrap_err().code(), DiagnosticCode::UnsafeEntry);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn planning_rejects_same_size_manifest_mutation_after_snapshot_authentication() {
+        let (_temporary, bottle_store, runtime_store, runtime_map, snapshot_digest) =
+            setup_inputs("drive_c/Example/example.exe", "win10", "win64");
+        let snapshot_path = bottle_store
+            .root()
+            .join("snapshots/sha256")
+            .join(format!("{}.json", snapshot_digest.trim_start_matches("sha256:")));
+        let snapshot: BottleSnapshot = serde_json::from_slice(&fs::read(&snapshot_path).unwrap()).unwrap();
+        let object_digest = snapshot
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                crate::SnapshotEntry::File { path, digest, .. } if path == "manifest.json" => Some(digest.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let object_path = bottle_store
+            .root()
+            .join("objects/sha256")
+            .join(object_digest.trim_start_matches("sha256:"));
+        let mut tampered = fs::read(&object_path).unwrap();
+        let original = b"Fixture Bottle";
+        let replacement = b"Nixture Bottle";
+        let start = tampered
+            .windows(original.len())
+            .position(|window| window == original)
+            .unwrap();
+        tampered[start..start + replacement.len()].copy_from_slice(replacement);
+        set_legacy_manifest_read_hook(Box::new(move || fs::write(&object_path, &tampered).unwrap()));
+
+        let error = bottle_store
+            .plan(&snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn planning_rejects_manifest_buffer_mutation_before_second_readback() {
+        let (_temporary, bottle_store, runtime_store, runtime_map, snapshot_digest) =
+            setup_inputs("drive_c/Example/example.exe", "win10", "win64");
+        set_legacy_manifest_after_bytes_hook(Box::new(|bytes| {
+            let original = b"Fixture Bottle";
+            let replacement = b"Nixture Bottle";
+            let start = bytes
+                .windows(original.len())
+                .position(|window| window == original)
+                .unwrap();
+            bytes[start..start + replacement.len()].copy_from_slice(replacement);
+        }));
+
+        let error = bottle_store
+            .plan(&snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap_err();
+        assert_eq!(error.code(), DiagnosticCode::SnapshotCorrupt);
     }
 }

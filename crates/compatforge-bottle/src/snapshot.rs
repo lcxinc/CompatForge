@@ -1013,11 +1013,10 @@ impl BottleStore {
         )
     }
 
-    pub(crate) fn read_verified_legacy_manifest(
+    pub(crate) fn read_legacy_manifest_object(
         &self,
-        digest: &str,
+        snapshot: &BottleSnapshot,
     ) -> Result<LegacyBottleManifest, BottleMigrationError> {
-        let snapshot = self.verify_snapshot(digest)?;
         let store = SnapshotStoreBinding::bind_existing(&self.root)?;
         store.verify().map_err(|_| snapshot_corrupt())?;
         let (size, object_digest) = snapshot
@@ -1036,8 +1035,25 @@ impl BottleStore {
             .objects
             .bind_regular(std::ffi::OsStr::new(digest_hex))
             .map_err(|_| snapshot_corrupt())?;
+        #[cfg(test)]
+        crate::plan::run_legacy_manifest_read_hook();
         let bytes = read_bounded_file(&mut file, MAX_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        #[cfg(test)]
+        let mut bytes = bytes;
+        #[cfg(test)]
+        crate::plan::run_legacy_manifest_after_bytes_hook(&mut bytes);
+        if u64::try_from(bytes.len()).map_err(|_| snapshot_corrupt())? != size {
+            return Err(snapshot_corrupt());
+        }
+        let mut bytes_reader = bytes.as_slice();
+        let (actual_digest, actual_size) = digest_reader(&mut bytes_reader).map_err(|_| snapshot_corrupt())?;
+        if actual_size != size || actual_digest != object_digest.as_str() {
+            return Err(snapshot_corrupt());
+        }
         platform::verify_regular(&file, identity).map_err(|_| snapshot_corrupt())?;
+        if file.metadata().map_err(|_| snapshot_corrupt())?.len() != size {
+            return Err(snapshot_corrupt());
+        }
         let json = std::str::from_utf8(&bytes).map_err(|_| snapshot_corrupt())?;
         let manifest = LegacyBottleManifest::from_json(json).map_err(|_| snapshot_corrupt())?;
         if manifest.id != snapshot.bottle_id {
@@ -3440,7 +3456,11 @@ mod tests {
 
     #[test]
     fn snapshot_security_path_and_resource_bounds_are_exact() {
-        let maximum_path = "a".repeat(super::MAX_PATH_BYTES);
+        let mut maximum_components = vec!["a".repeat(255); 15];
+        maximum_components.push("a".repeat(254));
+        maximum_components.push("a".to_owned());
+        let maximum_path = maximum_components.join("/");
+        assert_eq!(maximum_path.len(), super::MAX_PATH_BYTES);
         assert!(super::validate_basic_path(&maximum_path).is_ok());
         assert!(super::validate_basic_path(&format!("{maximum_path}a")).is_err());
 

@@ -4,6 +4,8 @@ use std::path::{Component, Path};
 use crate::snapshot::{MAX_PATH_BYTES, MAX_PATH_DEPTH};
 use unicode_normalization::UnicodeNormalization as _;
 
+const MAX_PATH_COMPONENT_BYTES: usize = 255;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InvalidPath;
 
@@ -31,6 +33,7 @@ pub(crate) fn validate_relative_path(value: &str) -> Result<(), InvalidPath> {
 
 pub(crate) fn validate_component(value: &str) -> Result<(), InvalidPath> {
     if value.is_empty()
+        || value.len() > MAX_PATH_COMPONENT_BYTES
         || matches!(value, "." | "..")
         || value.ends_with([' ', '.'])
         || !value.nfc().eq(value.chars())
