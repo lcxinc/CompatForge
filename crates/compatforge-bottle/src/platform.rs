@@ -3,6 +3,11 @@ use std::fs::{File as RawFile, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(unix)]
+static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(crate) struct HeldFile(RawFile);
@@ -17,6 +22,13 @@ pub(crate) enum HandleClonePoint {
 thread_local! {
     static HANDLE_REGISTRY: std::cell::Cell<(u64, u64, i64)> = const { std::cell::Cell::new((0, 0, 0)) };
     static HANDLE_CLONE_FAILURE: std::cell::Cell<Option<HandleClonePoint>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static REMOVE_AFTER_VERIFY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
 }
 
 impl HeldFile {
@@ -105,6 +117,26 @@ pub(crate) fn fail_next_clone_at(point: HandleClonePoint) {
         );
     });
 }
+
+#[cfg(all(test, unix))]
+pub(crate) fn set_remove_after_verify_hook(hook: impl FnOnce() + 'static) {
+    REMOVE_AFTER_VERIFY_HOOK.with(|slot| {
+        assert!(
+            slot.replace(Some(Box::new(hook))).is_none(),
+            "a remove hook is already armed"
+        );
+    });
+}
+
+#[cfg(all(test, unix))]
+fn run_remove_after_verify_hook() {
+    if let Some(hook) = REMOVE_AFTER_VERIFY_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+#[cfg(all(not(test), unix))]
+fn run_remove_after_verify_hook() {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
@@ -372,15 +404,115 @@ pub(crate) fn remove_regular_if_identity_at(
     expected: FileIdentity,
 ) -> io::Result<bool> {
     verify_regular(owned, expected)?;
-    match verify_regular_name_at(parent, name, &path.join(name), expected) {
+    run_remove_after_verify_hook();
+    let quarantine = std::ffi::OsString::from(format!(
+        ".compatforge-delete-{}-{}",
+        std::process::id(),
+        QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    match rename_noreplace_at(parent, name, &quarantine) {
         Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::InvalidData => {
-            return Ok(false);
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
     }
-    remove_file_at(parent, name, path)?;
+
+    let moved = bind_regular_at(parent, &quarantine, &path.join(&quarantine));
+    let (moved_handle, actual, _) = match moved {
+        Ok(bound) => bound,
+        Err(error) => {
+            restore_quarantine(parent, &quarantine, name)?;
+            return Err(error);
+        }
+    };
+    if actual != expected || verify_regular(&moved_handle, expected).is_err() {
+        drop(moved_handle);
+        restore_quarantine(parent, &quarantine, name)?;
+        return Ok(false);
+    }
+    remove_file_at(parent, &quarantine, path)?;
     Ok(true)
+}
+
+#[cfg(unix)]
+fn restore_quarantine(parent: &HeldFile, quarantine: &OsStr, original: &OsStr) -> io::Result<()> {
+    rename_noreplace_at(parent, quarantine, original).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("quarantined foreign entry could not be restored: {error}"),
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn rename_noreplace_at(parent: &HeldFile, source: &OsStr, target: &OsStr) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    const RENAME_NOREPLACE: libc::c_uint = 1;
+    let source = std::ffi::CString::new(source.as_bytes())?;
+    let target = std::ffi::CString::new(target.as_bytes())?;
+    // SAFETY: both names are NUL-terminated relative names and `parent` owns
+    // a live directory descriptor for both sides of the atomic rename.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            parent.as_raw_fd(),
+            source.as_ptr(),
+            parent.as_raw_fd(),
+            target.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_noreplace_at(parent: &HeldFile, source: &OsStr, target: &OsStr) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    #[link(name = "System")]
+    extern "C" {
+        fn renameatx_np(
+            source_directory: libc::c_int,
+            source: *const libc::c_char,
+            target_directory: libc::c_int,
+            target: *const libc::c_char,
+            flags: libc::c_uint,
+        ) -> libc::c_int;
+    }
+
+    const RENAME_EXCL: libc::c_uint = 0x0000_0004;
+    let source = std::ffi::CString::new(source.as_bytes())?;
+    let target = std::ffi::CString::new(target.as_bytes())?;
+    // SAFETY: both names are NUL-terminated relative names and `parent` owns
+    // a live directory descriptor accepted by `renameatx_np`.
+    let result = unsafe {
+        renameatx_np(
+            parent.as_raw_fd(),
+            source.as_ptr(),
+            parent.as_raw_fd(),
+            target.as_ptr(),
+            RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn rename_noreplace_at(_parent: &HeldFile, _source: &OsStr, _target: &OsStr) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace quarantine is unavailable",
+    ))
 }
 
 #[cfg(windows)]

@@ -142,7 +142,15 @@ struct SnapshotPublication {
     target_name: std::ffi::OsString,
     created: bool,
     identity: Option<FileIdentity>,
-    handle: Option<HeldFile>,
+    guard: Option<OwnedSnapshotPublication>,
+}
+
+impl SnapshotPublication {
+    fn commit(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            guard.disarm();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -176,10 +184,10 @@ impl OwnedSnapshotPublication {
         self.handle = Some(handle);
     }
 
-    fn disarm(mut self) -> HeldFile {
+    fn disarm(mut self) {
         self.owned = false;
         self.identity = None;
-        self.handle.take().expect("a completed publication has a held target")
+        drop(self.handle.take());
     }
 
     fn cleanup(&mut self) -> io::Result<()> {
@@ -852,7 +860,7 @@ impl BottleStore {
         store.materialize_snapshots()?;
         run_snapshot_test_hook(SnapshotTestStage::AfterStoreSnapshotsMaterialized, "");
         store.verify()?;
-        let publication = self.publish_snapshot(&snapshot_digest, &snapshot, store.snapshots()?)?;
+        let mut publication = self.publish_snapshot(&snapshot_digest, &snapshot, store.snapshots()?)?;
         let post_publication = (|| {
             run_snapshot_test_hook(SnapshotTestStage::AfterSnapshotPublish, "");
             verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
@@ -867,16 +875,18 @@ impl BottleStore {
             Ok(())
         })();
         if let Err(error) = post_publication {
-            self.rollback_snapshot(publication, &snapshot, store.snapshots()?)?;
+            self.rollback_snapshot(&mut publication, &snapshot, store.snapshots()?)?;
             return Err(error);
         }
 
-        Ok(SnapshotReceipt {
+        let receipt = SnapshotReceipt {
             bottle_id: snapshot.bottle_id,
             snapshot_digest,
             entry_count: snapshot.entry_count,
             total_file_bytes: snapshot.total_file_bytes,
-        })
+        };
+        publication.commit();
+        Ok(receipt)
     }
 
     pub fn verify_snapshot(&self, digest: &str) -> Result<BottleSnapshot, BottleMigrationError> {
@@ -1053,7 +1063,7 @@ impl BottleStore {
                     target_name,
                     created: false,
                     identity: None,
-                    handle: None,
+                    guard: None,
                 });
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1101,7 +1111,7 @@ impl BottleStore {
                         target_name,
                         created: false,
                         identity: None,
-                        handle: None,
+                        guard: None,
                     });
                 }
                 Err(_) => return Err(transaction_failed()),
@@ -1135,19 +1145,18 @@ impl BottleStore {
                 snapshot,
             )
             .map_err(|_| transaction_failed())?;
-            let target_handle = owned_publication.disarm();
             Ok(SnapshotPublication {
                 target_name,
                 created: true,
                 identity: Some(target_identity),
-                handle: Some(target_handle),
+                guard: Some(owned_publication),
             })
         })()
     }
 
     fn rollback_snapshot(
         &self,
-        publication: SnapshotPublication,
+        publication: &mut SnapshotPublication,
         snapshot: &BottleSnapshot,
         directory: &BoundDirectory,
     ) -> Result<(), BottleMigrationError> {
@@ -1155,10 +1164,11 @@ impl BottleStore {
             return Ok(());
         }
         let expected_identity = publication.identity.ok_or_else(snapshot_corrupt)?;
-        let mut target = publication.handle.ok_or_else(snapshot_corrupt)?;
+        let guard = publication.guard.as_mut().ok_or_else(snapshot_corrupt)?;
+        let target = guard.handle.as_mut().ok_or_else(snapshot_corrupt)?;
         target.rewind().map_err(|_| snapshot_corrupt())?;
-        let bytes = read_bounded_file(&mut target, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
-        platform::verify_regular(&target, expected_identity).map_err(|_| snapshot_corrupt())?;
+        let bytes = read_bounded_file(target, MAX_SNAPSHOT_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
+        platform::verify_regular(target, expected_identity).map_err(|_| snapshot_corrupt())?;
         if !snapshot_json_matches(snapshot, &bytes).map_err(|_| snapshot_corrupt())? {
             return Err(snapshot_corrupt());
         }
@@ -1175,33 +1185,7 @@ impl BottleStore {
             Err(_) => return Err(snapshot_corrupt()),
         }
         run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotRollbackRemove, "");
-        drop(target);
-        let (removal_handle, removal_identity, _) = match platform::bind_regular_for_removal_at(
-            &directory.handle,
-            &publication.target_name,
-            &directory.path.join(&publication.target_name),
-        ) {
-            Ok(bound) => bound,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => return Err(snapshot_corrupt()),
-        };
-        if removal_identity != expected_identity {
-            return Ok(());
-        }
-        let removed = platform::remove_regular_if_identity_at(
-            &directory.handle,
-            &publication.target_name,
-            &directory.path,
-            &removal_handle,
-            expected_identity,
-        )
-        .map_err(|_| snapshot_corrupt())?;
-        drop(removal_handle);
-        if removed {
-            directory.sync()
-        } else {
-            Ok(())
-        }
+        guard.cleanup().map_err(|_| snapshot_corrupt())
     }
 
     fn verify_legacy_manifest_object_at(
@@ -2070,6 +2054,15 @@ mod tests {
         count
     }
 
+    #[cfg(unix)]
+    fn quarantine_file_count(root: &Path) -> usize {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".compatforge-delete-"))
+            .count()
+    }
+
     fn set_snapshot_hook(stage: super::SnapshotTestStage, path: &str, hook: impl FnOnce() + 'static) {
         super::SNAPSHOT_STAGE_HOOK.with(|slot| {
             assert!(slot
@@ -2251,6 +2244,8 @@ mod tests {
         guard.verify_path(identity).unwrap();
         guard.remove().unwrap();
         assert!(!path.exists());
+        #[cfg(unix)]
+        assert_eq!(quarantine_file_count(temporary.path()), 0);
     }
 
     #[test]
@@ -3089,6 +3084,127 @@ mod tests {
             #[cfg(windows)]
             assert!(!published.exists(), "the still-owned publication is rolled back");
         }
+    }
+
+    #[test]
+    fn publication_guard_rolls_back_new_targets_on_all_post_publish_unwinds() {
+        for (index, stage) in [
+            super::SnapshotTestStage::AfterSnapshotPublish,
+            super::SnapshotTestStage::BeforeSnapshotReturn,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let temporary = TemporaryDirectory::new(&format!("snapshot-publication-unwind-{index}"));
+            let source = create_regular_source(temporary.path());
+            let store = temporary.path().join("store");
+            let target =
+                store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+            let registry_before = super::platform::handle_registry_snapshot();
+            set_snapshot_hook(stage, "", || panic!("controlled post-publication unwind"));
+
+            let unwind = std::panic::catch_unwind(|| BottleStore::new(&store).snapshot(&source));
+
+            assert!(unwind.is_err());
+            assert!(!target.exists());
+            assert_eq!(temporary_file_count(&store), 0);
+            let registry_after = super::platform::handle_registry_snapshot();
+            assert_eq!(
+                registry_after.0 - registry_before.0,
+                registry_after.1 - registry_before.1
+            );
+            assert_eq!(registry_after.2, registry_before.2);
+        }
+    }
+
+    #[test]
+    fn publication_guard_never_removes_preexisting_targets_on_post_publish_unwind() {
+        for (index, stage) in [
+            super::SnapshotTestStage::AfterSnapshotPublish,
+            super::SnapshotTestStage::BeforeSnapshotReturn,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let temporary = TemporaryDirectory::new(&format!("snapshot-preexisting-unwind-{index}"));
+            let source = create_regular_source(temporary.path());
+            let store = temporary.path().join("store");
+            BottleStore::new(&store).snapshot(&source).unwrap();
+            let target =
+                store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+            let expected = fs::read(&target).unwrap();
+            let registry_before = super::platform::handle_registry_snapshot();
+            set_snapshot_hook(stage, "", || panic!("controlled preexisting publication unwind"));
+
+            let unwind = std::panic::catch_unwind(|| BottleStore::new(&store).snapshot(&source));
+
+            assert!(unwind.is_err());
+            assert_eq!(fs::read(&target).unwrap(), expected);
+            assert_eq!(temporary_file_count(&store), 0);
+            let registry_after = super::platform::handle_registry_snapshot();
+            assert_eq!(
+                registry_after.0 - registry_before.0,
+                registry_after.1 - registry_before.1
+            );
+            assert_eq!(registry_after.2, registry_before.2);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conditional_temp_cleanup_restores_a_foreign_verify_unlink_replacement() {
+        let temporary = TemporaryDirectory::new("snapshot-temp-quarantine-race");
+        let directory = super::BoundDirectory::bind(temporary.path().to_path_buf()).unwrap();
+        let path = temporary.path().join("owned.tmp");
+        let raced_path = path.clone();
+        let mut guard = super::OwnedTemporaryPath::new_bound(&directory, path.clone()).unwrap();
+        let mut file = guard.create_new().unwrap();
+        file.write_all(b"owned bytes").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        super::platform::set_remove_after_verify_hook(move || {
+            fs::remove_file(&raced_path).unwrap();
+            fs::write(&raced_path, b"foreign temp bytes").unwrap();
+        });
+
+        assert!(guard.remove().is_err());
+        drop(guard);
+        drop(directory);
+
+        assert_eq!(fs::read(&path).unwrap(), b"foreign temp bytes");
+        assert_eq!(quarantine_file_count(temporary.path()), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_rollback_restores_a_foreign_verify_unlink_replacement() {
+        let temporary = TemporaryDirectory::new("snapshot-rollback-quarantine-race");
+        let source = create_regular_source(temporary.path());
+        let store = temporary.path().join("store");
+        let published =
+            store.join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json");
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_target = published.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterSnapshotPublish, "", move || {
+            fs::write(&payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+            super::platform::set_remove_after_verify_hook(move || {
+                fs::remove_file(&raced_target).unwrap();
+                fs::write(&raced_target, b"foreign rollback bytes").unwrap();
+            });
+        });
+
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert_eq!(fs::read(&published).unwrap(), b"foreign rollback bytes");
+        assert_eq!(quarantine_file_count(published.parent().unwrap()), 0);
     }
 
     #[test]
