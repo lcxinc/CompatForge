@@ -331,6 +331,30 @@ Preflight normalized leaf paths and implied directories before publishing any
 object. Transfer handle ownership only on success and close every failure path,
 including `BaseException`-equivalent Rust unwinding tests via `catch_unwind`.
 
+**Strict platform decision (2026-08-15):** Windows and Linux implement snapshot
+creation; macOS returns `DiagnosticCode::UnsupportedPlatform` with the fixed
+message `Bottle snapshot is unsupported on this platform` before any source
+binding or store creation/write. Public macOS APIs do not provide the
+anonymous staging or handle-bound conditional deletion needed to close the
+publication rollback race, so pathname verify-then-unlink and private APIs are
+not accepted substitutes.
+
+On Linux, stage object and snapshot bytes in held anonymous `O_TMPFILE` inodes,
+fsync and read them back, then publish with no-clobber
+`linkat(AT_EMPTY_PATH)`. If the direct link is unavailable to an unprivileged
+process, use `/proc/self/fd/<held-fd>` plus `AT_SYMLINK_FOLLOW`, still targeting
+the held directory descriptor. Do not create named temporary or quarantine
+entries. Run all final source, store, staged-content, and controlled-hook checks
+before the snapshot link. Treat a successful link as the final commit step:
+there is no rollback or propagated failure afterward. Attempt destination
+directory sync as best-effort only; inode bytes are durable before commit, but
+the newly linked name may be lost on sudden power loss if the filesystem does
+not persist the post-commit directory sync.
+
+On Windows, retain no-delete-share held handles and identity-bound cleanup for
+named staging, and perform the final source/store validation before the hard
+link. Never replace that ownership with pathname-only cleanup.
+
 **Step 4: Verify GREEN on available platforms**
 
 Run:

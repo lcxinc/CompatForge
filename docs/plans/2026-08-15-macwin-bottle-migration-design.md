@@ -153,6 +153,41 @@ identity are revalidated before success. A source mutation produces
 `source-changed`; partial objects may remain unreachable, but no snapshot
 manifest is published.
 
+### Snapshot publication platform decision (2026-08-15)
+
+Snapshot creation uses strict platform support. Windows and Linux are fully
+supported. macOS returns `DiagnosticCode::UnsupportedPlatform` with the fixed
+message `Bottle snapshot is unsupported on this platform` before
+binding the source or creating or writing the store. This is deliberate: the
+public macOS APIs available to this implementation provide neither anonymous
+regular-file staging equivalent to Linux `O_TMPFILE` nor a handle-bound,
+conditional unlink primitive that can safely close publication rollback races.
+Pathname revalidation followed by unlink is not treated as an equivalent
+security boundary.
+
+Linux stages objects and snapshot manifests in anonymous `O_TMPFILE` inodes
+relative to the held destination directory. After fsync, readback, and identity
+validation, publication uses a no-clobber `linkat(AT_EMPTY_PATH)`. On kernels
+where that operation is denied for an unprivileged process, the permitted
+fallback is `linkat` from `/proc/self/fd/<held-fd>` with `AT_SYMLINK_FOLLOW` to
+the same held destination directory. The fallback source is always the live
+anonymous staging descriptor; no named temporary or pathname cleanup is used.
+
+All source, store, staged-content, and test-hook checks precede the final
+snapshot link. A successful link is the commit point, after which no fallible
+operation can convert the result to an error. The staged inode is fsynced before
+that link. Destination-directory sync is attempted only as best-effort after
+commit: failure cannot safely roll back a published name and therefore does not
+change the successful result. Consequently, success establishes the logical
+namespace commit, but a sudden power loss may still lose the new directory
+entry on a filesystem that rejects or does not persist the post-commit
+directory sync.
+
+Windows retains held, no-delete-share handles and identity-bound cleanup for
+named staging, while placing the final source and store checks before the
+snapshot hard link. Its post-link failure paths remain protected by the held
+publication handle rather than by pathname-only revalidation.
+
 ## Planning Contract
 
 Planning reads only a verified snapshot and validates the closed legacy JSON
