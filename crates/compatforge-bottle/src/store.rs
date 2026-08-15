@@ -6,7 +6,7 @@
 //! can be authenticated by callers before they use it.
 
 use crate::contract::{BottleActiveRef, ImportReceipt, MAX_VERSION_HISTORY, MAX_VERSION_JSON_BYTES};
-use crate::snapshot::{BottleSnapshot, SnapshotEntry, MAX_FILE_BYTES};
+use crate::snapshot::{BottleSnapshot, SnapshotEntry, MAX_FILE_BYTES, MAX_PATH_DEPTH};
 use crate::{BottleMigrationError, BottleMigrationPlan, BottleStore, DiagnosticCode};
 use compatforge_domain::{validate_digest, validate_id, SCHEMA_VERSION_V1};
 use compatforge_runtime::RuntimePackStore;
@@ -38,6 +38,8 @@ thread_local! {
     static IMPORT_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FAIL_NEXT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_WRITE_REPLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ROLLBACK_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static ROLLBACK_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(all(test, not(target_os = "macos")))]
@@ -50,6 +52,18 @@ pub(crate) fn fail_import_at_ordinal(ordinal: usize) {
 pub(crate) fn reset_import_failure() {
     IMPORT_FAILURE_ORDINAL.with(|failure| failure.set(None));
     IMPORT_ORDINAL.with(|current| current.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn fail_rollback_at_ordinal(ordinal: usize) {
+    ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.set(Some(ordinal)));
+    ROLLBACK_ORDINAL.with(|current| current.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rollback_failure() {
+    ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.set(None));
+    ROLLBACK_ORDINAL.with(|current| current.set(0));
 }
 
 #[cfg(test)]
@@ -87,6 +101,21 @@ fn checkpoint() -> Result<(), BottleMigrationError> {
         });
         #[cfg(not(target_os = "macos"))]
         if IMPORT_FAILURE_ORDINAL.with(|failure| failure.get() == Some(_ordinal)) {
+            return Err(transaction_failed());
+        }
+    }
+    Ok(())
+}
+
+fn rollback_checkpoint() -> Result<(), BottleMigrationError> {
+    #[cfg(test)]
+    {
+        let ordinal = ROLLBACK_ORDINAL.with(|current| {
+            let next = current.get().saturating_add(1);
+            current.set(next);
+            next
+        });
+        if ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.get() == Some(ordinal)) {
             return Err(transaction_failed());
         }
     }
@@ -264,30 +293,8 @@ impl BottleStore {
         validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
         let active_path = self.active_path(bottle_id)?;
         let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
-        let version = self.version_path(bottle_id, &active.active_plan_digest)?;
-        let migration_bytes = read_bounded(&version.join("migration.json"), MAX_VERSION_JSON_BYTES)?;
-        let plan: BottleMigrationPlan = parse_closed(&migration_bytes)?;
-        plan.validate()?;
-        if plan.bottle.id != bottle_id || plan.plan_digest != active.active_plan_digest {
-            return Err(snapshot_corrupt());
-        }
-        let snapshot = self.verify_snapshot(&plan.snapshot_digest)?;
-        let manifest_bytes = canonical_json(&plan.bottle).map_err(|_| snapshot_corrupt())?;
-        let expected_migration = plan.canonical_json()?;
-        let matches = version_matches(self, &version, &plan, &snapshot, &manifest_bytes, &expected_migration).map_err(
-            |error| {
-                if error.code() == DiagnosticCode::TargetCollision {
-                    snapshot_corrupt()
-                } else {
-                    error
-                }
-            },
-        )?;
-        if matches {
-            Ok(())
-        } else {
-            Err(snapshot_corrupt())
-        }
+        self.verify_ref_target(bottle_id, &active.active_plan_digest, None)
+            .map(|_| ())
     }
 
     /// Verify the exact Runtime Pack object referenced by the active plan.
@@ -296,18 +303,178 @@ impl BottleStore {
         bottle_id: &str,
         runtime_store: &RuntimePackStore,
     ) -> Result<(), BottleMigrationError> {
-        self.verify_active(bottle_id)?;
-        let active = read_active_ref(&self.active_path(bottle_id)?, bottle_id)?.ok_or_else(rollback_unavailable)?;
-        let version = self.version_path(bottle_id, &active.active_plan_digest)?;
-        let bytes = read_bounded(&version.join("migration.json"), MAX_VERSION_JSON_BYTES)?;
-        let plan: BottleMigrationPlan = parse_closed(&bytes)?;
-        let runtime = runtime_store
-            .verified_manifest(&plan.runtime_pack.digest)
-            .map_err(|_| runtime_mismatch())?;
-        if runtime.id != plan.runtime_pack.id || runtime.digest != plan.runtime_pack.digest {
-            return Err(runtime_mismatch());
+        validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
+        let active_path = self.active_path(bottle_id)?;
+        let active = read_active_ref(&active_path, bottle_id)?.ok_or_else(rollback_unavailable)?;
+        self.verify_ref_target(bottle_id, &active.active_plan_digest, Some(runtime_store))
+            .map(|_| ())
+    }
+
+    /// Verify and reactivate the most recent historical version.  Every byte
+    /// reachable from the historical plan is authenticated before staging the
+    /// new ref; the active ref is reread immediately before its atomic switch.
+    /// A failed verification or staged write never changes the active ref.
+    pub fn rollback(&self, bottle_id: &str) -> Result<ImportReceipt, BottleMigrationError> {
+        self.rollback_inner(bottle_id, None)
+    }
+
+    /// Runtime-bound rollback variant.  In addition to the Bottle graph it
+    /// independently verifies the exact Runtime Pack manifest and objects
+    /// named by the historical plan before switching the active ref.
+    pub fn rollback_with_runtime(
+        &self,
+        bottle_id: &str,
+        runtime_store: &RuntimePackStore,
+    ) -> Result<ImportReceipt, BottleMigrationError> {
+        self.rollback_inner(bottle_id, Some(runtime_store))
+    }
+
+    fn rollback_inner(
+        &self,
+        bottle_id: &str,
+        runtime_store: Option<&RuntimePackStore>,
+    ) -> Result<ImportReceipt, BottleMigrationError> {
+        let _guard = IMPORT_LOCK.lock().map_err(|_| transaction_failed())?;
+        validate_id("bottle.id", bottle_id).map_err(|_| invalid_manifest())?;
+        let active_path = self.active_path(bottle_id)?;
+        let current_bytes = read_active_bytes(&active_path, bottle_id).map_err(map_rollback_error)?;
+        let (current, current_ref_bytes, current_identity) = current_bytes.as_ref().ok_or_else(rollback_unavailable)?;
+        let current = current.clone();
+        let target_digest = current.history.last().cloned().ok_or_else(rollback_unavailable)?;
+        rollback_checkpoint()?;
+
+        // Verify the visible active version as well as the historical target.
+        // This prevents a rollback from laundering an already-corrupt current
+        // ref and gives callers one fixed corruption diagnostic.
+        self.verify_ref_target(bottle_id, &current.active_plan_digest, runtime_store)
+            .map_err(map_rollback_error)?;
+        rollback_checkpoint()?;
+        // Authenticate every retained historical target before selecting the
+        // newest one.  A corrupt non-selected history entry must not be
+        // silently discarded by a successful rollback.
+        let mut target_plan = None;
+        for digest in &current.history {
+            let plan = self
+                .verify_ref_target(bottle_id, digest, runtime_store)
+                .map_err(map_rollback_error)?;
+            if digest == &target_digest {
+                target_plan = Some(plan);
+            }
         }
-        Ok(())
+        let target_plan = target_plan.ok_or_else(rollback_corrupt)?;
+        rollback_checkpoint()?;
+
+        let next_ref = BottleActiveRef {
+            schema_version: SCHEMA_VERSION_V1.into(),
+            bottle_id: bottle_id.into(),
+            active_plan_digest: target_digest.clone(),
+            history: current
+                .history
+                .iter()
+                .take(current.history.len().saturating_sub(1))
+                .cloned()
+                .collect(),
+        };
+        next_ref.validate().map_err(map_rollback_error)?;
+        let ref_bytes = next_ref.canonical_json().map_err(|_| rollback_corrupt())?;
+        bounded_bytes(&ref_bytes).map_err(map_rollback_error)?;
+        rollback_checkpoint()?;
+
+        // Use the same owned transaction namespace as import.  No immutable
+        // version is rewritten; only the mutable ref is staged and replaced.
+        ensure_store_layout(self.root(), bottle_id).map_err(map_rollback_error)?;
+        let transaction_root = self.root().join("transactions").join(bottle_id);
+        let transaction_identity = create_transaction(&transaction_root).map_err(map_rollback_error)?;
+        let owner_expectation = CleanupExpectation::new(CleanupKind::Bytes(OWNER_MARKER.to_vec()));
+        let mut expectations = BTreeMap::from([(PathBuf::from(".owner"), owner_expectation)]);
+        bind_cleanup_expectation(&transaction_root, Path::new(".owner"), &mut expectations)
+            .map_err(map_rollback_error)?;
+        let staged_ref = transaction_root.join("current.json");
+        let result = (|| {
+            rollback_checkpoint()?;
+            write_new_file(&staged_ref, &ref_bytes)?;
+            expectations.insert(
+                PathBuf::from("current.json"),
+                CleanupExpectation::new(CleanupKind::Bytes(ref_bytes.clone())),
+            );
+            bind_cleanup_expectation(&transaction_root, Path::new("current.json"), &mut expectations)?;
+            rollback_checkpoint()?;
+            verify_file_bytes(&staged_ref, &ref_bytes)?;
+            rollback_checkpoint()?;
+
+            // Re-read and byte-compare the current ref immediately before the
+            // replacement.  A same-byte replacement is rejected by identity,
+            // not mistaken for our original state.
+            let latest = read_active_bytes(&active_path, bottle_id)?;
+            let Some((latest_ref, latest_bytes, latest_identity)) = latest else {
+                return Err(rollback_corrupt());
+            };
+            if latest_ref != current || latest_bytes != *current_ref_bytes || latest_identity != *current_identity {
+                return Err(rollback_corrupt());
+            }
+            rollback_checkpoint()?;
+            publish_ref(&staged_ref, &active_path)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                let _ = cleanup_transaction(&transaction_root, transaction_identity, &expectations);
+                let receipt = ImportReceipt {
+                    schema_version: SCHEMA_VERSION_V1.into(),
+                    bottle_id: bottle_id.into(),
+                    plan_digest: target_plan.plan_digest,
+                    previous_plan_digest: Some(current.active_plan_digest),
+                    activated: true,
+                };
+                Ok(receipt)
+            }
+            Err(error) => {
+                let _ = cleanup_transaction(&transaction_root, transaction_identity, &expectations);
+                Err(map_rollback_error(error))
+            }
+        }
+    }
+
+    fn verify_ref_target(
+        &self,
+        bottle_id: &str,
+        plan_digest: &str,
+        runtime_store: Option<&RuntimePackStore>,
+    ) -> Result<BottleMigrationPlan, BottleMigrationError> {
+        let version = self.version_path(bottle_id, plan_digest)?;
+        let version_identity = cleanup_identity(&version).map_err(|_| snapshot_corrupt())?;
+        let migration_path = version.join("migration.json");
+        let migration_bytes = read_bounded(&migration_path, MAX_VERSION_JSON_BYTES)?;
+        let plan: BottleMigrationPlan = parse_closed(&migration_bytes)?;
+        plan.validate()?;
+        if plan.bottle.id != bottle_id || plan.plan_digest != plan_digest {
+            return Err(snapshot_corrupt());
+        }
+        let expected_migration = plan.canonical_json()?;
+        if expected_migration != migration_bytes {
+            return Err(snapshot_corrupt());
+        }
+        let snapshot = self.verify_snapshot(&plan.snapshot_digest)?;
+        if snapshot.bottle_id != bottle_id {
+            return Err(snapshot_corrupt());
+        }
+        let manifest_bytes = canonical_json(&plan.bottle).map_err(|_| snapshot_corrupt())?;
+        if !version_matches(self, &version, &plan, &snapshot, &manifest_bytes, &expected_migration)? {
+            return Err(snapshot_corrupt());
+        }
+        if let Some(runtime_store) = runtime_store {
+            let runtime = runtime_store
+                .verified_manifest(&plan.runtime_pack.digest)
+                .map_err(|_| runtime_mismatch())?;
+            if runtime.id != plan.runtime_pack.id || runtime.digest != plan.runtime_pack.digest {
+                return Err(runtime_mismatch());
+            }
+        }
+        if cleanup_identity(&version).map_err(|_| snapshot_corrupt())? != version_identity {
+            return Err(snapshot_corrupt());
+        }
+        Ok(plan)
     }
 
     fn version_path(&self, bottle_id: &str, plan_digest: &str) -> Result<PathBuf, BottleMigrationError> {
@@ -653,9 +820,8 @@ fn verify_prefix(
     snapshot: &BottleSnapshot,
     manifest_bytes: &[u8],
 ) -> Result<(), BottleMigrationError> {
-    if !is_directory(prefix)? {
-        return Err(target_collision());
-    }
+    verify_directory_identity(prefix)?;
+    let prefix_identity = cleanup_identity(prefix).map_err(|_| target_collision())?;
     let expected = expected_prefix_entries(snapshot, manifest_bytes)?;
     for (relative, entry) in &expected {
         let path = prefix.join(relative);
@@ -663,9 +829,7 @@ fn verify_prefix(
             PrefixEntry::Bytes { bytes } => verify_file_bytes(&path, bytes)?,
             PrefixEntry::File { size, digest } => verify_file_digest(&path, *size, digest)?,
             PrefixEntry::Directory => {
-                if !is_directory(&path)? {
-                    return Err(target_collision());
-                }
+                verify_directory_identity(&path)?;
             }
             PrefixEntry::Link { target } => {
                 let actual = fs::read_link(&path).map_err(|_| target_collision())?;
@@ -681,20 +845,36 @@ fn verify_prefix(
     if actual != expected_paths {
         return Err(target_collision());
     }
+    if cleanup_identity(prefix).map_err(|_| target_collision())? != prefix_identity {
+        return Err(target_collision());
+    }
     let _ = store;
     Ok(())
 }
 
 fn verify_version_root(version: &Path) -> Result<(), BottleMigrationError> {
-    if !is_directory(version)? {
-        return Err(target_collision());
-    }
+    verify_directory_identity(version)?;
+    let version_identity = cleanup_identity(version).map_err(|_| target_collision())?;
     let expected = BTreeSet::from([
         "manifest.json".to_owned(),
         "migration.json".to_owned(),
         "prefix".to_owned(),
     ]);
     if enumerate_children(version)? != expected {
+        return Err(target_collision());
+    }
+    if cleanup_identity(version).map_err(|_| target_collision())? != version_identity {
+        return Err(target_collision());
+    }
+    Ok(())
+}
+
+fn verify_directory_identity(path: &Path) -> Result<(), BottleMigrationError> {
+    if !is_directory(path)? {
+        return Err(target_collision());
+    }
+    let identity = cleanup_identity(path).map_err(|_| target_collision())?;
+    if !is_directory(path)? || cleanup_identity(path).map_err(|_| target_collision())? != identity {
         return Err(target_collision());
     }
     Ok(())
@@ -851,11 +1031,28 @@ fn publish_ref(source: &Path, target: &Path) -> Result<(), BottleMigrationError>
     }
     #[cfg(not(windows))]
     {
-        fs::rename(source, target).map_err(|_| transaction_failed())
+        fs::rename(source, target).map_err(|_| transaction_failed())?;
+        // The namespace replacement is the commit point.  Directory sync is
+        // best effort after that point: reporting a failure would falsely
+        // claim that the old ref is still active when the rename succeeded.
+        #[cfg(unix)]
+        if let Some(parent) = target.parent() {
+            if let Ok(directory) = File::open(parent) {
+                let _ = directory.sync_all();
+            }
+        }
+        Ok(())
     }
 }
 
 fn read_active_ref(path: &Path, bottle_id: &str) -> Result<Option<BottleActiveRef>, BottleMigrationError> {
+    read_active_bytes(path, bottle_id).map(|value| value.map(|(active, _, _)| active))
+}
+
+fn read_active_bytes(
+    path: &Path,
+    bottle_id: &str,
+) -> Result<Option<(BottleActiveRef, Vec<u8>, CleanupIdentity)>, BottleMigrationError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -864,7 +1061,11 @@ fn read_active_ref(path: &Path, bottle_id: &str) -> Result<Option<BottleActiveRe
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(snapshot_corrupt());
     }
+    let identity = cleanup_identity(path).map_err(|_| snapshot_corrupt())?;
     let bytes = read_bounded(path, MAX_VERSION_JSON_BYTES)?;
+    if cleanup_identity(path).map_err(|_| snapshot_corrupt())? != identity {
+        return Err(snapshot_corrupt());
+    }
     let text = std::str::from_utf8(&bytes).map_err(|_| snapshot_corrupt())?;
     let value = BottleActiveRef::from_json(text).map_err(|_| snapshot_corrupt())?;
     if value.bottle_id != bottle_id {
@@ -873,7 +1074,7 @@ fn read_active_ref(path: &Path, bottle_id: &str) -> Result<Option<BottleActiveRe
     if value.canonical_json().map_err(|_| snapshot_corrupt())? != bytes {
         return Err(snapshot_corrupt());
     }
-    Ok(Some(value))
+    Ok(Some((value, bytes, identity)))
 }
 
 fn copy_object(
@@ -954,6 +1155,7 @@ fn verify_file_bytes(path: &Path, expected: &[u8]) -> Result<(), BottleMigration
 }
 
 fn verify_file_digest(path: &Path, expected_size: u64, expected_digest: &str) -> Result<(), BottleMigrationError> {
+    let identity = cleanup_identity(path).map_err(|_| target_collision())?;
     let mut file = open_regular(path).map_err(|_| target_collision())?;
     let metadata = file.metadata().map_err(|_| target_collision())?;
     if metadata.len() != expected_size {
@@ -978,7 +1180,9 @@ fn verify_file_digest(path: &Path, expected_size: u64, expected_digest: &str) ->
     if total != expected_size || format_digest(hasher.finalize()) != expected_digest {
         return Err(target_collision());
     }
-    if file.metadata().map_err(|_| target_collision())?.len() != expected_size {
+    if file.metadata().map_err(|_| target_collision())?.len() != expected_size
+        || cleanup_identity(path).map_err(|_| target_collision())? != identity
+    {
         return Err(target_collision());
     }
     Ok(())
@@ -989,6 +1193,7 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, BottleMigrationE
     if before.file_type().is_symlink() || !before.file_type().is_file() || before.len() > maximum as u64 {
         return Err(snapshot_corrupt());
     }
+    let identity = cleanup_identity(path).map_err(|_| snapshot_corrupt())?;
     let mut file = open_regular(path).map_err(|_| snapshot_corrupt())?;
     let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or(maximum).min(maximum));
     let mut buffer = [0_u8; COPY_BUFFER_SIZE];
@@ -1003,7 +1208,10 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, BottleMigrationE
         bytes.extend_from_slice(&buffer[..read]);
     }
     let after = file.metadata().map_err(|_| snapshot_corrupt())?;
-    if after.len() != before.len() || bytes.len() as u64 != before.len() {
+    if after.len() != before.len()
+        || bytes.len() as u64 != before.len()
+        || cleanup_identity(path).map_err(|_| snapshot_corrupt())? != identity
+    {
         return Err(snapshot_corrupt());
     }
     Ok(bytes)
@@ -1189,6 +1397,9 @@ fn enumerate_tree(root: &Path) -> Result<BTreeSet<String>, BottleMigrationError>
 }
 
 fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -> Result<(), BottleMigrationError> {
+    if relative.components().count() > MAX_PATH_DEPTH {
+        return Err(target_collision());
+    }
     let entries = fs::read_dir(root).map_err(|_| target_collision())?;
     for entry in entries {
         if paths.len() >= 100_000 {
@@ -1204,6 +1415,9 @@ fn enumerate_tree_owned(root: &Path, relative: &Path, paths: &mut Vec<String>) -
         let child = entry.path();
         let metadata = fs::symlink_metadata(&child).map_err(|_| target_collision())?;
         let relative_text = child_relative.to_str().ok_or_else(target_collision)?.replace('\\', "/");
+        if child_relative.components().count() > MAX_PATH_DEPTH {
+            return Err(target_collision());
+        }
         paths.push(relative_text);
         if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
             enumerate_tree_owned(&child, &child_relative, paths)?;
@@ -1428,6 +1642,20 @@ fn transaction_failed() -> BottleMigrationError {
 
 fn rollback_unavailable() -> BottleMigrationError {
     BottleMigrationError::new(DiagnosticCode::RollbackUnavailable)
+}
+
+fn rollback_corrupt() -> BottleMigrationError {
+    BottleMigrationError::new(DiagnosticCode::RollbackCorrupt)
+}
+
+fn map_rollback_error(error: BottleMigrationError) -> BottleMigrationError {
+    match error.code() {
+        DiagnosticCode::RollbackUnavailable | DiagnosticCode::RollbackCorrupt | DiagnosticCode::TransactionFailed => {
+            error
+        }
+        DiagnosticCode::RuntimeMismatch => error,
+        _ => rollback_corrupt(),
+    }
 }
 
 #[cfg(test)]
@@ -1687,6 +1915,135 @@ mod tests {
         .unwrap();
         assert_eq!(active.history, vec![first_plan.plan_digest]);
         store.verify_active(&first_plan.bottle.id).unwrap();
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn rollback_reactivates_the_most_recent_verified_history_target() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        store.import_with_runtime(&first_plan, &runtime_store).unwrap();
+
+        let source_manifest = temporary.path().join("source/manifest.json");
+        let mut changed: serde_json::Value = serde_json::from_slice(&fs::read(&source_manifest).unwrap()).unwrap();
+        changed["updatedAt"] = json!("2026-08-08T00:00:02Z");
+        fs::write(&source_manifest, serde_json::to_vec_pretty(&changed).unwrap()).unwrap();
+        let second_snapshot = store.snapshot(&temporary.path().join("source")).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: "fixture-runtime".into(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let second_plan = store
+            .plan(&second_snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+        store.import_with_runtime(&second_plan, &runtime_store).unwrap();
+        assert_eq!(
+            store.active_plan(&first_plan.bottle.id).unwrap(),
+            Some(second_plan.plan_digest.clone())
+        );
+
+        let receipt = store.rollback(&first_plan.bottle.id).unwrap();
+        assert_eq!(receipt.bottle_id, first_plan.bottle.id);
+        assert_eq!(receipt.plan_digest, first_plan.plan_digest);
+        assert_eq!(receipt.previous_plan_digest, Some(second_plan.plan_digest));
+        assert!(receipt.activated);
+        assert_eq!(
+            store.active_plan(&first_plan.bottle.id).unwrap(),
+            Some(first_plan.plan_digest)
+        );
+        store
+            .verify_active_with_runtime(&first_plan.bottle.id, &runtime_store)
+            .unwrap();
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn rollback_rejects_tampered_history_without_switching_active_ref() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        store.import_with_runtime(&first_plan, &runtime_store).unwrap();
+        let source_manifest = temporary.path().join("source/manifest.json");
+        let mut changed: serde_json::Value = serde_json::from_slice(&fs::read(&source_manifest).unwrap()).unwrap();
+        changed["updatedAt"] = json!("2026-08-08T00:00:02Z");
+        fs::write(&source_manifest, serde_json::to_vec_pretty(&changed).unwrap()).unwrap();
+        let second_snapshot = store.snapshot(&temporary.path().join("source")).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: "fixture-runtime".into(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let second_plan = store
+            .plan(&second_snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+        store.import_with_runtime(&second_plan, &runtime_store).unwrap();
+
+        let history_digest = first_plan.plan_digest.trim_start_matches("sha256:");
+        let historical_manifest = store
+            .root()
+            .join("versions")
+            .join(&first_plan.bottle.id)
+            .join(history_digest)
+            .join("manifest.json");
+        fs::write(&historical_manifest, b"tampered").unwrap();
+        let active_before = fs::read(store.active_path(&first_plan.bottle.id).unwrap()).unwrap();
+        let error = store.rollback(&first_plan.bottle.id).unwrap_err();
+        assert_eq!(error.code(), super::super::DiagnosticCode::RollbackCorrupt);
+        assert_eq!(
+            fs::read(store.active_path(&first_plan.bottle.id).unwrap()).unwrap(),
+            active_before
+        );
+        assert_eq!(
+            store.active_plan(&first_plan.bottle.id).unwrap(),
+            Some(second_plan.plan_digest)
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn injected_rollback_failures_leave_the_second_active_ref_unchanged() {
+        for ordinal in 1..=32 {
+            let (temporary, store, runtime_store, first_plan) = setup_case();
+            store.import_with_runtime(&first_plan, &runtime_store).unwrap();
+            let source_manifest = temporary.path().join("source/manifest.json");
+            let mut changed: serde_json::Value = serde_json::from_slice(&fs::read(&source_manifest).unwrap()).unwrap();
+            changed["updatedAt"] = json!("2026-08-08T00:00:02Z");
+            fs::write(&source_manifest, serde_json::to_vec_pretty(&changed).unwrap()).unwrap();
+            let second_snapshot = store.snapshot(&temporary.path().join("source")).unwrap();
+            let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+                legacy_engine_id: "wine-9".into(),
+                runtime_pack_id: "fixture-runtime".into(),
+                runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+            }]);
+            let second_plan = store
+                .plan(&second_snapshot.snapshot_digest, &runtime_store, &runtime_map)
+                .unwrap();
+            store.import_with_runtime(&second_plan, &runtime_store).unwrap();
+            let active_path = store.active_path(&first_plan.bottle.id).unwrap();
+            let active_before = fs::read(&active_path).unwrap();
+            super::fail_rollback_at_ordinal(ordinal);
+            let result = store.rollback_with_runtime(&first_plan.bottle.id, &runtime_store);
+            super::reset_rollback_failure();
+            match result {
+                Ok(receipt) => {
+                    assert_eq!(receipt.plan_digest, first_plan.plan_digest);
+                    assert_eq!(
+                        store.active_plan(&first_plan.bottle.id).unwrap(),
+                        Some(first_plan.plan_digest)
+                    );
+                    break;
+                }
+                Err(error) => {
+                    assert_eq!(error.code(), super::super::DiagnosticCode::TransactionFailed);
+                    assert_eq!(fs::read(&active_path).unwrap(), active_before);
+                    assert_eq!(
+                        store.active_plan(&first_plan.bottle.id).unwrap(),
+                        Some(second_plan.plan_digest)
+                    );
+                }
+            }
+            if ordinal == 32 {
+                panic!("rollback failure injector did not reach a successful ordinal");
+            }
+        }
     }
 
     #[test]

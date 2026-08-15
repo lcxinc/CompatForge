@@ -192,6 +192,11 @@ pub struct ImportReceipt {
     pub activated: bool,
 }
 
+/// Rollback returns the same bounded activation receipt as import.  The alias
+/// keeps the public operation names explicit without introducing a second,
+/// drift-prone wire contract.
+pub type RollbackReceipt = ImportReceipt;
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LegacyBottleManifest {

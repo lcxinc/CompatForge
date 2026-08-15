@@ -12,8 +12,9 @@ pub mod snapshot;
 mod store;
 
 pub use contract::{
-    BottleActiveRef, ImportReceipt, LegacyBottleManifest, LegacyLauncher, LegacyWineArch, MAX_ARGUMENTS,
-    MAX_ENV_OVERRIDES, MAX_LAUNCHERS, MAX_MANIFEST_BYTES, MAX_TEXT_BYTES, MAX_VERSION_HISTORY, MAX_VERSION_JSON_BYTES,
+    BottleActiveRef, ImportReceipt, LegacyBottleManifest, LegacyLauncher, LegacyWineArch, RollbackReceipt,
+    MAX_ARGUMENTS, MAX_ENV_OVERRIDES, MAX_LAUNCHERS, MAX_MANIFEST_BYTES, MAX_TEXT_BYTES, MAX_VERSION_HISTORY,
+    MAX_VERSION_JSON_BYTES,
 };
 pub use error::{BottleMigrationError, DiagnosticCode};
 pub use plan::{BottleMigrationPlan, EnvironmentEntry, MigrationLauncher, RuntimeMap, RuntimeMapping};
