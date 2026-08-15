@@ -1,3 +1,4 @@
+use compatforge_bottle::{BottleMigrationError, BottleStore, DiagnosticCode, RuntimeMap};
 use compatforge_capability::HostProbe;
 use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest, RuntimeEventKind, RuntimePackManifest};
 use compatforge_inspect::inspect_path;
@@ -5,22 +6,37 @@ use compatforge_orchestrator::PolicyEngine;
 use compatforge_process::{EventPoll, ProcessSupervisor};
 use compatforge_provider_macos::{MacOsProviderConfig, MacOsProviderSet};
 use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackStore};
+use serde::Serialize;
+use serde_json::{Map, Value};
 use std::error::Error;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("compatforge-cli: {error}");
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let is_bottle = arguments.first().is_some_and(|argument| argument == "bottle");
+    if let Err(error) = run_arguments(&arguments) {
+        if is_bottle {
+            let diagnostic = error
+                .downcast_ref::<BottleMigrationError>()
+                .copied()
+                .unwrap_or_else(|| BottleMigrationError::new(DiagnosticCode::InvalidManifest));
+            let _ = io::stderr().write_all(&diagnostic_json(&diagnostic));
+        } else {
+            eprintln!("compatforge-cli: {error}");
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.as_slice() {
+fn run_arguments(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if arguments.first().is_some_and(|argument| argument == "bottle") {
+        return run_bottle(arguments).map_err(|error| Box::new(error) as Box<dyn Error>);
+    }
+
+    match arguments {
         [command] if matches!(command.as_str(), "--version" | "version") => {
             println!("compatforge-cli {}", env!("CARGO_PKG_VERSION"));
         }
@@ -90,6 +106,212 @@ fn run() -> Result<(), Box<dyn Error>> {
         _ => print_help(),
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BottleCommand<'a> {
+    Snapshot {
+        store_root: &'a str,
+        source_root: &'a str,
+    },
+    Plan {
+        store_root: &'a str,
+        snapshot_digest: &'a str,
+        runtime_store_root: &'a str,
+        runtime_map_path: &'a str,
+    },
+    Import {
+        store_root: &'a str,
+        snapshot_digest: &'a str,
+        runtime_store_root: &'a str,
+        runtime_map_path: &'a str,
+    },
+    Verify {
+        store_root: &'a str,
+        bottle_id: &'a str,
+    },
+    Rollback {
+        store_root: &'a str,
+        bottle_id: &'a str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BottleVerifyReceipt {
+    bottle_id: String,
+    verified: bool,
+}
+
+fn parse_bottle_command(arguments: &[String]) -> Option<BottleCommand<'_>> {
+    match arguments {
+        [group, command, store_root, source_root] if group == "bottle" && command == "snapshot" => {
+            Some(BottleCommand::Snapshot {
+                store_root,
+                source_root,
+            })
+        }
+        [group, command, store_root, snapshot_digest, runtime_store_root, runtime_map_path]
+            if group == "bottle" && command == "plan" =>
+        {
+            Some(BottleCommand::Plan {
+                store_root,
+                snapshot_digest,
+                runtime_store_root,
+                runtime_map_path,
+            })
+        }
+        [group, command, store_root, snapshot_digest, runtime_store_root, runtime_map_path]
+            if group == "bottle" && command == "import" =>
+        {
+            Some(BottleCommand::Import {
+                store_root,
+                snapshot_digest,
+                runtime_store_root,
+                runtime_map_path,
+            })
+        }
+        [group, command, store_root, bottle_id] if group == "bottle" && command == "verify" => {
+            Some(BottleCommand::Verify { store_root, bottle_id })
+        }
+        [group, command, store_root, bottle_id] if group == "bottle" && command == "rollback" => {
+            Some(BottleCommand::Rollback { store_root, bottle_id })
+        }
+        _ => None,
+    }
+}
+
+fn run_bottle(arguments: &[String]) -> Result<(), BottleMigrationError> {
+    let Some(command) = parse_bottle_command(arguments) else {
+        print!("{}", bottle_help_text());
+        return Ok(());
+    };
+
+    match command {
+        BottleCommand::Snapshot {
+            store_root,
+            source_root,
+        } => {
+            let receipt = BottleStore::new(PathBuf::from(store_root)).snapshot(Path::new(source_root))?;
+            write_stdout(&canonical_json_line(&receipt)?)
+        }
+        BottleCommand::Plan {
+            store_root,
+            snapshot_digest,
+            runtime_store_root,
+            runtime_map_path,
+        } => {
+            let runtime_map = read_runtime_map(Path::new(runtime_map_path))?;
+            let runtime_store = RuntimePackStore::new(PathBuf::from(runtime_store_root));
+            let plan =
+                BottleStore::new(PathBuf::from(store_root)).plan(snapshot_digest, &runtime_store, &runtime_map)?;
+            write_stdout(&canonical_json_line_from_bytes(&plan.canonical_json()?)?)
+        }
+        BottleCommand::Import {
+            store_root,
+            snapshot_digest,
+            runtime_store_root,
+            runtime_map_path,
+        } => {
+            let runtime_map = read_runtime_map(Path::new(runtime_map_path))?;
+            let runtime_store = RuntimePackStore::new(PathBuf::from(runtime_store_root));
+            let store = BottleStore::new(PathBuf::from(store_root));
+            let plan = store.plan(snapshot_digest, &runtime_store, &runtime_map)?;
+            let receipt = store.import_with_runtime(&plan, &runtime_store)?;
+            write_stdout(&canonical_json_line(&receipt)?)
+        }
+        BottleCommand::Verify { store_root, bottle_id } => {
+            let store = BottleStore::new(PathBuf::from(store_root));
+            store.verify_active(bottle_id)?;
+            let receipt = BottleVerifyReceipt {
+                bottle_id: bottle_id.to_owned(),
+                verified: true,
+            };
+            write_stdout(&canonical_json_line(&receipt)?)
+        }
+        BottleCommand::Rollback { store_root, bottle_id } => {
+            let receipt = BottleStore::new(PathBuf::from(store_root)).rollback(bottle_id)?;
+            write_stdout(&canonical_json_line(&receipt)?)
+        }
+    }
+}
+
+fn read_runtime_map(path: &Path) -> Result<RuntimeMap, BottleMigrationError> {
+    let bytes = fs::read(path).map_err(|_| BottleMigrationError::new(DiagnosticCode::InvalidManifest))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| BottleMigrationError::new(DiagnosticCode::InvalidManifest))?;
+    RuntimeMap::from_json(text)
+}
+
+const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
+
+fn canonical_json_line<T: Serialize>(value: &T) -> Result<Vec<u8>, BottleMigrationError> {
+    let value = serde_json::to_value(value).map_err(|_| BottleMigrationError::new(DiagnosticCode::InvalidManifest))?;
+    let bytes = serde_json::to_vec(&canonicalize_json(&value))
+        .map_err(|_| BottleMigrationError::new(DiagnosticCode::InvalidManifest))?;
+    canonical_json_line_from_bytes(&bytes)
+}
+
+fn canonical_json_line_from_bytes(bytes: &[u8]) -> Result<Vec<u8>, BottleMigrationError> {
+    if bytes.len() >= MAX_CLI_OUTPUT_BYTES {
+        return Err(BottleMigrationError::new(DiagnosticCode::InvalidManifest));
+    }
+    let mut line = Vec::with_capacity(bytes.len() + 1);
+    line.extend_from_slice(bytes);
+    line.push(b'\n');
+    Ok(line)
+}
+
+fn canonicalize_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            let mut sorted = Map::new();
+            for (key, item) in entries {
+                sorted.insert(key.clone(), canonicalize_json(item));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json).collect()),
+        scalar => scalar.clone(),
+    }
+}
+
+fn write_stdout(bytes: &[u8]) -> Result<(), BottleMigrationError> {
+    io::stdout()
+        .write_all(bytes)
+        .map_err(|_| BottleMigrationError::new(DiagnosticCode::TransactionFailed))
+}
+
+fn diagnostic_json(error: &BottleMigrationError) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"{\"code\":\"");
+    bytes.extend_from_slice(diagnostic_code(error.code()).as_bytes());
+    bytes.extend_from_slice(b"\",\"message\":\"");
+    bytes.extend_from_slice(error.message().as_bytes());
+    bytes.extend_from_slice(b"\"}");
+    bytes.push(b'\n');
+    bytes
+}
+
+fn diagnostic_code(code: DiagnosticCode) -> &'static str {
+    match code {
+        DiagnosticCode::UnsupportedPlatform => "unsupported-platform",
+        DiagnosticCode::SourceChanged => "source-changed",
+        DiagnosticCode::UnsafeEntry => "unsafe-entry",
+        DiagnosticCode::InvalidManifest => "invalid-manifest",
+        DiagnosticCode::RuntimeUnmapped => "runtime-unmapped",
+        DiagnosticCode::RuntimeMismatch => "runtime-mismatch",
+        DiagnosticCode::SnapshotCorrupt => "snapshot-corrupt",
+        DiagnosticCode::TargetCollision => "target-collision",
+        DiagnosticCode::TransactionFailed => "transaction-failed",
+        DiagnosticCode::RollbackUnavailable => "rollback-unavailable",
+        DiagnosticCode::RollbackCorrupt => "rollback-corrupt",
+    }
+}
+
+fn bottle_help_text() -> &'static str {
+    "CompatForge Bottle migration CLI\nusage:\n  compatforge-cli bottle snapshot <store-root> <legacy-bottle-root>\n  compatforge-cli bottle plan <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>\n  compatforge-cli bottle import <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>\n  compatforge-cli bottle verify <store-root> <bottle-id>\n  compatforge-cli bottle rollback <store-root> <bottle-id>\n"
 }
 
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {
@@ -163,11 +385,16 @@ fn print_help() {
     println!("  compatforge-cli runtime install <store-root> <bundle-root> <manifest-relative-path>");
     println!("  compatforge-cli runtime verify <store-root> <pack-digest>");
     println!("  compatforge-cli runtime rollback <store-root> <pack-id>");
+    print!("{}", bottle_help_text());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(value: &[&str]) -> Vec<String> {
+        value.iter().map(|word| (*word).to_owned()).collect()
+    }
 
     #[test]
     fn absolute_inspection_path_does_not_canonicalize_components() {
@@ -176,5 +403,92 @@ mod tests {
             absolute_path(relative).unwrap(),
             std::env::current_dir().unwrap().join(relative)
         );
+    }
+
+    #[test]
+    fn bottle_argv_accepts_only_the_documented_positional_forms() {
+        assert!(matches!(
+            parse_bottle_command(&words(&["bottle", "snapshot", "store", "legacy",])),
+            Some(BottleCommand::Snapshot { .. })
+        ));
+        assert!(matches!(
+            parse_bottle_command(&words(&[
+                "bottle",
+                "plan",
+                "store",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "runtime",
+                "runtime-map.json",
+            ])),
+            Some(BottleCommand::Plan { .. })
+        ));
+        assert!(matches!(
+            parse_bottle_command(&words(&[
+                "bottle",
+                "import",
+                "store",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "runtime",
+                "runtime-map.json",
+            ])),
+            Some(BottleCommand::Import { .. })
+        ));
+        assert!(matches!(
+            parse_bottle_command(&words(&["bottle", "verify", "store", "bottle-1"])),
+            Some(BottleCommand::Verify { .. })
+        ));
+        assert!(matches!(
+            parse_bottle_command(&words(&["bottle", "rollback", "store", "bottle-1"])),
+            Some(BottleCommand::Rollback { .. })
+        ));
+        assert!(parse_bottle_command(&words(&["bottle", "snapshot", "store"])).is_none());
+        assert!(parse_bottle_command(&words(&["bottle", "snapshot", "store", "legacy", "unexpected",])).is_none());
+        assert!(parse_bottle_command(&words(&["bottle", "unknown", "store", "legacy"])).is_none());
+    }
+
+    #[test]
+    fn bottle_help_is_explicit_and_lists_all_stages() {
+        let help = bottle_help_text();
+        for command in ["snapshot", "plan", "import", "verify", "rollback"] {
+            assert!(help.contains(&format!("compatforge-cli bottle {command}")));
+        }
+    }
+
+    #[test]
+    fn bottle_success_json_is_compact_recursively_sorted_and_bounded() {
+        let receipt = BottleVerifyReceipt {
+            bottle_id: "bottle-1".into(),
+            verified: true,
+        };
+        assert_eq!(
+            canonical_json_line(&receipt).unwrap(),
+            b"{\"bottleId\":\"bottle-1\",\"verified\":true}\n"
+        );
+    }
+
+    #[test]
+    fn bottle_diagnostic_json_has_only_closed_fields() {
+        let error = BottleMigrationError::new(DiagnosticCode::SnapshotCorrupt);
+        assert_eq!(
+            diagnostic_json(&error),
+            b"{\"code\":\"snapshot-corrupt\",\"message\":\"Bottle snapshot is corrupt\"}\n"
+        );
+    }
+
+    #[test]
+    fn bottle_output_rejects_payloads_at_or_above_one_megabyte() {
+        let payload = vec![b'x'; MAX_CLI_OUTPUT_BYTES];
+        assert_eq!(
+            canonical_json_line_from_bytes(&payload).unwrap_err().code(),
+            DiagnosticCode::InvalidManifest
+        );
+    }
+
+    #[test]
+    fn bottle_diagnostics_never_reflect_a_supplied_absolute_path() {
+        let error = BottleMigrationError::new(DiagnosticCode::InvalidManifest);
+        let output = String::from_utf8(diagnostic_json(&error)).unwrap();
+        assert!(!output.contains("C:\\Users\\secret"));
+        assert!(!output.contains("/home/secret"));
     }
 }

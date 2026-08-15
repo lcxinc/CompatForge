@@ -1,0 +1,23 @@
+{
+  "arch": "win32",
+  "createdAt": "2026-08-08T00:00:00Z",
+  "engineId": "wine-9",
+  "envOverrides": {},
+  "id": "bottle-win32",
+  "installedApps": [
+    {
+      "appId": "app-legacy",
+      "args": [],
+      "bottleId": "bottle-win32",
+      "displayName": "Legacy App",
+      "envOverrides": {},
+      "exePath": "drive_c/Public/Legacy.exe",
+      "iconPath": null,
+      "id": "launcher-legacy",
+      "showInHome": true
+    }
+  ],
+  "name": "MacWin Public Win32",
+  "updatedAt": "2026-08-08T00:00:01Z",
+  "windowsVersion": "win7"
+}

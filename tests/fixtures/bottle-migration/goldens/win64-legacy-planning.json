@@ -1,0 +1,74 @@
+{
+  "architecture": "x86_64",
+  "bottleId": "bottle-win64",
+  "launchers": [
+    {
+      "appId": "app-example",
+      "arguments": [
+        "--safe"
+      ],
+      "bottleId": "bottle-win64",
+      "displayName": "Example App",
+      "environment": [
+        {
+          "name": "A_MODE",
+          "value": "on"
+        },
+        {
+          "name": "BOTTLE_ONLY",
+          "value": "yes"
+        },
+        {
+          "name": "LANG",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "name": "SHARED",
+          "value": "launcher-example"
+        }
+      ],
+      "executable": "drive_c/Public/Example.exe",
+      "id": "launcher-example",
+      "showInHome": true
+    },
+    {
+      "appId": "app-zeta",
+      "arguments": [
+        "--safe",
+        "--name",
+        "Zeta"
+      ],
+      "bottleId": "bottle-win64",
+      "displayName": "Zeta App",
+      "environment": [
+        {
+          "name": "BOTTLE_ONLY",
+          "value": "yes"
+        },
+        {
+          "name": "LANG",
+          "value": "en_US.UTF-8"
+        },
+        {
+          "name": "LAUNCHER_ONLY",
+          "value": "zeta"
+        },
+        {
+          "name": "SHARED",
+          "value": "launcher-zeta"
+        }
+      ],
+      "executable": "drive_c/Public/Zeta.exe",
+      "iconPath": "icons/zeta.png",
+      "id": "launcher-zeta",
+      "showInHome": false
+    }
+  ],
+  "legacyEngineId": "wine-9",
+  "name": "MacWin Public Win64",
+  "runtimePack": {
+    "digest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+    "id": "fixture-runtime"
+  },
+  "windowsVersion": "win10"
+}

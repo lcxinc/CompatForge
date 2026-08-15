@@ -50,7 +50,7 @@
 | P1.4 | Process Supervisor | 已完成进程树/超时/wineserver 基线；继续 OS sandbox、资源配额与 daemon 级租约 |
 | P1.5 | macOS Providers | Wine、Rosetta、D3DMetal/WineD3D、App Support/沙箱适配 |
 | P1.6 | Recipe v2 | 现有 profile/recipes 数据化、typed action、签名与灰度 |
-| P1.7 | Bottle Bridge | 旧 manifest 双读、snapshot、layout migration、rollback |
+| P1.7 | Bottle Bridge | 旧 manifest 双读、read-only snapshot、content-addressed layout migration、verify-before-switch rollback |
 | P1.8 | Qt/QML Desktop | C++ client、feature models、macOS/Linux 平台适配与无头 smoke |
 | P1.9 | Diagnostics | 结构化事件、脱敏、support bundle、repair audit |
 | P1.10 | macOS Lab | Intel/Apple Silicon、20 个代表应用、图形/IME/字体 probes |
@@ -65,6 +65,22 @@
 6. install flow；
 7. Bottle 写入与迁移；
 8. 建立 Qt/QML macOS/Linux 可启动桌面壳。
+
+### Bottle Bridge evidence
+
+The Phase 1 Bottle Bridge is intentionally offline and bounded. The source
+Bottle is read-only; no recipe, commercial payload, executable loading,
+network access, or neighbouring `Mac-Win` checkout access is part of this
+slice. Four closed schemas, two public text fixtures, and independent legacy
+planning/migration/launch goldens are sealed by the repository validator.
+
+The exact CLI stages are `bottle snapshot`, `bottle plan`, `bottle import`,
+`bottle verify`, and `bottle rollback`. Both representative fixtures bind the
+`fixture-runtime` Runtime Pack at digest
+`sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af`.
+Import publishes an immutable version and atomic active ref; verify rehashes
+the complete graph; rollback verifies history before switching and keeps a
+bounded 32-entry history.
 
 ### 退出标准
 

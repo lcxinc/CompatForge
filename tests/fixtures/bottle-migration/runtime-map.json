@@ -1,0 +1,10 @@
+{
+  "mappings": [
+    {
+      "legacyEngineId": "wine-9",
+      "runtimePackDigest": "sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af",
+      "runtimePackId": "fixture-runtime"
+    }
+  ],
+  "schemaVersion": "1"
+}

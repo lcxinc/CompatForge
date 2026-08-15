@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+compatforge-bottle = { path = "../../crates/compatforge-bottle" }
 compatforge-capability = { path = "../../crates/compatforge-capability" }
 compatforge-domain = { path = "../../crates/compatforge-domain" }
 compatforge-inspect = { path = "../../crates/compatforge-inspect" }

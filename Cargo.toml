@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "apps/cli",
+  "crates/compatforge-bottle",
   "crates/compatforge-domain",
   "crates/compatforge-inspect",
   "crates/compatforge-guest-artifact",

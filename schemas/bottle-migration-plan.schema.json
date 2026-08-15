@@ -1,0 +1,315 @@
+{
+  "$defs": {
+    "argument": {
+      "maxLength": 4096,
+      "minLength": 0,
+      "type": "string"
+    },
+    "bottle": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/rfc3339"
+        },
+        "guest": {
+          "$ref": "#/$defs/bottleGuest"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recipes": {
+          "items": {
+            "$ref": "#/$defs/recipeReference"
+          },
+          "maxItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "runtimePack": {
+          "$ref": "#/$defs/runtimePack"
+        },
+        "schemaVersion": {
+          "const": "1"
+        },
+        "storage": {
+          "$ref": "#/$defs/bottleStorage"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/rfc3339"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "name",
+        "guest",
+        "runtimePack",
+        "storage",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "bottleGuest": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "enum": [
+            "i386",
+            "x86_64"
+          ]
+        },
+        "windowsVersion": {
+          "enum": [
+            "win7",
+            "win10",
+            "win11"
+          ]
+        }
+      },
+      "required": [
+        "windowsVersion",
+        "architecture"
+      ],
+      "type": "object"
+    },
+    "bottleStorage": {
+      "additionalProperties": false,
+      "properties": {
+        "layoutVersion": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "state": {
+          "const": "ready"
+        }
+      },
+      "required": [
+        "layoutVersion",
+        "state"
+      ],
+      "type": "object"
+    },
+    "diagnostic": {
+      "enum": [
+        "source-changed",
+        "unsafe-entry",
+        "invalid-manifest",
+        "runtime-unmapped",
+        "runtime-mismatch",
+        "snapshot-corrupt",
+        "target-collision",
+        "transaction-failed",
+        "rollback-unavailable",
+        "rollback-corrupt"
+      ]
+    },
+    "digest": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "environmentEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 4096,
+          "minLength": 0,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 2,
+      "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])",
+      "type": "string"
+    },
+    "launcher": {
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "$ref": "#/$defs/id"
+        },
+        "arguments": {
+          "items": {
+            "$ref": "#/$defs/argument"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "bottleId": {
+          "$ref": "#/$defs/id"
+        },
+        "displayName": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "environment": {
+          "items": {
+            "$ref": "#/$defs/environmentEntry"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "executable": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "iconPath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "showInHome": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "appId",
+        "bottleId",
+        "displayName",
+        "executable",
+        "arguments",
+        "environment",
+        "showInHome"
+      ],
+      "type": "object"
+    },
+    "legacyEngineId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*(?![\\s\\S])",
+      "type": "string"
+    },
+    "recipeReference": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "relativePath": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*[<>:\"\\\\|?*\\x00-\\x1F])(?!.*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))(?!.*[ .](?:/|(?![\\s\\S])))(?!.*(?:^|/)(?:[Cc][Oo][Nn][Ii][Nn][$]|[Cc][Oo][Nn][Oo][Uu][Tt][$]|[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])[ ]*(?:\\.[^/]*)?(?:/|(?![\\s\\S])))[^/]+(?:/[^/]+){0,127}(?![\\s\\S])",
+      "type": "string"
+    },
+    "rfc3339": {
+      "maxLength": 4096,
+      "minLength": 20,
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])[Tt](?:[01][0-9]|2[0-3]):[0-5][0-9]:(?:[0-5][0-9]|60)(?:\\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])(?![\\s\\S])",
+      "type": "string"
+    },
+    "runtimePack": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "id",
+        "digest"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/bottle-migration-plan.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bottle": {
+      "$ref": "#/$defs/bottle"
+    },
+    "bottleDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      },
+      "maxItems": 16,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "launchers": {
+      "items": {
+        "$ref": "#/$defs/launcher"
+      },
+      "maxItems": 512,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "legacyEngineId": {
+      "$ref": "#/$defs/legacyEngineId"
+    },
+    "legacyFormat": {
+      "const": "macwin-bottle-v1"
+    },
+    "planDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "runtimePack": {
+      "$ref": "#/$defs/runtimePack"
+    },
+    "schemaVersion": {
+      "const": "1"
+    },
+    "snapshotDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "snapshotDigest",
+    "legacyFormat",
+    "legacyEngineId",
+    "bottle",
+    "bottleDigest",
+    "runtimePack",
+    "launchers",
+    "diagnostics",
+    "planDigest"
+  ],
+  "title": "CompatForge Bottle Migration Plan",
+  "type": "object"
+}

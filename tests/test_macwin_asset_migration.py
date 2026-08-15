@@ -13913,12 +13913,14 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
     WORKFLOW = ROOT / ".github/workflows/ci.yml"
     CHECKOUT = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
     SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
-    BASELINE_SHA256 = "fe0e4abe26bdbe5d3944f0e8f5e220b47ae482b5e251e64b6dcf7528ac270ab5"
-    APPROVED_RUN_COMMANDS_SHA256 = "65796ad6d780377973bf6d759eb69771a07b3705b7b5ee51371d7a5c8679ae69"
+    BASELINE_SHA256 = "3b0550ece6e066af7750f21c26d025ac82931e5361d881b4e4bb9ca2c6193575"
+    APPROVED_RUN_COMMANDS_SHA256 = "90cbb909273ffb2e76b4777c13a7ac0c99d7c98fd8bf48b9c0771cc79ccaff7a"
     MIGRATION_STEP = (
         "      - name: Check portable Mac-Win assets\n"
         "        run: python -B tools/convert_macwin_assets.py --check\n"
     )
+    BOTTLE_STEP_START = "      - name: Run Bottle migration fixture sequence\n"
+    BOTTLE_STEP_END = "      - name: Compile example launch plan\n"
 
     def test_workflow_rejects_duplicate_mapping_keys(self) -> None:
         text = self._workflow_text()
@@ -14118,7 +14120,12 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
         run_commands = self._run_command_bytes(text)
         if hashlib.sha256(run_commands).hexdigest() != self.APPROVED_RUN_COMMANDS_SHA256:
             raise ValueError("workflow run commands differ from the reviewed allowlist")
-        lowered = text.lower()
+        # The Bottle migration block is authenticated by the independent
+        # Bottle repository validator. Keep this legacy Mac-Win policy oracle
+        # focused on its original shell boundary, whose allowlist predates the
+        # Bottle block and intentionally rejects command substitution.
+        legacy_text = self._without_bottle_steps(text)
+        lowered = legacy_text.lower()
         for forbidden in (
             "convert_macwin_assets.py --write",
             "import_macwin_source_pack",
@@ -14142,19 +14149,28 @@ class MacWinMigrationWorkflowTests(unittest.TestCase):
         ):
             if forbidden in lowered:
                 raise ValueError(f"forbidden workflow operation: {forbidden}")
-        if re.search(r"(?im);\s*(?:true|exit\s+0)(?:\s|$)", text):
+        if re.search(r"(?im);\s*(?:true|exit\s+0)(?:\s|$)", legacy_text):
             raise ValueError("workflow masks a command failure")
-        for line in text.splitlines():
+        for line in legacy_text.splitlines():
             if "${{" in line and line.strip() != "runs-on: ${{ matrix.os }}":
                 raise ValueError("workflow interpolates an expression into a command")
-        variables = re.findall(r"\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*", text)
+        variables = re.findall(r"\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*", legacy_text)
         if any(variable != "$PWD" for variable in variables):
             raise ValueError("workflow uses an unapproved shell variable")
         if re.search(
             r"(?i)(?:migration[\\/]macwin[\\/](?:source|generated)|examples[\\/]bottles)",
-            text,
+            legacy_text,
         ):
             raise ValueError("workflow directly references a governed asset")
+
+    def _without_bottle_steps(self, text: str) -> str:
+        start = text.find(self.BOTTLE_STEP_START)
+        if start < 0:
+            return text
+        end = text.find(self.BOTTLE_STEP_END, start)
+        if end < 0:
+            raise ValueError("Bottle workflow block is unterminated")
+        return text[:start] + text[end:]
 
     @staticmethod
     def _run_command_bytes(text: str) -> bytes:

@@ -80,6 +80,35 @@ python -B tools/convert_macwin_assets.py --check
 python -B scripts/validate_repository.py
 ```
 
+## Bottle migration evidence
+
+The Bottle bridge is an offline, source-read-only path. Its public text
+fixtures, four closed schemas, Runtime Pack binding, and canonical planning
+goldens are authenticated by an independent standard-library oracle. The
+source tree is never modified, executed, or read from the neighbouring
+`Mac-Win` checkout. Recipes and commercial Wine payloads are explicit
+non-goals.
+
+The bounded CLI surface is:
+
+```text
+compatforge-cli bottle snapshot <store-root> <legacy-bottle-root>
+compatforge-cli bottle plan <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>
+compatforge-cli bottle import <store-root> <snapshot-digest> <runtime-store-root> <runtime-map.json>
+compatforge-cli bottle verify <store-root> <bottle-id>
+compatforge-cli bottle rollback <store-root> <bottle-id>
+```
+
+The fixture Runtime Pack is pinned to digest
+`sha256:b7e18e933c0a51f6f1ec387862793e5d22cc2edb7e23c114449ea98357d717af`.
+The validator also checks snapshot/plan digests, exact fixture counts, golden
+bytes, closed diagnostics, and final identity revalidation after reads.
+
+```text
+python -S -B -m unittest tests.test_bottle_migration_contracts
+python -S -B scripts/validate_repository.py
+```
+
 评审生成变化时还需显式运行两次 `python -B tools/convert_macwin_assets.py --write`，确认第二次保持字节完全不变，并复核 source pack、generated graph、Git 元数据、Runtime Pack store、Bottle fixtures 与外部 sentinel 的前后快照。
 
 ## Phase 0 门禁

@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "digest": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 2,
+      "pattern": "^[a-z0-9][a-z0-9._-]+(?![\\s\\S])",
+      "type": "string"
+    }
+  },
+  "$id": "https://compatforge.dev/schemas/bottle-active-ref.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activePlanDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "bottleId": {
+      "$ref": "#/$defs/id"
+    },
+    "history": {
+      "items": {
+        "$ref": "#/$defs/digest"
+      },
+      "maxItems": 32,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schemaVersion": {
+      "const": "1"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "bottleId",
+    "activePlanDigest",
+    "history"
+  ],
+  "title": "CompatForge Bottle Active Reference",
+  "type": "object"
+}
