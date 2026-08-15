@@ -2673,6 +2673,30 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "snapshot.rs",
                 'use std::{*}; fn controlled_process_root_grouped_glob_alias() { process::Command::new("sh"); }',
             ),
+            "process-raw-identifier": (
+                "snapshot.rs",
+                'use std::r#process::Command as C; fn controlled_process_raw_identifier() { C::new("sh"); }',
+            ),
+            "process-raw-module-alias": (
+                "snapshot.rs",
+                'use std::r#process as p; fn controlled_process_raw_module_alias() { p::Command::new("sh"); }',
+            ),
+            "process-raw-grouped-alias": (
+                "snapshot.rs",
+                'use ::std::r#process::{Command as C}; fn controlled_process_raw_grouped_alias() { C::new("sh"); }',
+            ),
+            "environment-raw-module-alias": (
+                "platform.rs",
+                'use std::r#env as e; fn controlled_environment_raw_module_alias() { e::current_dir(); }',
+            ),
+            "network-raw-module-alias": (
+                "platform.rs",
+                'use std::r#net as n; fn controlled_network_raw_module_alias() { n::TcpStream::connect("127.0.0.1:9"); }',
+            ),
+            "macro-capability-expansion": (
+                "snapshot.rs",
+                'macro_rules! controlled { ($root:ident) => { fn controlled_macro_capability() { $root::process::Command::new("sh"); } } } controlled!(std);',
+            ),
             "process-path-braced-alias": (
                 "snapshot.rs",
                 'use ::std::process::{Command as C}; fn controlled_process_path_braced_alias() { C::new("sh"); }',

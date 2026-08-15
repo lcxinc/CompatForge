@@ -235,6 +235,7 @@ BOTTLE_RUNTIME_SOURCE_FILES = (
     "crates/compatforge-bottle/src/store.rs",
 )
 BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
+    ("macro_rules!", "dynamic capability expansion"),
     # Keep capability imports forbidden as well as concrete calls.  This
     # closes aliases such as ``use std::net as n`` and grouped imports such
     # as ``use std::{process::Command as C}`` without rejecting the allowed
@@ -1774,7 +1775,10 @@ def _bottle_validate_runtime_side_effect_policy(root: Path) -> list[str]:
         except (OSError, UnicodeError):
             return ["Bottle migration runtime source boundary could not be read"]
         policy_source = _bottle_rust_mask_non_code(source)
-        normalized_policy_source = re.sub(r"\s+", "", policy_source)
+        # Rust raw identifiers (``r#process``/``r#env``/etc.) name the same
+        # standard modules as their ordinary spellings.  Canonicalize that
+        # syntax before matching so it cannot hide an aliased capability.
+        normalized_policy_source = re.sub(r"\s+", "", policy_source).replace("r#", "")
         for marker, capability in BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES:
             normalized_marker = re.sub(r"\s+", "", marker)
             if marker in policy_source or normalized_marker in normalized_policy_source:
