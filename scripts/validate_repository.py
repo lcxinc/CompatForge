@@ -256,6 +256,7 @@ BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
     ("use ::std as", "forbidden std capability alias"),
     ("use {std", "forbidden std capability alias"),
     ("use {::std", "forbidden std capability alias"),
+    ("use ::{std", "forbidden std capability alias"),
     ("extern crate std as", "forbidden std capability alias"),
     ("extern crate ::std as", "forbidden std capability alias"),
     ("std::net as", "network access"),
