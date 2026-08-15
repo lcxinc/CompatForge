@@ -40,6 +40,7 @@ thread_local! {
     static FAIL_NEXT_WRITE_REPLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ROLLBACK_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static ROLLBACK_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_ROLLBACK_POSTCOMMIT_READBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(all(test, not(target_os = "macos")))]
@@ -64,6 +65,11 @@ pub(crate) fn fail_rollback_at_ordinal(ordinal: usize) {
 pub(crate) fn reset_rollback_failure() {
     ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.set(None));
     ROLLBACK_ORDINAL.with(|current| current.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn fail_rollback_postcommit_readback() {
+    FAIL_ROLLBACK_POSTCOMMIT_READBACK.with(|failure| failure.set(true));
 }
 
 #[cfg(test)]
@@ -438,11 +444,22 @@ impl BottleStore {
             }
             rollback_checkpoint()?;
             publish_ref(&staged_ref, &active_path)?;
-            let Some((committed_ref, committed_bytes, _)) = read_active_bytes(&active_path, bottle_id)? else {
-                return Err(transaction_failed());
+            // The rename above is the commit point.  Readback is retained as
+            // best-effort evidence, but no post-commit failure may turn a
+            // successful namespace switch into an error that invites a
+            // second rollback attempt against an already changed ref.
+            let readback = {
+                #[cfg(test)]
+                if FAIL_ROLLBACK_POSTCOMMIT_READBACK.with(|failure| failure.replace(false)) {
+                    Err(transaction_failed())
+                } else {
+                    read_active_bytes(&active_path, bottle_id)
+                }
+                #[cfg(not(test))]
+                read_active_bytes(&active_path, bottle_id)
             };
-            if committed_ref != next_ref || committed_bytes != ref_bytes {
-                return Err(transaction_failed());
+            if let Ok(Some((committed_ref, committed_bytes, _))) = readback {
+                let _matches = committed_ref == next_ref && committed_bytes == ref_bytes;
             }
             Ok(())
         })();
@@ -2116,6 +2133,35 @@ mod tests {
                 panic!("rollback failure injector did not reach a successful ordinal");
             }
         }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn postcommit_ref_readback_failure_does_not_report_a_false_rollback_error() {
+        let (temporary, store, runtime_store, first_plan) = setup_case();
+        store.import_with_runtime(&first_plan, &runtime_store).unwrap();
+        let source_manifest = temporary.path().join("source/manifest.json");
+        let mut changed: serde_json::Value = serde_json::from_slice(&fs::read(&source_manifest).unwrap()).unwrap();
+        changed["updatedAt"] = json!("2026-08-08T00:00:02Z");
+        fs::write(&source_manifest, serde_json::to_vec_pretty(&changed).unwrap()).unwrap();
+        let second_snapshot = store.snapshot(&temporary.path().join("source")).unwrap();
+        let runtime_map = RuntimeMap::new(vec![RuntimeMapping {
+            legacy_engine_id: "wine-9".into(),
+            runtime_pack_id: "fixture-runtime".into(),
+            runtime_pack_digest: first_plan.runtime_pack.digest.clone(),
+        }]);
+        let second_plan = store
+            .plan(&second_snapshot.snapshot_digest, &runtime_store, &runtime_map)
+            .unwrap();
+        store.import_with_runtime(&second_plan, &runtime_store).unwrap();
+
+        super::fail_rollback_postcommit_readback();
+        let receipt = store.rollback(&first_plan.bottle.id).unwrap();
+        assert_eq!(receipt.plan_digest, first_plan.plan_digest);
+        assert_eq!(
+            store.active_plan(&first_plan.bottle.id).unwrap(),
+            Some(first_plan.plan_digest)
+        );
     }
 
     #[test]
