@@ -8,6 +8,7 @@ tests/fixtures/*.exe binary
 /schemas/macwin-patch-review.schema.json text eol=lf
 /schemas/bottle-*.schema.json text eol=lf
 /tests/fixtures/bottle-migration/**/*.json text eol=lf
+/tests/fixtures/bottle-migration/**/*.txt text eol=lf
 /README.md text eol=lf
 /docs/testing.md text eol=lf
 /docs/plans/*.md text eol=lf

@@ -1021,7 +1021,7 @@ fn verify_directory_chain(
             return Err(error());
         }
         let parent = candidate.parent();
-        current = parent.filter(|value| *value != candidate);
+        current = parent.filter(|value| !value.as_os_str().is_empty() && *value != candidate);
     }
     let identity = cleanup_identity(path).map_err(|_| error())?;
     if cleanup_identity(path).map_err(|_| error())? != identity {
@@ -2106,6 +2106,11 @@ mod tests {
             .plan(&snapshot.snapshot_digest, &runtime_store, &runtime_map)
             .unwrap();
         (temporary, store, runtime_store, plan)
+    }
+
+    #[test]
+    fn relative_directory_chain_stops_at_the_lexical_root() {
+        assert!(super::verify_directory_chain(Path::new("."), super::snapshot_corrupt).is_ok());
     }
 
     #[cfg(not(target_os = "macos"))]
