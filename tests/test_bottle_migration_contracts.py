@@ -2495,6 +2495,98 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
                     validator._bottle_capture_trust_root(root)
 
 
+class BottleMigrationSideEffectTests(unittest.TestCase):
+    """Controlled capability mutants for the Bottle runtime boundary.
+
+    These tests deliberately add one forbidden capability to a temporary copy
+    of the Bottle implementation.  The repository validator must inspect the
+    implementation boundary itself, rather than relying on a reviewer to
+    notice a newly introduced network, process, locator, or neighboring-tree
+    access.
+    """
+
+    @staticmethod
+    def _validator():
+        import importlib.util
+
+        path = ROOT / "scripts" / "validate_repository.py"
+        spec = importlib.util.spec_from_file_location(
+            "compatforge_repository_side_effect_validator", path
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("repository validator cannot be imported")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _copy_runtime_sources(root: Path) -> None:
+        for relative in (
+            "platform.rs",
+            "snapshot.rs",
+            "store.rs",
+        ):
+            destination = root / "crates" / "compatforge-bottle" / "src" / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(
+                ROOT / "crates" / "compatforge-bottle" / "src" / relative,
+                destination,
+            )
+
+    def test_forbidden_capability_mutants_reach_the_validator_guard(self) -> None:
+        validator = self._validator()
+        repository = BottleMigrationRepositoryTests
+        mutants = {
+            "network": (
+                "platform.rs",
+                'std::net::TcpStream::connect("127.0.0.1:9");',
+            ),
+            "process": (
+                "snapshot.rs",
+                "std::process::Command::new(\"sh\");",
+            ),
+            "environment": (
+                "platform.rs",
+                'std::env::var_os("HOME");',
+            ),
+            "temporary-directory": (
+                "platform.rs",
+                "std::env::temp_dir();",
+            ),
+            "neighbor": (
+                "store.rs",
+                'Path::new("../Mac-Win");',
+            ),
+            "recursive-cleanup": (
+                "store.rs",
+                'std::fs::remove_dir_all(Path::new("foreign"));',
+            ),
+        }
+        for name, (relative, mutant) in mutants.items():
+            with self.subTest(mutant=name), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-side-effect-"
+            ) as temporary:
+                root = repository._copy_validation_tree(Path(temporary))
+                self._copy_runtime_sources(root)
+                path = root / "crates" / "compatforge-bottle" / "src" / relative
+                content = path.read_text(encoding="utf-8")
+                marker = "#[cfg(all(test"
+                if marker in content:
+                    content = content.replace(
+                        marker,
+                        f"// controlled Task 11 mutant\n{mutant}\n{marker}",
+                        1,
+                    )
+                else:
+                    content += f"\n// controlled Task 11 mutant\n{mutant}\n"
+                path.write_text(content, encoding="utf-8")
+                errors = validator.validate_bottle_migration_repository(root)
+                self.assertTrue(
+                    errors,
+                    f"validator accepted controlled {name} capability mutant",
+                )
+
+
 
 if __name__ == "__main__":
     unittest.main()

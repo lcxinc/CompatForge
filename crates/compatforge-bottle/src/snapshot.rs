@@ -128,6 +128,11 @@ enum SnapshotTestStage {
     BeforeObjectPublish,
     BeforeSnapshotPublish,
     BeforeSnapshotCommit,
+    /// Controlled race point immediately after the last ordinary validation
+    /// and before the publication namespace switch. Production builds erase
+    /// this hook; tests use it to prove the final validation is not a
+    /// check-then-publish gap.
+    AfterFinalValidation,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -987,6 +992,11 @@ impl BottleStore {
                 store.verify()?;
                 self.verify_legacy_manifest_object_at(&snapshot, &store.objects)
                     .map_err(|_| source_changed())?;
+                run_snapshot_test_hook(SnapshotTestStage::AfterFinalValidation, "");
+                verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+                store.verify()?;
+                self.verify_legacy_manifest_object_at(&snapshot, &store.objects)
+                    .map_err(|_| source_changed())?;
                 Ok(())
             })?;
             publication.commit();
@@ -994,6 +1004,11 @@ impl BottleStore {
         #[cfg(target_os = "linux")]
         {
             run_snapshot_test_hook(SnapshotTestStage::BeforeSnapshotCommit, "");
+            verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
+            store.verify()?;
+            self.verify_legacy_manifest_object_at(&snapshot, &store.objects)
+                .map_err(|_| source_changed())?;
+            run_snapshot_test_hook(SnapshotTestStage::AfterFinalValidation, "");
             verify_source_tree(&selected_source, &source_signatures, total_file_bytes)?;
             store.verify()?;
             self.verify_legacy_manifest_object_at(&snapshot, &store.objects)
@@ -3322,6 +3337,31 @@ mod tests {
 
         assert_eq!(error.code(), DiagnosticCode::SourceChanged);
         assert!(!published.exists(), "the snapshot is not reachable before commit");
+    }
+
+    #[test]
+    fn adversarial_publication_rejects_source_change_after_final_validation() {
+        let temporary = TemporaryDirectory::new("snapshot-after-final-validation-race");
+        let source = create_regular_source(temporary.path());
+        let payload = source.join("payload.txt");
+        let original_modified = fs::metadata(&payload).unwrap().modified().unwrap();
+        let raced_payload = payload.clone();
+        set_snapshot_hook(super::SnapshotTestStage::AfterFinalValidation, "", move || {
+            fs::write(&raced_payload, b"attacker bytes\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&raced_payload)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+        });
+        let store = temporary.path().join("store");
+        let error = BottleStore::new(&store).snapshot(&source).unwrap_err();
+
+        assert_eq!(error.code(), DiagnosticCode::SourceChanged);
+        assert!(!store
+            .join("snapshots/sha256/8e363a6b4bbb9af21979ab56432b303eb069e8f410641cd2860ad4755cec6a37.json")
+            .exists());
     }
 
     #[test]

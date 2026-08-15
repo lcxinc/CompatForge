@@ -224,6 +224,28 @@ BOTTLE_MIGRATION_DOC_SNIPPETS = {
         *tuple(digest.removeprefix("sha256:") for digest in BOTTLE_MIGRATION_GOLDEN_SHA256.values()),
     ),
 }
+
+# The Bottle boundary is intentionally offline and source-read-only.  These
+# are capability names rather than a broad deny-list of filesystem APIs: the
+# implementation must still create and atomically publish its private store,
+# but it must never grow a network/process/environment/neighbor locator.
+BOTTLE_RUNTIME_SOURCE_FILES = (
+    "crates/compatforge-bottle/src/platform.rs",
+    "crates/compatforge-bottle/src/snapshot.rs",
+    "crates/compatforge-bottle/src/store.rs",
+)
+BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
+    ("std::net::", "network access"),
+    ("TcpStream", "network access"),
+    ("UdpSocket", "network access"),
+    ("ToSocketAddrs", "network access"),
+    ("std::process::Command", "subprocess launch"),
+    ("std::process::Stdio", "subprocess launch"),
+    ("std::env::var", "implicit environment lookup"),
+    ("std::env::temp_dir", "implicit temporary-directory lookup"),
+    ("remove_dir_all", "unbounded recursive cleanup"),
+    ("Mac-Win", "neighboring Mac-Win checkout access"),
+)
 BOTTLE_MIGRATION_CI_SNIPPETS = (
     "tests.test_bottle_migration_contracts",
     "compatforge-bottle",
@@ -1364,6 +1386,68 @@ def _bottle_validate_docs_and_ci(root: Path) -> None:
     _bottle_require_ci_sequence(workflow_text)
 
 
+def _bottle_production_source(text: str) -> str:
+    """Remove cfg(test) items before applying the capability policy.
+
+    Test helpers intentionally use ``temp_dir`` and child-process probes for
+    descriptor accounting.  They are not reachable from a release build and
+    must not weaken the production boundary scan.  This small brace-aware
+    filter avoids importing or parsing Rust while still handling cfg-gated
+    modules and multiline function signatures.
+    """
+    kept: list[str] = []
+    pending_test_item = False
+    skipped_braces = 0
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if skipped_braces:
+            skipped_braces += line.count("{") - line.count("}")
+            if skipped_braces <= 0:
+                skipped_braces = 0
+            continue
+        if pending_test_item:
+            if "{" in line:
+                skipped_braces = line.count("{") - line.count("}")
+                pending_test_item = False
+                if skipped_braces <= 0:
+                    skipped_braces = 0
+                continue
+            if ";" in line:
+                pending_test_item = False
+                continue
+            continue
+        if stripped.startswith("#[cfg(") and "test" in stripped:
+            pending_test_item = True
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _bottle_validate_runtime_side_effect_policy(root: Path) -> list[str]:
+    paths = [root / relative for relative in BOTTLE_RUNTIME_SOURCE_FILES]
+    existing = [path for path in paths if path.exists()]
+    # Mutation tests and production validation copy the complete implementation
+    # boundary.  Older fixture-only validation trees intentionally omit Rust;
+    # keep those focused tests independent of the source checkout.
+    if not existing:
+        return []
+    if len(existing) != len(paths):
+        return ["Bottle migration runtime source boundary is incomplete"]
+    errors: list[str] = []
+    for path in paths:
+        try:
+            source = _bottle_production_source(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            return ["Bottle migration runtime source boundary could not be read"]
+        for marker, capability in BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES:
+            if marker in source:
+                errors.append(
+                    f"Bottle migration runtime source uses forbidden {capability}: "
+                    f"{path.relative_to(root).as_posix()}"
+                )
+    return errors
+
+
 def validate_bottle_migration_repository(root: Path | None = None) -> list[str]:
     """Authenticate the public Bottle migration evidence tree.
 
@@ -1378,6 +1462,9 @@ def validate_bottle_migration_repository(root: Path | None = None) -> list[str]:
         _bottle_validate_schema_documents(repository_root)
         _bottle_validate_fixture(repository_root)
         _bottle_validate_docs_and_ci(repository_root)
+        side_effect_errors = _bottle_validate_runtime_side_effect_policy(repository_root)
+        if side_effect_errors:
+            return side_effect_errors
         _bottle_revalidate_trust_root(repository_root, trust_root)
     except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as error:
         return [f"Bottle migration repository validation failed: {error}"]
