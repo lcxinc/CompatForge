@@ -2589,6 +2589,22 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "platform.rs",
                 "std::env::current_dir();",
             ),
+            "environment-set-var": (
+                "platform.rs",
+                'std::env::set_var("X", "Y");',
+            ),
+            "environment-remove-var": (
+                "platform.rs",
+                'std::env::remove_var("X");',
+            ),
+            "environment-home-dir": (
+                "platform.rs",
+                "std::env::home_dir();",
+            ),
+            "environment-join-paths": (
+                "platform.rs",
+                "std::env::join_paths(std::iter::empty::<&str>());",
+            ),
             "environment": (
                 "platform.rs",
                 'std::env::var_os("HOME");',

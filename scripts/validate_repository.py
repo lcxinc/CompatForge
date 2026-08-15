@@ -244,6 +244,7 @@ BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
     ("ToSocketAddrs", "network access"),
     ("std::process::Command", "subprocess launch"),
     ("std::process::Stdio", "subprocess launch"),
+    ("std::env::", "implicit environment access"),
     ("std::env::args", "implicit environment lookup"),
     ("std::env::args_os", "implicit environment lookup"),
     ("std::env::current_exe", "process locator"),
