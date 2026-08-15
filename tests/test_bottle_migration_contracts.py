@@ -2641,6 +2641,10 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "snapshot.rs",
                 'use ::std as s; fn controlled_process_leading_colon_root_alias() { s::process::Command::new("sh"); }',
             ),
+            "process-grouped-root-import-alias": (
+                "snapshot.rs",
+                'use { /*root*/ std\n as s }; fn controlled_process_grouped_root_import_alias() { s::process::Command::new("sh"); }',
+            ),
             "process-path-braced-alias": (
                 "snapshot.rs",
                 'use ::std::process::{Command as C}; fn controlled_process_path_braced_alias() { C::new("sh"); }',
@@ -2778,6 +2782,21 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                     errors,
                     f"validator hid a production capability after cfg(test): {mutant}",
                 )
+
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-side-effect-") as temporary:
+            root = repository._copy_validation_tree(Path(temporary))
+            self._copy_runtime_sources(root)
+            path = root / "crates" / "compatforge-bottle" / "src" / "platform.rs"
+            content = path.read_text(encoding="utf-8")
+            content += (
+                "\n#[cfg(test)]\n"
+                "fn controlled_test() {\n"
+                "} fn controlled_forbidden_capability() { "
+                'std::net::TcpStream::connect("127.0.0.1:9"); }\n'
+            )
+            path.write_text(content, encoding="utf-8")
+            errors = validator.validate_bottle_migration_repository(root)
+            self.assertTrue(errors, "validator hid a capability after a same-line cfg item close")
 
     def test_cfg_not_test_mutants_are_not_hidden_from_the_guard(self) -> None:
         validator = self._validator()

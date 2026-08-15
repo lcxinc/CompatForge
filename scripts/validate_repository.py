@@ -254,6 +254,8 @@ BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
     ("use std {env", "implicit environment access"),
     ("use std as", "forbidden std capability alias"),
     ("use ::std as", "forbidden std capability alias"),
+    ("use {std", "forbidden std capability alias"),
+    ("use {::std", "forbidden std capability alias"),
     ("extern crate std as", "forbidden std capability alias"),
     ("extern crate ::std as", "forbidden std capability alias"),
     ("std::net as", "network access"),
@@ -1653,7 +1655,7 @@ def _bottle_rust_mask_non_code(text: str) -> str:
     return "".join(output)
 
 
-def _bottle_cfg_item_has_trailing_tokens(line: str) -> bool:
+def _bottle_cfg_item_has_trailing_tokens(line: str, initial_depth: int = 0) -> bool:
     """Return whether a cfg(test) item shares its line with more code.
 
     A test-only cfg attribute normally owns the following complete Rust item.
@@ -1665,8 +1667,8 @@ def _bottle_cfg_item_has_trailing_tokens(line: str) -> bool:
     source.
     """
     masked = _bottle_rust_mask_non_code(line)
-    depth = 0
-    saw_brace = False
+    depth = initial_depth
+    saw_brace = initial_depth > 0
     index = 0
     while index < len(masked):
         char = masked[index]
@@ -1712,9 +1714,15 @@ def _bottle_production_source(text: str) -> str:
     for line, (brace_delta, brace_count) in zip(lines, brace_deltas):
         stripped = line.lstrip()
         if skipped_braces:
+            previous_skipped_braces = skipped_braces
             skipped_braces += brace_delta
             if skipped_braces <= 0:
                 skipped_braces = 0
+                if _bottle_cfg_item_has_trailing_tokens(line, previous_skipped_braces):
+                    # The test-only item closed and production code follows on
+                    # this line.  Keep the line rather than dropping the
+                    # trailing item with the skipped test body.
+                    kept.append(line)
             continue
         if pending_test_item:
             if _bottle_cfg_item_has_trailing_tokens(line):
