@@ -680,10 +680,18 @@ fn create_transaction(path: &Path) -> Result<CleanupIdentity, BottleMigrationErr
         Ok(()) => {
             let marker = path.join(".owner");
             if let Err(error) = write_new_file(&marker, OWNER_MARKER) {
+                let _ = fs::remove_file(&marker);
                 let _ = fs::remove_dir(path);
                 Err(error)
             } else {
-                cleanup_identity(path).map_err(|_| transaction_failed())
+                match cleanup_identity(path) {
+                    Ok(identity) => Ok(identity),
+                    Err(_) => {
+                        let _ = fs::remove_file(&marker);
+                        let _ = fs::remove_dir(path);
+                        Err(transaction_failed())
+                    }
+                }
             }
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(transaction_failed()),
