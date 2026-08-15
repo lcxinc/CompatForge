@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core `0.10.0`。PE inspection 已通过独立 Guest Artifact 内容库接入 opaque `PreparedLaunch`：来宾摘要、真实架构、完整检查报告、Runtime Pack、Context 与 LaunchPlan 在启动前重新绑定验证。第一版只准备 x86/x86_64 Windows Console executable，仍不执行真实 PE。ABI major 保持 1；Runtime artifact 通用解包、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
+> 当前状态：Core `0.10.0`。PE inspection 已通过独立 Guest Artifact 内容库接入 opaque `PreparedLaunch`；CLI 提供 `prepared-plan`/`prepared-launch`，macOS Provider 产生的 Wine 与 wineserver 摘要会在 spawn 前再次复验。默认 CI 仍只执行公开 fixture，不执行真实 Windows 应用；Apple Silicon 开发者可以让 opt-in 验收工具从受限已知位置自动发现并实际验证合法安装的 x86_64 Wine，也可显式覆盖路径，再运行 Console PE 本地预览。该预览不代表 Tier 1、GUI PE、发行包或通用应用兼容结论。ABI major 保持 1；Runtime 通用物化、可信公钥、`compatforged` IPC 和真正的 OS 沙箱仍待后续实现。
 
 > 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -75,6 +75,8 @@ cargo run -p compatforge-cli -- inspect tests/fixtures/hello-x86_64.exe
 cargo run -p compatforge-cli -- demo-plan
 cargo run -p compatforge-cli -- provider macos probe <provider-config.json>
 cargo run -p compatforge-cli -- provider macos context <provider-config.json> <storage-root>
+cargo run -p compatforge-cli -- prepared-plan <context-config.json> <absolute-console-pe> <launch-request.json>
+cargo run -p compatforge-cli -- prepared-launch <context-config.json> <absolute-console-pe> <launch-request.json>
 cargo run -p compatforge-cli -- runtime manifest-digest \
   examples/runtime-packs/wine-linux-arm64-fex.json
 ```
@@ -103,6 +105,7 @@ C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、Cont
 - [macOS Provider 纵向切片](docs/implementation/phase-1-macos-provider.md)
 - [PE inspection 纵向切片](docs/implementation/phase-1-pe-inspection.md)
 - [Trusted Launch Preparation 纵向切片](docs/implementation/phase-1-trusted-launch-preparation.md)
+- [Apple Silicon 本地无头预览指南](docs/guides/macos-headless-preview.md)
 - [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [能力证据与 Provider 声明决策](docs/decisions/0007-capability-evidence-boundary.md)
 - [Runtime Pack 内容寻址与原子激活决策](docs/decisions/0008-runtime-pack-content-store.md)

@@ -313,6 +313,14 @@ impl MacOsProviderSet {
             environment: [
                 ("COMPATFORGE_RUNTIME_PACK".into(), runtime.pack_id.clone()),
                 ("COMPATFORGE_RUNTIME_PACK_DIGEST".into(), runtime.pack_digest.clone()),
+                (
+                    "COMPATFORGE_RUNTIME_EXECUTABLE_SHA256".into(),
+                    runtime.wine.digest.clone(),
+                ),
+                (
+                    "COMPATFORGE_WINESERVER_EXECUTABLE_SHA256".into(),
+                    runtime.wineserver.digest.clone(),
+                ),
                 ("WINEDEBUG".into(), "-all".into()),
             ]
             .into_iter()
@@ -974,6 +982,14 @@ mod tests {
         assert_eq!(
             core.runtime_bindings[0].environment["COMPATFORGE_RUNTIME_PACK_DIGEST"],
             config.wine_runtime.pack_digest
+        );
+        assert_eq!(
+            core.runtime_bindings[0].environment["COMPATFORGE_RUNTIME_EXECUTABLE_SHA256"],
+            config.wine_runtime.wine.digest
+        );
+        assert_eq!(
+            core.runtime_bindings[0].environment["COMPATFORGE_WINESERVER_EXECUTABLE_SHA256"],
+            config.wine_runtime.wineserver.digest
         );
         let request = LaunchRequest {
             schema_version: SCHEMA_VERSION_V1.into(),

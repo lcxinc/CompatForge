@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** On Apple Silicon, register a developer-supplied local x86_64 Wine as an unsigned preview Runtime Pack and launch one real x86_64 Windows Console PE through the existing PreparedLaunch and ProcessSupervisor trust chain.
+**Goal:** On Apple Silicon, execute-verify a bounded automatically discovered (or explicitly overridden) local x86_64 Wine, register it as an unsigned preview Runtime Pack, and launch one real x86_64 Windows Console PE through the existing PreparedLaunch and ProcessSupervisor trust chain.
 
 **Architecture:** Add a local-only Python registration tool that emits a preview Runtime bundle and existing `macos-provider.schema.json` configuration from explicit Wine paths. Add additive `prepared-launch` CLI commands that reuse `PreparedLaunch::prepare/authorize` and the existing event loop. Keep every cross-repository contract stable: no schema changes, no C ABI changes, no ForgeOS/ForgeTools/Mac-Win edits, no Runtime download or distribution.
 
-**Tech Stack:** Rust 1.85+ workspace crates, Python 3.11+ standard library, existing JSON/serde contracts, SHA-256, macOS ARM64, Rosetta, developer-supplied x86_64 Wine, Homebrew MinGW only for compiling the local Console PE probe.
+**Tech Stack:** Rust workspace MSRV 1.78+, Python 3.11+ standard library, existing JSON/serde contracts, SHA-256, macOS ARM64, Rosetta, developer-supplied x86_64 Wine, Homebrew MinGW only for compiling the local Console PE probe.
 
 ---
 
@@ -25,6 +25,34 @@ Do not modify any file in ForgeOS, ForgeTools, or Mac-Win. Do not change files u
 
 If any implementation step appears to require one of those changes, stop that task and open a separate design issue. Do not fold the change into this branch.
 
+### Approved implementation amendment
+
+The pre-implementation code review found two gaps in the original Tasks 4-6.
+The following requirements supersede conflicting examples below:
+
+- Add `prepared-plan` beside the two launch commands. All three commands share
+  one `PreparedLaunch::prepare/authorize` path; `prepared-plan` emits the
+  authorized LaunchPlan and never creates a process.
+- The local acceptance request includes the inspection SHA-256. The harness
+  saves the `prepared-plan` result before invoking `prepared-launch`, whose
+  stdout remains RuntimeEvent JSONL only.
+- The macOS Provider puts the verified Wine and wineserver SHA-256 values in
+  protected Runtime Binding environment entries. `compatforge-process`
+  re-hashes both pinned executable paths immediately before process creation.
+  Missing evidence preserves existing non-macOS Provider behavior; invalid or
+  mismatched evidence fails closed.
+- This additive closure may modify `crates/compatforge-provider-macos` and
+  `crates/compatforge-process` plus their tests. It must not modify schemas,
+  C ABI symbols, ABI major 1, ForgeOS, ForgeTools, or Mac-Win.
+- Add `tools/discover_macos_wine.py` and make the acceptance harness use it by
+  default. Discovery is limited to exact CrossOver/Whisky locations and
+  adjacent `Mac-Win/refs/Whisky-*-build` roots. It must not use PATH, shell,
+  network, environment hints, or recursive filesystem search. Both entrypoints
+  must be contained executable thin x86_64 Mach-O files and pass real version
+  execution. A complete explicit root/wine/wineserver/version tuple overrides
+  discovery; partial overrides fail closed. This amendment supersedes the
+  explicit-Wine-only requirements in Tasks 1, 6, and 7.
+
 ## Task 1: Prepare the Mac worktree and prove the baseline
 
 **Files:**
@@ -37,24 +65,20 @@ If any implementation step appears to require one of those changes, stop that ta
 ```bash
 cd /path/to/CompatForge
 git fetch origin --prune
-git switch --track origin/agent/macos-headless-preview
+git switch main
+git pull --ff-only origin main
+git switch -c codex/macos-headless-preview
 ```
 
-If the branch already exists locally:
-
-```bash
-git switch agent/macos-headless-preview
-git pull --ff-only
-```
-
-Expected: branch points at the two documentation commits and `git status --short` is empty.
+Expected: the new branch starts at the merged design on latest `origin/main` and
+`git status --short` is empty.
 
 **Step 2: Create an isolated implementation worktree if desired**
 
 From a clean main checkout:
 
 ```bash
-git worktree add ../compatforge-macos-headless-preview agent/macos-headless-preview
+git worktree add ../compatforge-macos-headless-preview codex/macos-headless-preview
 cd ../compatforge-macos-headless-preview
 ```
 
@@ -605,12 +629,13 @@ git add apps/cli/src/main.rs tests/test_macos_headless_preview.py
 git commit -s -m "feat: launch prepared guest artifacts from the CLI"
 ```
 
-## Task 6: Add an explicit Apple Silicon local acceptance harness
+## Task 6: Add an automatically discovering Apple Silicon local acceptance harness
 
 **Files:**
 
 - Create: `tests/fixtures/windows_console_smoke.c`
 - Create: `tools/run_macos_headless_preview.py`
+- Create: `tools/discover_macos_wine.py`
 - Modify: `tests/test_macos_headless_preview.py`
 - Test: `tests/test_macos_headless_preview.py`
 
@@ -641,9 +666,9 @@ The harness must reject before running subprocesses when:
 - the selected PE is not produced inside the owned work root;
 - an output evidence directory already contains foreign entries.
 
-Mock subprocess results for the unit tests. Require exact command arrays; no `shell=True`, PATH Wine lookup, URL, environment discovery or neighbouring checkout access.
+Mock subprocess results for the unit tests. Require exact command arrays; no `shell=True`, PATH Wine lookup, URL, environment discovery or recursive search. The only allowed neighbouring-checkout access is the fixed read-only `Mac-Win/refs/Whisky-*-build` candidate set.
 
-**Step 3: Implement explicit harness arguments**
+**Step 3: Implement automatic discovery with complete explicit override**
 
 Required interface:
 
@@ -651,17 +676,14 @@ Required interface:
 python3 -S -B tools/run_macos_headless_preview.py \
   --compatforge-cli <absolute-built-cli> \
   --cc <absolute-x86_64-w64-mingw32-gcc> \
-  --wine-root <absolute-local-wine-root> \
-  --wine <relative-entrypoint> \
-  --wineserver <relative-entrypoint> \
   --runtime-store <absolute-local-runtime-store> \
   --storage-root <absolute-local-core-storage> \
-  --work-root <absolute-empty-work-root> \
-  --pack-id <local-preview-id> \
-  --version <explicit-version>
+  --work-root <absolute-empty-work-root>
 ```
 
-Every executable path is explicit. The harness may invoke only the supplied compiler, supplied CompatForge CLI and the repository registration tool through `sys.executable`.
+The CLI and compiler paths remain explicit. Wine defaults to the bounded,
+execute-verified discovery result. `--wine-root`, `--wine`, `--wineserver`, and
+`--version` are optional only as a group and provide the explicit override.
 
 **Step 4: Build the probe in the owned work root**
 
@@ -675,6 +697,7 @@ Exact compiler argv:
     "-Wall",
     "-Wextra",
     "-Werror",
+    "-Wl,--no-insert-timestamp",
     str(ROOT / "tests/fixtures/windows_console_smoke.c"),
     "-o",
     str(work_root / "windows-console-smoke.exe"),
@@ -729,7 +752,7 @@ Build the CLI first:
 cargo build -p compatforge-cli --locked
 ```
 
-Then run the harness with explicit local paths. Expected final output is one canonical summary JSON and exit 0. Run it twice with separate empty work roots and compare stable fields:
+Then run the harness with automatic Wine discovery. Expected final output is one canonical summary JSON and exit 0. Run it twice with separate empty work roots and compare stable fields:
 
 ```bash
 python3 - <<'PY'
@@ -772,9 +795,9 @@ git commit -s -m "test: add Apple Silicon Wine preview acceptance"
 
 Document:
 
-- exact prerequisites and explicit path discovery by the developer;
+- exact prerequisites, bounded automatic discovery and complete explicit override;
 - why local Wine is not downloaded or distributed;
-- how to identify the Wine root and entrypoints without PATH scanning by CompatForge;
+- the exact fixed Wine candidate layouts and execute-verification without PATH scanning;
 - branch/worktree setup;
 - MinGW probe compilation;
 - registration, install, verify, provider and PreparedLaunch commands;

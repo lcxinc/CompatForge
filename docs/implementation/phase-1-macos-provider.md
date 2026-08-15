@@ -25,3 +25,21 @@
 - 不把 Rosetta 推断为系统永久能力；
 - 不捆绑 D3DMetal；
 - 不修改 Mac-Win 或 ForgeOS。
+
+## 本地无头预览补充
+
+`tools/register_macos_local_wine.py` 是只接受显式本地路径的开发预览工具，
+不是正式 Runtime materializer。它不发现、下载、执行或分发 Wine，只生成
+unsigned preview bundle、既有 schema v1 Provider 配置和本地 receipt。
+
+外层 opt-in 验收工具可调用 `tools/discover_macos_wine.py`。发现器不扫描
+`PATH` 或递归遍历磁盘，只检查 CrossOver、Whisky 与相邻 Mac-Win 开发构建的
+固定候选位置；候选必须是同一根内的普通可执行文件、两个入口均为单架构
+x86_64 Mach-O，并在受限环境中实际通过 `--version`。发现结果随后仍进入相同的
+显式登记、Provider 和 PreparedLaunch 信任链。调用方也可显式提供完整四元组
+`root/wine/wineserver/version` 覆盖自动选择。
+
+Provider 生成 Runtime Binding 时把已验证的 Wine 与 wineserver SHA-256 放入
+受保护环境项。Process Supervisor 在创建进程前重新验证两个固定入口；请求环境
+不能覆盖这些值。该机制补齐 Provider probe 与 PreparedLaunch 启动之间的本地
+Runtime 漂移窗口，但不把 preview Pack 提升为 stable/candidate 信任等级。

@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
       - name: Validate repository contracts
         run: python -B scripts/validate_repository.py
+      - name: Test macOS headless preview contracts
+        run: python -S -B -m unittest tests.test_macos_headless_preview -v
       - name: Test Bottle migration contracts and independent goldens
         run: python -S -B -m unittest tests.test_bottle_migration_contracts.BottleMigrationRepositoryTests tests.test_bottle_migration_contracts.BottleMigrationGoldenTests
       - name: Check portable Mac-Win assets

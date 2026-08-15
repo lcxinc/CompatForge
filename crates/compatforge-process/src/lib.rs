@@ -7,9 +7,11 @@ use compatforge_domain::{
     WineServerLifecycle, SCHEMA_VERSION_V1,
 };
 use compatforge_guest_artifact::{verify_binding_contents, GuestArtifactError};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -21,11 +23,14 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const WINE_SERVER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const EXECUTABLE_BUSY_RETRY_LIMIT: usize = 20;
 const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+const RUNTIME_EXECUTABLE_DIGEST_ENV: &str = "COMPATFORGE_RUNTIME_EXECUTABLE_SHA256";
+const WINESERVER_EXECUTABLE_DIGEST_ENV: &str = "COMPATFORGE_WINESERVER_EXECUTABLE_SHA256";
 
 #[derive(Debug)]
 pub enum ProcessError {
     InvalidPlan(ContractError),
     InvalidGuestArtifact(GuestArtifactError),
+    InvalidRuntimeEvidence(&'static str),
     Isolation(io::Error),
     Spawn(io::Error),
     Terminate(io::Error),
@@ -37,6 +42,7 @@ impl fmt::Display for ProcessError {
         match self {
             Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
             Self::InvalidGuestArtifact(error) => write!(formatter, "invalid guest artifact: {error}"),
+            Self::InvalidRuntimeEvidence(field) => write!(formatter, "invalid pinned Runtime evidence: {field}"),
             Self::Isolation(error) => write!(formatter, "process-tree isolation failed: {error}"),
             Self::Spawn(error) => write!(formatter, "process spawn failed: {error}"),
             Self::Terminate(error) => write!(formatter, "process termination failed: {error}"),
@@ -51,7 +57,7 @@ impl std::error::Error for ProcessError {
             Self::InvalidPlan(error) => Some(error),
             Self::InvalidGuestArtifact(error) => Some(error),
             Self::Isolation(error) | Self::Spawn(error) | Self::Terminate(error) => Some(error),
-            Self::WinePrefixBusy(_) => None,
+            Self::InvalidRuntimeEvidence(_) | Self::WinePrefixBusy(_) => None,
         }
     }
 }
@@ -72,6 +78,7 @@ impl ProcessSupervisor {
         if let Some(binding) = &plan.guest_artifact {
             verify_binding_contents(binding).map_err(ProcessError::InvalidGuestArtifact)?;
         }
+        verify_pinned_runtime(plan)?;
         let wine_session = WineSession::acquire(plan)?;
 
         let mut command = Command::new(&plan.process.executable);
@@ -145,6 +152,85 @@ impl ProcessSupervisor {
             controller,
         })
     }
+}
+
+fn verify_pinned_runtime(plan: &LaunchPlan) -> Result<(), ProcessError> {
+    let runtime_digest = plan.process.environment.get(RUNTIME_EXECUTABLE_DIGEST_ENV);
+    let wineserver_digest = plan.process.environment.get(WINESERVER_EXECUTABLE_DIGEST_ENV);
+    match (runtime_digest, wineserver_digest) {
+        (None, None) => return Ok(()),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(ProcessError::InvalidRuntimeEvidence("incomplete Runtime evidence"));
+        }
+        (Some(runtime_digest), Some(wineserver_digest)) => {
+            verify_pinned_executable(
+                Path::new(&plan.process.executable),
+                runtime_digest,
+                "runtime executable",
+            )?;
+            let lifecycle = plan
+                .lifecycle
+                .wineserver
+                .as_ref()
+                .ok_or(ProcessError::InvalidRuntimeEvidence("wineserver lifecycle"))?;
+            verify_pinned_executable(
+                Path::new(&lifecycle.executable),
+                wineserver_digest,
+                "wineserver executable",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_pinned_executable(path: &Path, expected: &str, field: &'static str) -> Result<(), ProcessError> {
+    if expected.len() != 71
+        || !expected.starts_with("sha256:")
+        || !expected[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(ProcessError::InvalidRuntimeEvidence(field));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProcessError::InvalidRuntimeEvidence(field))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || !is_executable(path) {
+        return Err(ProcessError::InvalidRuntimeEvidence(field));
+    }
+    let actual = sha256_file(path).map_err(|_| ProcessError::InvalidRuntimeEvidence(field))?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(ProcessError::InvalidRuntimeEvidence(field));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let mut value = String::from("sha256:");
+    for byte in digest.finalize() {
+        use std::fmt::Write as _;
+        write!(&mut value, "{byte:02x}").expect("writing a digest to a string cannot fail");
+    }
+    Ok(value)
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 pub struct LaunchHandle {
@@ -917,6 +1003,69 @@ mod tests {
             ))
         ));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_tampered_pinned_runtime_before_spawning() {
+        let mut plan = fixture_plan();
+        plan.process.environment.insert(
+            RUNTIME_EXECUTABLE_DIGEST_ENV.into(),
+            format!("sha256:{}", "0".repeat(64)),
+        );
+        plan.process.environment.insert(
+            WINESERVER_EXECUTABLE_DIGEST_ENV.into(),
+            format!("sha256:{}", "0".repeat(64)),
+        );
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: plan.process.executable.clone(),
+            prefix: format!("runtime-evidence-prefix-{}", std::process::id()),
+        });
+        assert!(matches!(
+            ProcessSupervisor::start(&plan),
+            Err(ProcessError::InvalidRuntimeEvidence("runtime executable"))
+        ));
+    }
+
+    #[test]
+    fn refuses_a_tampered_pinned_wineserver_before_spawning() {
+        let mut plan = fixture_plan();
+        let runtime_digest = sha256_file(Path::new(&plan.process.executable)).unwrap();
+        plan.process
+            .environment
+            .insert(RUNTIME_EXECUTABLE_DIGEST_ENV.into(), runtime_digest);
+        plan.process.environment.insert(
+            WINESERVER_EXECUTABLE_DIGEST_ENV.into(),
+            format!("sha256:{}", "0".repeat(64)),
+        );
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: plan.process.executable.clone(),
+            prefix: format!("runtime-evidence-prefix-{}", std::process::id()),
+        });
+        assert!(matches!(
+            ProcessSupervisor::start(&plan),
+            Err(ProcessError::InvalidRuntimeEvidence("wineserver executable"))
+        ));
+    }
+
+    #[test]
+    fn accepts_complete_fresh_runtime_evidence_and_rejects_incomplete_evidence() {
+        let mut plan = fixture_plan();
+        let digest = sha256_file(Path::new(&plan.process.executable)).unwrap();
+        plan.process
+            .environment
+            .insert(RUNTIME_EXECUTABLE_DIGEST_ENV.into(), digest.clone());
+        assert!(matches!(
+            verify_pinned_runtime(&plan),
+            Err(ProcessError::InvalidRuntimeEvidence("incomplete Runtime evidence"))
+        ));
+        plan.process
+            .environment
+            .insert(WINESERVER_EXECUTABLE_DIGEST_ENV.into(), digest);
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: plan.process.executable.clone(),
+            prefix: format!("runtime-evidence-prefix-{}", std::process::id()),
+        });
+        verify_pinned_runtime(&plan).unwrap();
     }
 
     fn helper_plan() -> LaunchPlan {
