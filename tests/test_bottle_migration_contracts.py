@@ -2413,6 +2413,51 @@ class BottleMigrationRepositoryTests(unittest.TestCase):
                 workflow.write_text(content, encoding="utf-8")
                 self.assertTrue(validator.validate_bottle_migration_repository(root))
 
+        command_argument_mutations = {
+            "snapshot-forged-store": (
+                "          snapshot_receipt=\"$(cargo run -p compatforge-cli --locked -- bottle snapshot \\\n"
+                "            target/bottle-store tests/fixtures/bottle-migration/win64",
+                "          snapshot_receipt=\"$(cargo run -p compatforge-cli --locked -- bottle snapshot \\\n"
+                "            target/forged-store tests/fixtures/bottle-migration/win64",
+            ),
+            "snapshot-wrong-fixture": (
+                "            target/bottle-store tests/fixtures/bottle-migration/win64",
+                "            target/bottle-store tests/fixtures/bottle-migration/win32",
+            ),
+            "plan-forged-runtime-map": (
+                "            target/runtime-store tests/fixtures/bottle-migration/runtime-map.json",
+                "            target/runtime-store tests/fixtures/bottle-migration/forged-map.json",
+            ),
+        }
+        for name, (expected, replacement) in command_argument_mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-validator-"
+            ) as temporary:
+                root = self._copy_validation_tree(Path(temporary))
+                workflow = root / ".github" / "workflows" / "ci.yml"
+                content = workflow.read_text(encoding="utf-8")
+                self.assertIn(expected, content)
+                workflow.write_text(
+                    content.replace(expected, replacement, 1),
+                    encoding="utf-8",
+                )
+                self.assertTrue(validator.validate_bottle_migration_repository(root))
+
+        with self.subTest(name="duplicate-bottle-fixture-step"), tempfile.TemporaryDirectory(
+            prefix="compatforge-bottle-validator-"
+        ) as temporary:
+            root = self._copy_validation_tree(Path(temporary))
+            workflow = root / ".github" / "workflows" / "ci.yml"
+            content = workflow.read_text(encoding="utf-8")
+            start = content.index("      - name: Run Bottle migration fixture sequence\n")
+            end = content.index("      - name: Check strict Bottle migration boundary on macOS\n", start)
+            fixture_step = content[start:end]
+            workflow.write_text(
+                content[:end] + fixture_step + content[end:],
+                encoding="utf-8",
+            )
+            self.assertTrue(validator.validate_bottle_migration_repository(root))
+
     def test_validator_bounds_schema_directory_enumeration_before_sorting(self) -> None:
         validator = self._validator()
 

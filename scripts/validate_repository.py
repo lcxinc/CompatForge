@@ -188,6 +188,7 @@ BOTTLE_MIGRATION_PLAN_DIGESTS = {
     "win32": "sha256:0fd681397b014e699a5e1251ee0045e4d1a95408b6cec97791bb2f70805d12da",
     "win64": "sha256:ee984e0e15ba9707b8ff9c6a8ac745c6ecc60149d687ffdda5336cf797388dba",
 }
+BOTTLE_MIGRATION_CI_RUN_SHA256 = "3c9f1a30ed4956c466cce8a0526d8ae640112abbaf900885af3fd5bef6334300"
 BOTTLE_MIGRATION_FIXTURE_COUNTS = {
     "win32": {"entryCount": 4, "totalFileBytes": 558},
     "win64": {"entryCount": 4, "totalFileBytes": 1152},
@@ -1221,27 +1222,26 @@ def _bottle_ci_active_lines(workflow_text: str) -> list[tuple[int, str]]:
 
 def _bottle_require_ci_sequence(workflow_text: str) -> None:
     active = _bottle_ci_active_lines(workflow_text)
-    step_index = None
-    step_indent = None
-    for index, line in active:
-        stripped = line.strip()
-        if stripped == "- name: Run Bottle migration fixture sequence":
-            step_index = index
-            step_indent = len(line) - len(line.lstrip())
-            break
-    if step_index is None or step_indent is None:
+    fixture_steps = [
+        (position, index, len(line) - len(line.lstrip()))
+        for position, (index, line) in enumerate(active)
+        if line.strip() == "- name: Run Bottle migration fixture sequence"
+    ]
+    if len(fixture_steps) != 1:
         raise ValueError("Bottle migration CI fixture step is missing")
+    step_position, step_index, step_indent = fixture_steps[0]
     step_lines = []
-    for index, line in active:
-        if index < step_index:
-            continue
+    for index, line in active[step_position:]:
         if index > step_index and len(line) - len(line.lstrip()) <= step_indent:
-            if line.strip().startswith("- name:"):
-                break
+            break
         step_lines.append(line)
-    if not any(line.strip() == "run: |" for line in step_lines):
+    run_positions = [index for index, line in enumerate(step_lines) if line.strip() == "run: |"]
+    if len(run_positions) != 1:
         raise ValueError("Bottle migration CI fixture step has no run block")
-    run_lines = [line for line in step_lines if line.strip() != "run: |" and line != step_lines[0]]
+    run_lines = step_lines[run_positions[0] + 1 :]
+    canonical_run = ("\n".join(line.strip() for line in run_lines) + "\n").encode("utf-8")
+    if hashlib.sha256(canonical_run).hexdigest() != BOTTLE_MIGRATION_CI_RUN_SHA256:
+        raise ValueError("Bottle migration CI fixture command block changed")
     stage_positions: list[int] = []
     for stage in ("snapshot", "plan", "import", "verify", "rollback"):
         if stage in {"snapshot", "plan"}:
