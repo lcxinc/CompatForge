@@ -111,6 +111,7 @@ dependencies = [
  "compatforge-domain",
  "compatforge-guest-artifact",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
