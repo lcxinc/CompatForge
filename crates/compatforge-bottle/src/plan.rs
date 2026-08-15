@@ -518,10 +518,10 @@ fn runtime_mismatch() -> BottleMigrationError {
     BottleMigrationError::new(DiagnosticCode::RuntimeMismatch)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 type LegacyManifestBytesHook = Box<dyn FnOnce(&mut Vec<u8>)>;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 thread_local! {
     static LEGACY_MANIFEST_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
         std::cell::RefCell::new(None)
@@ -531,12 +531,12 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn set_legacy_manifest_read_hook(hook: Box<dyn FnOnce()>) {
     LEGACY_MANIFEST_READ_HOOK.with(|value| *value.borrow_mut() = Some(hook));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn run_legacy_manifest_read_hook() {
     let hook = LEGACY_MANIFEST_READ_HOOK.with(|value| value.borrow_mut().take());
     if let Some(hook) = hook {
@@ -544,12 +544,12 @@ pub(crate) fn run_legacy_manifest_read_hook() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn set_legacy_manifest_after_bytes_hook(hook: LegacyManifestBytesHook) {
     LEGACY_MANIFEST_AFTER_BYTES_HOOK.with(|value| *value.borrow_mut() = Some(hook));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn run_legacy_manifest_after_bytes_hook(bytes: &mut Vec<u8>) {
     let hook = LEGACY_MANIFEST_AFTER_BYTES_HOOK.with(|value| value.borrow_mut().take());
     if let Some(hook) = hook {
@@ -560,17 +560,29 @@ pub(crate) fn run_legacy_manifest_after_bytes_hook(bytes: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::DiagnosticCode;
+    #[cfg(not(target_os = "macos"))]
     use crate::{BottleSnapshot, BottleStore, DiagnosticCode};
+    #[cfg(not(target_os = "macos"))]
     use compatforge_domain::{HostOs, RuntimeChannel, RuntimeComponent, RuntimeHost, RuntimePackManifest};
+    #[cfg(not(target_os = "macos"))]
     use compatforge_runtime::{RejectAllSignatures, RuntimePackStore};
+    #[cfg(not(target_os = "macos"))]
     use serde_json::json;
+    #[cfg(not(target_os = "macos"))]
     use std::collections::BTreeMap;
+    #[cfg(not(target_os = "macos"))]
     use std::fs;
+    #[cfg(not(target_os = "macos"))]
     use std::path::{Path, PathBuf};
+    #[cfg(not(target_os = "macos"))]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(not(target_os = "macos"))]
     struct TestDirectory(PathBuf);
 
+    #[cfg(not(target_os = "macos"))]
     impl TestDirectory {
         fn new(name: &str) -> Self {
             let nonce = SystemTime::now()
@@ -588,6 +600,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);

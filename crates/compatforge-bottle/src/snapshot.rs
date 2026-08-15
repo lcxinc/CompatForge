@@ -1035,12 +1035,12 @@ impl BottleStore {
             .objects
             .bind_regular(std::ffi::OsStr::new(digest_hex))
             .map_err(|_| snapshot_corrupt())?;
-        #[cfg(test)]
+        #[cfg(all(test, not(target_os = "macos")))]
         crate::plan::run_legacy_manifest_read_hook();
         let bytes = read_bounded_file(&mut file, MAX_MANIFEST_BYTES).map_err(|_| snapshot_corrupt())?;
-        #[cfg(test)]
+        #[cfg(all(test, not(target_os = "macos")))]
         let mut bytes = bytes;
-        #[cfg(test)]
+        #[cfg(all(test, not(target_os = "macos")))]
         crate::plan::run_legacy_manifest_after_bytes_hook(&mut bytes);
         if u64::try_from(bytes.len()).map_err(|_| snapshot_corrupt())? != size {
             return Err(snapshot_corrupt());
