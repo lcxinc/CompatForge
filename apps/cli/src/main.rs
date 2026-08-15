@@ -4,7 +4,9 @@ use compatforge_domain::{CoreConfig, LaunchPlan, LaunchRequest, RuntimeEventKind
 use compatforge_inspect::inspect_path;
 use compatforge_orchestrator::{PolicyEngine, PreparedLaunch};
 use compatforge_process::{EventPoll, ProcessSupervisor};
-use compatforge_provider_macos::{MacOsProviderConfig, MacOsProviderSet};
+use compatforge_provider_macos::{
+    create_local_context, MacOsLocalContextRequest, MacOsProviderConfig, MacOsProviderSet,
+};
 use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackStore};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -70,6 +72,22 @@ fn run_arguments(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             let snapshot = MacOsProviderSet::probe(&HostProbe::probe()?, &config)?;
             let core_config = snapshot.core_config(storage_root.clone())?;
             println!("{}", serde_json::to_string_pretty(&core_config)?);
+        }
+        [group, platform, command, request_path] if group == "local" && platform == "macos" && command == "context" => {
+            let request = read_json::<MacOsLocalContextRequest>(Path::new(request_path))?;
+            let local = create_local_context(&HostProbe::probe()?, &request)?;
+            println!("{}", serde_json::to_string_pretty(&local.receipt)?);
+        }
+        [group, platform, command, request_path, context_output]
+            if group == "local" && platform == "macos" && command == "context" =>
+        {
+            let request = read_json::<MacOsLocalContextRequest>(Path::new(request_path))?;
+            let local = create_local_context(&HostProbe::probe()?, &request)?;
+            fs::write(
+                context_output,
+                format!("{}\n", serde_json::to_string_pretty(&local.config)?),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&local.receipt)?);
         }
         [command] if command == "demo-plan" => {
             let config: CoreConfig =
@@ -481,6 +499,8 @@ fn print_help() {
     println!("  compatforge-cli inspect <windows-executable>");
     println!("  compatforge-cli provider macos probe <provider-config.json>");
     println!("  compatforge-cli provider macos context <provider-config.json> <storage-root>");
+    println!("  compatforge-cli local macos context <bootstrap-request.json>");
+    println!("  compatforge-cli local macos context <bootstrap-request.json> <private-context-output.json>");
     println!("  compatforge-cli demo-plan");
     println!("  compatforge-cli plan <context-config.json> <launch-request.json>");
     println!(

@@ -3,12 +3,12 @@
 #![forbid(unsafe_code)]
 
 use compatforge_domain::{
-    CapabilityReport, ContractError, CoreConfig, CpuArchitecture, GraphicsBackendKind, GraphicsSelection,
-    GuestArtifactBinding, HostOs, LaunchPlan, LaunchRequest, NativeCommand, ProcessLifecycle, ProviderDescriptor,
-    RuntimeKind, RuntimeSelection, SandboxPolicy, TranslatorKind, TranslatorSelection, WineServerLifecycle,
-    SCHEMA_VERSION_V1,
+    BottleExecutableBinding, CapabilityReport, ContractError, CoreConfig, CpuArchitecture, ExecutableMode,
+    GraphicsBackendKind, GraphicsSelection, GuestArtifactBinding, HostOs, LaunchPlan, LaunchRequest, NativeCommand,
+    ProcessLifecycle, ProviderDescriptor, RuntimeKind, RuntimeSelection, SandboxPolicy, TranslatorKind,
+    TranslatorSelection, WineServerLifecycle, SCHEMA_VERSION_V1,
 };
-use compatforge_guest_artifact::{GuestArtifactError, GuestArtifactStore};
+use compatforge_guest_artifact::{GuestArtifactError, GuestArtifactStore, PreparedBottleExecutable};
 use compatforge_inspect::PeInspectionReport;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -87,9 +87,15 @@ impl std::error::Error for PreparationError {
 pub struct PreparedLaunch {
     request: LaunchRequest,
     inspection: PeInspectionReport,
-    binding: GuestArtifactBinding,
+    executable: PreparedExecutable,
     plan: LaunchPlan,
     context_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PreparedExecutable {
+    Immutable(GuestArtifactBinding),
+    Bottle(BottleExecutableBinding),
 }
 
 impl PreparedLaunch {
@@ -103,36 +109,41 @@ impl PreparedLaunch {
             return Err(PreparationError::SourcePathMismatch);
         }
         let store = GuestArtifactStore::new(&config.storage_root);
-        let prepared = store.prepare(source).map_err(PreparationError::GuestArtifact)?;
-        if request.executable.architecture != prepared.binding.architecture {
-            return Err(PreparationError::ArchitectureMismatch {
-                requested: request.executable.architecture,
-                inspected: prepared.binding.architecture,
-            });
-        }
-        if request.executable.sha256.as_deref().is_some_and(|digest| {
-            !prepared
-                .binding
-                .digest
-                .strip_prefix("sha256:")
-                .is_some_and(|actual| actual.eq_ignore_ascii_case(digest))
-        }) {
-            return Err(PreparationError::DigestMismatch);
-        }
-
-        let mut trusted_request = request.clone();
-        trusted_request
-            .executable
-            .path
-            .clone_from(&prepared.binding.stored_path);
-        trusted_request.executable.architecture = prepared.binding.architecture;
-        trusted_request.executable.sha256 = prepared.binding.digest.strip_prefix("sha256:").map(str::to_owned);
-        let plan = compile_prepared_plan(config, &trusted_request, &prepared.binding)?;
+        let (inspection, executable, trusted_request) = match request.executable.mode {
+            ExecutableMode::ImmutableArtifact => {
+                let prepared = store.prepare(source).map_err(PreparationError::GuestArtifact)?;
+                validate_requested_binding(request, prepared.binding.architecture, &prepared.binding.digest)?;
+                let mut trusted_request = request.clone();
+                trusted_request
+                    .executable
+                    .path
+                    .clone_from(&prepared.binding.stored_path);
+                trusted_request.executable.architecture = prepared.binding.architecture;
+                trusted_request.executable.sha256 = prepared.binding.digest.strip_prefix("sha256:").map(str::to_owned);
+                (
+                    prepared.inspection,
+                    PreparedExecutable::Immutable(prepared.binding),
+                    trusted_request,
+                )
+            }
+            ExecutableMode::BottleInPlace => {
+                let prepared: PreparedBottleExecutable = store
+                    .prepare_bottle_in_place(&request.bottle_id, source)
+                    .map_err(PreparationError::GuestArtifact)?;
+                validate_requested_binding(request, prepared.binding.architecture, &prepared.binding.digest)?;
+                (
+                    prepared.inspection,
+                    PreparedExecutable::Bottle(prepared.binding),
+                    request.clone(),
+                )
+            }
+        };
+        let plan = compile_prepared_plan(config, &trusted_request, &executable)?;
         let context_fingerprint = fingerprint_context(config)?;
         Ok(Self {
             request: trusted_request,
-            inspection: prepared.inspection,
-            binding: prepared.binding,
+            inspection,
+            executable,
             plan,
             context_fingerprint,
         })
@@ -152,10 +163,14 @@ impl PreparedLaunch {
         if fingerprint_context(config)? != self.context_fingerprint {
             return Err(PreparationError::ContextMismatch);
         }
-        GuestArtifactStore::new(&config.storage_root)
-            .verify(&self.binding)
-            .map_err(PreparationError::GuestArtifact)?;
-        let recompiled = compile_prepared_plan(config, &self.request, &self.binding)?;
+        let store = GuestArtifactStore::new(&config.storage_root);
+        match &self.executable {
+            PreparedExecutable::Immutable(binding) => store.verify(binding).map_err(PreparationError::GuestArtifact)?,
+            PreparedExecutable::Bottle(binding) => {
+                store.verify_bottle(binding).map_err(PreparationError::GuestArtifact)?
+            }
+        }
+        let recompiled = compile_prepared_plan(config, &self.request, &self.executable)?;
         if recompiled != self.plan {
             return Err(PreparationError::PreparedPlanMismatch);
         }
@@ -167,21 +182,56 @@ impl PreparedLaunch {
 fn compile_prepared_plan(
     config: &CoreConfig,
     request: &LaunchRequest,
-    binding: &GuestArtifactBinding,
+    executable: &PreparedExecutable,
 ) -> Result<LaunchPlan, PreparationError> {
     let mut plan = PolicyEngine::compile(config, request).map_err(PreparationError::Planning)?;
-    plan.guest_artifact = Some(binding.clone());
-    plan.decision_trace
-        .push(format!("guest-artifact {} pinned", binding.digest));
-    plan.decision_trace.push(format!(
-        "inspection {} {} accepted",
-        binding.architecture.as_str(),
-        binding.subsystem
-    ));
+    match executable {
+        PreparedExecutable::Immutable(binding) => {
+            plan.guest_artifact = Some(binding.clone());
+            plan.decision_trace
+                .push(format!("guest-artifact {} pinned", binding.digest));
+            plan.decision_trace.push(format!(
+                "inspection {} {} accepted",
+                binding.architecture.as_str(),
+                binding.subsystem
+            ));
+        }
+        PreparedExecutable::Bottle(binding) => {
+            plan.bottle_executable = Some(binding.clone());
+            plan.decision_trace
+                .push(format!("bottle-executable {} pinned in place", binding.digest));
+            plan.decision_trace.push(format!(
+                "inspection {} {} accepted",
+                binding.architecture.as_str(),
+                binding.subsystem
+            ));
+        }
+    }
     plan.validate()
         .map_err(PlanError::InvalidPlan)
         .map_err(PreparationError::Planning)?;
     Ok(plan)
+}
+
+fn validate_requested_binding(
+    request: &LaunchRequest,
+    inspected_architecture: CpuArchitecture,
+    inspected_digest: &str,
+) -> Result<(), PreparationError> {
+    if request.executable.architecture != inspected_architecture {
+        return Err(PreparationError::ArchitectureMismatch {
+            requested: request.executable.architecture,
+            inspected: inspected_architecture,
+        });
+    }
+    if request.executable.sha256.as_deref().is_some_and(|digest| {
+        !inspected_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(digest))
+    }) {
+        return Err(PreparationError::DigestMismatch);
+    }
+    Ok(())
 }
 
 fn fingerprint_context(config: &CoreConfig) -> Result<String, PreparationError> {
@@ -306,6 +356,7 @@ impl PolicyEngine {
                 working_directory,
             },
             guest_artifact: None,
+            bottle_executable: None,
             mounts: Vec::new(),
             sandbox: SandboxPolicy {
                 profile: config.sandbox_profile,
@@ -361,6 +412,25 @@ impl PolicyEngine {
             }
             if plan.process.arguments.first() != Some(&guest.stored_path) {
                 return Err(PlanError::PlanMismatch("guest executable argument"));
+            }
+        }
+        if let Some(bottle) = &plan.bottle_executable {
+            if plan.guest_artifact.is_some() {
+                return Err(PlanError::PlanMismatch(
+                    "guest artifact and Bottle executable are mutually exclusive",
+                ));
+            }
+            let expected_root = join_host_path(
+                &config.storage_root,
+                &["bottles", &bottle.bottle_id, "prefix", "drive_c"],
+            );
+            if !host_path_is_within(&expected_root, &bottle.path)
+                || plan.process.arguments.first() != Some(&bottle.path)
+            {
+                return Err(PlanError::PlanMismatch("Bottle executable path"));
+            }
+            if !host_path_is_within(&config.storage_root, &plan.process.working_directory) {
+                return Err(PlanError::PlanMismatch("working directory"));
             }
         }
 
@@ -714,6 +784,7 @@ mod tests {
             executable: ExecutableRequest {
                 path: "C:\\Program Files\\Example\\example.exe".into(),
                 architecture: CpuArchitecture::X86_64,
+                mode: ExecutableMode::ImmutableArtifact,
                 sha256: None,
             },
             arguments: vec!["--safe".into()],
@@ -754,8 +825,18 @@ mod tests {
         request
     }
 
+    fn gui_fixture_bytes() -> Vec<u8> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/hello-x86_64.exe");
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes[0xdc..0xde].copy_from_slice(&2_u16.to_le_bytes());
+        bytes
+    }
+
     fn make_object_writable(prepared: &PreparedLaunch) {
-        let path = Path::new(&prepared.binding.stored_path);
+        let path = match &prepared.executable {
+            PreparedExecutable::Immutable(binding) => Path::new(&binding.stored_path),
+            PreparedExecutable::Bottle(binding) => Path::new(&binding.path),
+        };
         #[cfg(unix)]
         if let Ok(mut permissions) = std::fs::metadata(path).map(|metadata| metadata.permissions()) {
             use std::os::unix::fs::PermissionsExt;
@@ -824,7 +905,36 @@ mod tests {
         let (config, root) = prepared_config("prepared-tamper");
         let prepared = PreparedLaunch::prepare(&config, &prepared_fixture(), &prepared_request()).unwrap();
         make_object_writable(&prepared);
-        std::fs::write(&prepared.binding.stored_path, b"replaced object").unwrap();
+        let path = match &prepared.executable {
+            PreparedExecutable::Immutable(binding) => &binding.stored_path,
+            PreparedExecutable::Bottle(binding) => &binding.path,
+        };
+        std::fs::write(path, b"replaced object").unwrap();
+        assert!(matches!(
+            prepared.authorize(&config),
+            Err(PreparationError::GuestArtifact(_))
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepares_gui_bottle_executable_in_place_and_rechecks_before_authorize() {
+        let (config, root) = prepared_config("prepared-bottle");
+        let source = root.join("store/bottles/gui-test/prefix/drive_c/Program Files/Example/Example.exe");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, gui_fixture_bytes()).unwrap();
+        let mut request = request();
+        request.bottle_id = "gui-test".into();
+        request.executable.path = source.to_string_lossy().into_owned();
+        request.executable.mode = ExecutableMode::BottleInPlace;
+        request.executable.architecture = CpuArchitecture::X86_64;
+        request.executable.sha256 = None;
+        let prepared = PreparedLaunch::prepare(&config, &source, &request).unwrap();
+        let plan = prepared.plan();
+        assert!(plan.guest_artifact.is_none());
+        assert_eq!(plan.bottle_executable.as_ref().unwrap().subsystem, "windowsGui");
+        PolicyEngine::authorize(&config, plan).unwrap();
+        std::fs::write(&source, b"tampered").unwrap();
         assert!(matches!(
             prepared.authorize(&config),
             Err(PreparationError::GuestArtifact(_))

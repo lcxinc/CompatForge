@@ -3,15 +3,15 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use compatforge_domain::{
-    ContractError, LaunchPlan, OutputStream, ProcessExit, ProcessOutput, RuntimeEvent, RuntimeEventKind,
+    ContractError, LaunchPlan, OutputStream, ProcessExit, ProcessOutput, RuntimeEvent, RuntimeEventKind, RuntimeKind,
     WineServerLifecycle, SCHEMA_VERSION_V1,
 };
-use compatforge_guest_artifact::{verify_binding_contents, GuestArtifactError};
+use compatforge_guest_artifact::{verify_binding_contents, verify_in_place_binding_contents, GuestArtifactError};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const WINE_SERVER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const WINE_PREFIX_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(90);
 const EXECUTABLE_BUSY_RETRY_LIMIT: usize = 20;
 const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 const RUNTIME_EXECUTABLE_DIGEST_ENV: &str = "COMPATFORGE_RUNTIME_EXECUTABLE_SHA256";
@@ -31,6 +32,7 @@ pub enum ProcessError {
     InvalidPlan(ContractError),
     InvalidGuestArtifact(GuestArtifactError),
     InvalidRuntimeEvidence(&'static str),
+    UnsafeDirectory(&'static str),
     Isolation(io::Error),
     Spawn(io::Error),
     Terminate(io::Error),
@@ -43,6 +45,7 @@ impl fmt::Display for ProcessError {
             Self::InvalidPlan(error) => write!(formatter, "invalid launch plan: {error}"),
             Self::InvalidGuestArtifact(error) => write!(formatter, "invalid guest artifact: {error}"),
             Self::InvalidRuntimeEvidence(field) => write!(formatter, "invalid pinned Runtime evidence: {field}"),
+            Self::UnsafeDirectory(field) => write!(formatter, "unsafe launch directory: {field}"),
             Self::Isolation(error) => write!(formatter, "process-tree isolation failed: {error}"),
             Self::Spawn(error) => write!(formatter, "process spawn failed: {error}"),
             Self::Terminate(error) => write!(formatter, "process termination failed: {error}"),
@@ -57,7 +60,7 @@ impl std::error::Error for ProcessError {
             Self::InvalidPlan(error) => Some(error),
             Self::InvalidGuestArtifact(error) => Some(error),
             Self::Isolation(error) | Self::Spawn(error) | Self::Terminate(error) => Some(error),
-            Self::InvalidRuntimeEvidence(_) | Self::WinePrefixBusy(_) => None,
+            Self::InvalidRuntimeEvidence(_) | Self::UnsafeDirectory(_) | Self::WinePrefixBusy(_) => None,
         }
     }
 }
@@ -78,18 +81,37 @@ impl ProcessSupervisor {
         if let Some(binding) = &plan.guest_artifact {
             verify_binding_contents(binding).map_err(ProcessError::InvalidGuestArtifact)?;
         }
+        if let Some(binding) = &plan.bottle_executable {
+            verify_in_place_binding_contents(binding).map_err(ProcessError::InvalidGuestArtifact)?;
+        }
         verify_pinned_runtime(plan)?;
+        materialize_launch_directories(plan)?;
         let wine_session = WineSession::acquire(plan)?;
+        initialize_wine_prefix(plan)?;
+        let guest_execution_alias = prepare_guest_execution_alias(plan)?;
+        let keep_alive_after_root_exit = plan.bottle_executable.is_some()
+            || plan
+                .guest_artifact
+                .as_ref()
+                .is_some_and(|binding| binding.subsystem == "windowsGui");
 
         let mut command = Command::new(&plan.process.executable);
         command
-            .args(&plan.process.arguments)
+            .args(execution_arguments(plan, guest_execution_alias.as_deref()))
             .current_dir(&plan.process.working_directory)
             .env_clear()
             .envs(&plan.process.environment)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(if keep_alive_after_root_exit {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
+            .stderr(if keep_alive_after_root_exit {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            });
 
         let prepared_tree = platform::PreparedProcessTree::prepare(&mut command).map_err(ProcessError::Isolation)?;
         let mut child = command.spawn().map_err(ProcessError::Spawn)?;
@@ -108,6 +130,7 @@ impl ProcessSupervisor {
         let child = Arc::new(Mutex::new(child));
         let root_exited = Arc::new(AtomicBool::new(false));
         let completed = Arc::new(AtomicBool::new(false));
+        let termination_started = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
         let emitter = Arc::new(EventEmitter::new(plan.request_id.clone(), sender));
         let controller = Arc::new(TerminationController {
@@ -116,10 +139,11 @@ impl ProcessSupervisor {
             emitter: Arc::clone(&emitter),
             root_exited: Arc::clone(&root_exited),
             completed: Arc::clone(&completed),
-            termination_started: AtomicBool::new(false),
+            termination_started: Arc::clone(&termination_started),
             process_id,
             grace_period: Duration::from_millis(plan.lifecycle.termination_grace_milliseconds),
             wine_session: wine_session.clone(),
+            keep_alive_after_root_exit,
         });
 
         emitter.emit(RuntimeEventKind::Started, Some(process_id), None, None, None);
@@ -133,16 +157,21 @@ impl ProcessSupervisor {
         spawn_exit_watcher(
             child,
             process_tree,
-            Arc::clone(&root_exited),
-            Arc::clone(&completed),
-            Arc::clone(&emitter),
-            wine_session,
-            output_readers,
+            ExitWatcherConfig {
+                root_exited: Arc::clone(&root_exited),
+                completed: Arc::clone(&completed),
+                emitter: Arc::clone(&emitter),
+                wine_session,
+                output_readers,
+                termination_started: Arc::clone(&termination_started),
+                keep_alive_after_root_exit,
+            },
         );
         if let Some(maximum_runtime) = plan.lifecycle.maximum_runtime_milliseconds {
             spawn_timeout_watcher(
                 Arc::downgrade(&controller),
                 root_exited,
+                keep_alive_after_root_exit,
                 Duration::from_millis(maximum_runtime),
             );
         }
@@ -152,6 +181,169 @@ impl ProcessSupervisor {
             controller,
         })
     }
+}
+
+fn execution_arguments(plan: &LaunchPlan, guest_alias: Option<&Path>) -> Vec<String> {
+    let mut arguments = plan.process.arguments.clone();
+    if let Some(alias) = guest_alias {
+        if let Some(first) = arguments.first_mut() {
+            *first = alias.to_string_lossy().into_owned();
+        }
+    }
+    arguments
+}
+
+/// Wine selects the PE loader from the filename suffix. Immutable guest
+/// objects intentionally use extensionless content-addressed paths, so make
+/// a same-filesystem hard-link with a deterministic `.exe` suffix immediately
+/// before launch. The source object remains the binding of record and the
+/// alias is rechecked for type, size and digest before it is used.
+fn prepare_guest_execution_alias(plan: &LaunchPlan) -> Result<Option<PathBuf>, ProcessError> {
+    if plan.runtime.provider != RuntimeKind::Wine {
+        return Ok(None);
+    }
+    let Some(binding) = &plan.guest_artifact else {
+        return Ok(None);
+    };
+    let source = Path::new(&binding.stored_path);
+    if source.extension().is_some() {
+        return Ok(None);
+    }
+    let Some(name) = source.file_name().and_then(|value| value.to_str()) else {
+        return Err(ProcessError::InvalidRuntimeEvidence("guest execution alias"));
+    };
+    let alias = source.with_file_name(format!("{name}.exe"));
+    match std::fs::symlink_metadata(&alias) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(ProcessError::InvalidRuntimeEvidence("guest execution alias"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::hard_link(source, &alias)
+                .map_err(|_| ProcessError::InvalidRuntimeEvidence("guest execution alias"))?;
+        }
+        Err(_) => return Err(ProcessError::InvalidRuntimeEvidence("guest execution alias")),
+    }
+    let metadata =
+        std::fs::symlink_metadata(&alias).map_err(|_| ProcessError::InvalidRuntimeEvidence("guest execution alias"))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() != binding.size_bytes
+        || sha256_file(&alias).map_err(|_| ProcessError::InvalidRuntimeEvidence("guest execution alias"))?
+            != binding.digest
+    {
+        return Err(ProcessError::InvalidRuntimeEvidence("guest execution alias"));
+    }
+    Ok(Some(alias))
+}
+
+/// Initialize a newly materialized Wine prefix with the same pinned Wine
+/// executable that will launch the guest. This is deliberately a direct
+/// executable invocation with a bounded wait: it never consults PATH or a
+/// shell, and it runs only when the prefix has not yet produced Wine's
+/// system32 marker. Existing prefixes are left untouched.
+fn initialize_wine_prefix(plan: &LaunchPlan) -> Result<(), ProcessError> {
+    if plan.runtime.provider != RuntimeKind::Wine {
+        return Ok(());
+    }
+    // A managed Wine launch always carries a wineserver lifecycle.  Keep the
+    // low-level process/FFI compatibility path usable for callers that only
+    // label a command as Wine but intentionally provide no managed prefix
+    // lifecycle (for example, a native process probe).
+    if plan.lifecycle.wineserver.is_none() {
+        return Ok(());
+    }
+    let Some(prefix) = plan.process.environment.get("WINEPREFIX") else {
+        return Ok(());
+    };
+    let prefix = Path::new(prefix);
+    let marker = prefix.join("drive_c/windows/system32/ntdll.dll");
+    match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => return Ok(()),
+        Ok(_) => return Err(ProcessError::UnsafeDirectory("Wine prefix marker")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(ProcessError::UnsafeDirectory("Wine prefix marker")),
+    }
+
+    let mut command = Command::new(&plan.process.executable);
+    command
+        .args(["wineboot", "-u"])
+        .current_dir(&plan.process.working_directory)
+        .env_clear()
+        .envs(&plan.process.environment)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(ProcessError::Spawn)?;
+    let deadline = Instant::now() + WINE_PREFIX_BOOTSTRAP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(exit)) if exit.success() => {
+                let metadata = std::fs::symlink_metadata(&marker)
+                    .map_err(|_| ProcessError::UnsafeDirectory("Wine prefix marker"))?;
+                if metadata.is_file() && !metadata.file_type().is_symlink() {
+                    return Ok(());
+                }
+                return Err(ProcessError::UnsafeDirectory("Wine prefix marker"));
+            }
+            Ok(Some(exit)) => {
+                return Err(ProcessError::Spawn(io::Error::other(format!(
+                    "wineboot exited with {exit}"
+                ))));
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(PROCESS_POLL_INTERVAL),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ProcessError::Spawn(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "wineboot did not initialize the prefix within 90 seconds",
+                )));
+            }
+            Err(error) => return Err(ProcessError::Spawn(error)),
+        }
+    }
+}
+
+/// Materialize the working directory and Wine prefix only after plan
+/// authorization and digest checks. Every existing path component is checked
+/// with `symlink_metadata` so a path collision cannot redirect the launch.
+fn materialize_launch_directories(plan: &LaunchPlan) -> Result<(), ProcessError> {
+    ensure_directory(Path::new(&plan.process.working_directory), "working directory")?;
+    if let Some(prefix) = plan.process.environment.get("WINEPREFIX") {
+        ensure_directory(Path::new(prefix), "WINEPREFIX")?;
+    }
+    Ok(())
+}
+
+fn ensure_directory(path: &Path, field: &'static str) -> Result<(), ProcessError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(ProcessError::UnsafeDirectory(field));
+    }
+    let mut cursor = Path::new("").to_path_buf();
+    for component in path.components() {
+        cursor.push(component.as_os_str());
+        match std::fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(ProcessError::UnsafeDirectory(field));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                std::fs::create_dir(&cursor).map_err(|_| ProcessError::UnsafeDirectory(field))?;
+                let metadata = std::fs::symlink_metadata(&cursor).map_err(|_| ProcessError::UnsafeDirectory(field))?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(ProcessError::UnsafeDirectory(field));
+                }
+            }
+            Err(_) => return Err(ProcessError::UnsafeDirectory(field)),
+        }
+    }
+    Ok(())
 }
 
 fn verify_pinned_runtime(plan: &LaunchPlan) -> Result<(), ProcessError> {
@@ -279,15 +471,18 @@ struct TerminationController {
     emitter: Arc<EventEmitter>,
     root_exited: Arc<AtomicBool>,
     completed: Arc<AtomicBool>,
-    termination_started: AtomicBool,
+    termination_started: Arc<AtomicBool>,
     process_id: u32,
     grace_period: Duration,
     wine_session: Option<Arc<WineSession>>,
+    keep_alive_after_root_exit: bool,
 }
 
 impl TerminationController {
     fn request_termination(self: &Arc<Self>, reason: TerminationReason) -> Result<(), ProcessError> {
-        if self.root_exited.load(Ordering::Acquire) || self.completed.load(Ordering::Acquire) {
+        if self.completed.load(Ordering::Acquire)
+            || (self.root_exited.load(Ordering::Acquire) && !self.keep_alive_after_root_exit)
+        {
             return Ok(());
         }
         if self
@@ -331,12 +526,12 @@ impl TerminationController {
     fn escalate_after_grace(&self) {
         let deadline = Instant::now() + self.grace_period;
         while Instant::now() < deadline {
-            if self.root_exited.load(Ordering::Acquire) {
+            if self.root_exited.load(Ordering::Acquire) && !self.keep_alive_after_root_exit {
                 return;
             }
             thread::sleep(PROCESS_POLL_INTERVAL);
         }
-        if self.root_exited.load(Ordering::Acquire) {
+        if self.root_exited.load(Ordering::Acquire) && !self.keep_alive_after_root_exit {
             return;
         }
 
@@ -466,15 +661,26 @@ fn spawn_output_reader(
     })
 }
 
-fn spawn_exit_watcher(
-    child: Arc<Mutex<Child>>,
-    process_tree: Arc<platform::ProcessTree>,
+struct ExitWatcherConfig {
     root_exited: Arc<AtomicBool>,
     completed: Arc<AtomicBool>,
     emitter: Arc<EventEmitter>,
     wine_session: Option<Arc<WineSession>>,
     output_readers: Vec<thread::JoinHandle<()>>,
-) {
+    termination_started: Arc<AtomicBool>,
+    keep_alive_after_root_exit: bool,
+}
+
+fn spawn_exit_watcher(child: Arc<Mutex<Child>>, process_tree: Arc<platform::ProcessTree>, config: ExitWatcherConfig) {
+    let ExitWatcherConfig {
+        root_exited,
+        completed,
+        emitter,
+        wine_session,
+        output_readers,
+        termination_started,
+        keep_alive_after_root_exit,
+    } = config;
     thread::spawn(move || {
         let result = loop {
             let result = lock_recover(&child).try_wait();
@@ -485,6 +691,12 @@ fn spawn_exit_watcher(
             }
         };
         root_exited.store(true, Ordering::Release);
+
+        if keep_alive_after_root_exit {
+            while !termination_started.load(Ordering::Acquire) {
+                thread::sleep(PROCESS_POLL_INTERVAL);
+            }
+        }
 
         if let Some(wine_session) = wine_session {
             if let Err(error) = wine_session.stop(&emitter) {
@@ -537,12 +749,13 @@ fn spawn_exit_watcher(
 fn spawn_timeout_watcher(
     controller: Weak<TerminationController>,
     root_exited: Arc<AtomicBool>,
+    keep_alive_after_root_exit: bool,
     maximum_runtime: Duration,
 ) {
     thread::spawn(move || {
         let deadline = Instant::now() + maximum_runtime;
         while Instant::now() < deadline {
-            if root_exited.load(Ordering::Acquire) || controller.strong_count() == 0 {
+            if (root_exited.load(Ordering::Acquire) && !keep_alive_after_root_exit) || controller.strong_count() == 0 {
                 return;
             }
             thread::sleep(PROCESS_POLL_INTERVAL);
@@ -615,7 +828,15 @@ impl WineSession {
             Some(format!("stopping wineserver for prefix {}", self.lifecycle.prefix)),
         );
 
-        let stop_result = self.run_command("-k").and_then(|()| self.run_command("-w"));
+        // A root/descendant may have already caused wineserver to exit. In
+        // that case `-k` returns status 1, while the authoritative `-w`
+        // rendezvous succeeds; cleanup is still complete and idempotent.
+        let kill_result = self.run_command("-k");
+        let wait_result = self.run_command("-w");
+        let stop_result = match (kill_result, wait_result) {
+            (_, Ok(())) => Ok(()),
+            (Ok(()), Err(error)) | (Err(error), Err(_)) => Err(error),
+        };
         self.release_lease();
         stop_result
     }
@@ -966,6 +1187,7 @@ mod tests {
                 working_directory: std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             },
             guest_artifact: None,
+            bottle_executable: None,
             mounts: Vec::new(),
             sandbox: SandboxPolicy {
                 profile: SandboxProfile::Desktop,
