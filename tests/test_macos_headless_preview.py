@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -381,7 +382,10 @@ class MacOsHeadlessPreviewHarnessTests(unittest.TestCase):
                 return completed(argv, "".join(json.dumps(event) + "\n" for event in events))
             self.fail(f"unexpected command: {argv}")
 
-        summary = self.module.run(self.arguments(), runner=fake_runner)
+        with mock.patch.object(self.module.platform, "system", return_value="Darwin"), mock.patch.object(
+            self.module.platform, "machine", return_value="arm64"
+        ):
+            summary = self.module.run(self.arguments(), runner=fake_runner)
         self.assertTrue(summary["success"])
         self.assertEqual(summary["packDigest"], pack_digest)
         self.assertEqual(summary["runtimeSource"], "explicit")
