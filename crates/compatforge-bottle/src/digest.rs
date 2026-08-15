@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 pub(crate) const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);

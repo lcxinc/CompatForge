@@ -593,6 +593,10 @@ mod tests {
     #[test]
     fn diagnostic_codes_are_closed() {
         let diagnostics = [
+            (
+                DiagnosticCode::UnsupportedPlatform,
+                "Bottle snapshot is unsupported on this platform",
+            ),
             (DiagnosticCode::SourceChanged, "Bottle source changed during migration"),
             (DiagnosticCode::UnsafeEntry, "Bottle source contains an unsafe entry"),
             (DiagnosticCode::InvalidManifest, "Bottle manifest is invalid"),

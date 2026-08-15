@@ -1,13 +1,13 @@
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
+// Strict macOS mode retains the held-handle verifier primitives while snapshot
+// creation is rejected before access, leaving creation-only helpers unused.
+
 use std::ffi::OsStr;
 use std::fs::{File as RawFile, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-#[cfg(unix)]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(unix)]
-static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(crate) struct HeldFile(RawFile);
@@ -15,6 +15,7 @@ pub(crate) struct HeldFile(RawFile);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandleClonePoint {
     OwnedTemporaryCreate,
+    #[cfg(windows)]
     SnapshotPublicationReadback,
 }
 
@@ -22,13 +23,6 @@ pub(crate) enum HandleClonePoint {
 thread_local! {
     static HANDLE_REGISTRY: std::cell::Cell<(u64, u64, i64)> = const { std::cell::Cell::new((0, 0, 0)) };
     static HANDLE_CLONE_FAILURE: std::cell::Cell<Option<HandleClonePoint>> = const { std::cell::Cell::new(None) };
-}
-
-#[cfg(all(test, unix))]
-thread_local! {
-    static REMOVE_AFTER_VERIFY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
-        std::cell::RefCell::new(None)
-    };
 }
 
 impl HeldFile {
@@ -117,26 +111,6 @@ pub(crate) fn fail_next_clone_at(point: HandleClonePoint) {
         );
     });
 }
-
-#[cfg(all(test, unix))]
-pub(crate) fn set_remove_after_verify_hook(hook: impl FnOnce() + 'static) {
-    REMOVE_AFTER_VERIFY_HOOK.with(|slot| {
-        assert!(
-            slot.replace(Some(Box::new(hook))).is_none(),
-            "a remove hook is already armed"
-        );
-    });
-}
-
-#[cfg(all(test, unix))]
-fn run_remove_after_verify_hook() {
-    if let Some(hook) = REMOVE_AFTER_VERIFY_HOOK.with(|slot| slot.borrow_mut().take()) {
-        hook();
-    }
-}
-
-#[cfg(all(not(test), unix))]
-fn run_remove_after_verify_hook() {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FileIdentity {
@@ -345,25 +319,6 @@ pub(crate) fn regular_identity(file: &HeldFile) -> io::Result<FileIdentity> {
     file_identity(file)
 }
 
-#[cfg(unix)]
-pub(crate) fn verify_regular_name_at(
-    parent: &HeldFile,
-    name: &OsStr,
-    path: &Path,
-    expected: FileIdentity,
-) -> io::Result<()> {
-    let (file, actual, _) = bind_regular_at(parent, name, path)?;
-    verify_regular(&file, expected)?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "regular path identity changed",
-        ))
-    }
-}
-
 #[cfg(windows)]
 pub(crate) fn verify_regular_name_at(
     _parent: &HeldFile,
@@ -373,15 +328,6 @@ pub(crate) fn verify_regular_name_at(
 ) -> io::Result<()> {
     let file = open_regular_identity_probe(path)?;
     verify_regular(&file, expected)
-}
-
-#[cfg(unix)]
-pub(crate) fn bind_regular_for_removal_at(
-    parent: &HeldFile,
-    name: &OsStr,
-    path: &Path,
-) -> io::Result<(HeldFile, FileIdentity, u64)> {
-    bind_regular_at(parent, name, path)
 }
 
 #[cfg(windows)]
@@ -395,124 +341,77 @@ pub(crate) fn bind_regular_for_removal_at(
     Ok((file, identity, identity.len))
 }
 
-#[cfg(unix)]
-pub(crate) fn remove_regular_if_identity_at(
-    parent: &HeldFile,
-    name: &OsStr,
-    path: &Path,
-    owned: &HeldFile,
-    expected: FileIdentity,
-) -> io::Result<bool> {
-    verify_regular(owned, expected)?;
-    run_remove_after_verify_hook();
-    let quarantine = std::ffi::OsString::from(format!(
-        ".compatforge-delete-{}-{}",
-        std::process::id(),
-        QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    match rename_noreplace_at(parent, name, &quarantine) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    }
+#[cfg(target_os = "linux")]
+pub(crate) fn create_anonymous_regular_at(parent: &HeldFile) -> io::Result<HeldFile> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
-    let moved = bind_regular_at(parent, &quarantine, &path.join(&quarantine));
-    let (moved_handle, actual, _) = match moved {
-        Ok(bound) => bound,
-        Err(error) => {
-            restore_quarantine(parent, &quarantine, name)?;
-            return Err(error);
-        }
-    };
-    if actual != expected || verify_regular(&moved_handle, expected).is_err() {
-        drop(moved_handle);
-        restore_quarantine(parent, &quarantine, name)?;
-        return Ok(false);
-    }
-    remove_file_at(parent, &quarantine, path)?;
-    Ok(true)
-}
-
-#[cfg(unix)]
-fn restore_quarantine(parent: &HeldFile, quarantine: &OsStr, original: &OsStr) -> io::Result<()> {
-    rename_noreplace_at(parent, quarantine, original).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("quarantined foreign entry could not be restored: {error}"),
+    let current = c".";
+    // SAFETY: `parent` owns a live directory descriptor and `current` is a
+    // static NUL-terminated relative directory name. A successful descriptor
+    // is transferred exactly once into `HeldFile`.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            current.as_ptr(),
+            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+            0o600,
         )
-    })
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: `openat` returned a fresh descriptor uniquely owned here.
+        Ok(HeldFile::new(unsafe { RawFile::from_raw_fd(descriptor) }))
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn rename_noreplace_at(parent: &HeldFile, source: &OsStr, target: &OsStr) -> io::Result<()> {
+pub(crate) fn publish_anonymous_regular_at(source: &HeldFile, parent: &HeldFile, target: &OsStr) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::ffi::OsStrExt as _;
 
-    const RENAME_NOREPLACE: libc::c_uint = 1;
-    let source = std::ffi::CString::new(source.as_bytes())?;
+    let empty = c"";
     let target = std::ffi::CString::new(target.as_bytes())?;
-    // SAFETY: both names are NUL-terminated relative names and `parent` owns
-    // a live directory descriptor for both sides of the atomic rename.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            parent.as_raw_fd(),
-            source.as_ptr(),
+    // SAFETY: `source` and `parent` own live descriptors; target is a
+    // NUL-terminated single component. `linkat` never overwrites a target.
+    let direct = unsafe {
+        libc::linkat(
+            source.as_raw_fd(),
+            empty.as_ptr(),
             parent.as_raw_fd(),
             target.as_ptr(),
-            RENAME_NOREPLACE,
+            libc::AT_EMPTY_PATH,
         )
     };
-    if result == 0 {
+    if direct == 0 {
+        return Ok(());
+    }
+    let direct_error = io::Error::last_os_error();
+    if !matches!(
+        direct_error.raw_os_error(),
+        Some(libc::EPERM) | Some(libc::ENOENT) | Some(libc::EINVAL) | Some(libc::EOPNOTSUPP)
+    ) {
+        return Err(direct_error);
+    }
+
+    let source_path = std::ffi::CString::new(format!("/proc/self/fd/{}", source.as_raw_fd()))?;
+    // SAFETY: the procfs magic link names the still-held descriptor and the
+    // target remains relative to the held directory. AT_SYMLINK_FOLLOW is
+    // required to link the descriptor target rather than the procfs symlink.
+    let fallback = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            source_path.as_ptr(),
+            parent.as_raw_fd(),
+            target.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if fallback == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
     }
-}
-
-#[cfg(target_os = "macos")]
-fn rename_noreplace_at(parent: &HeldFile, source: &OsStr, target: &OsStr) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    use std::os::unix::ffi::OsStrExt as _;
-
-    #[link(name = "System")]
-    extern "C" {
-        fn renameatx_np(
-            source_directory: libc::c_int,
-            source: *const libc::c_char,
-            target_directory: libc::c_int,
-            target: *const libc::c_char,
-            flags: libc::c_uint,
-        ) -> libc::c_int;
-    }
-
-    const RENAME_EXCL: libc::c_uint = 0x0000_0004;
-    let source = std::ffi::CString::new(source.as_bytes())?;
-    let target = std::ffi::CString::new(target.as_bytes())?;
-    // SAFETY: both names are NUL-terminated relative names and `parent` owns
-    // a live directory descriptor accepted by `renameatx_np`.
-    let result = unsafe {
-        renameatx_np(
-            parent.as_raw_fd(),
-            source.as_ptr(),
-            parent.as_raw_fd(),
-            target.as_ptr(),
-            RENAME_EXCL,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn rename_noreplace_at(_parent: &HeldFile, _source: &OsStr, _target: &OsStr) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "atomic no-replace quarantine is unavailable",
-    ))
 }
 
 #[cfg(windows)]
@@ -580,31 +479,6 @@ pub(crate) fn create_directory_at(
     bind_directory_at(parent, name, path)
 }
 
-#[cfg(unix)]
-pub(crate) fn create_regular_at(parent: &HeldFile, name: &OsStr, _path: &Path) -> io::Result<HeldFile> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _};
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let name = std::ffi::CString::new(name.as_bytes())?;
-    // SAFETY: the held directory descriptor and NUL-terminated name are
-    // valid; O_CREAT is accompanied by an explicit owner-only mode. A
-    // successful fresh descriptor is transferred to exactly one `File`.
-    let descriptor = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            0o600,
-        )
-    };
-    if descriptor < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        // SAFETY: `openat` returned a fresh descriptor now uniquely owned.
-        Ok(HeldFile::new(unsafe { RawFile::from_raw_fd(descriptor) }))
-    }
-}
-
 #[cfg(windows)]
 pub(crate) fn create_regular_at(_parent: &HeldFile, _name: &OsStr, path: &Path) -> io::Result<HeldFile> {
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -623,51 +497,11 @@ pub(crate) fn create_regular_at(_parent: &HeldFile, _name: &OsStr, path: &Path) 
         .map(HeldFile::new)
 }
 
-#[cfg(unix)]
-pub(crate) fn hard_link_at(directory: &HeldFile, source: &OsStr, target: &OsStr, _path: &Path) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let source = std::ffi::CString::new(source.as_bytes())?;
-    let target = std::ffi::CString::new(target.as_bytes())?;
-    // SAFETY: both names are NUL-terminated single components relative to the
-    // same held directory descriptor.
-    if unsafe {
-        libc::linkat(
-            directory.as_raw_fd(),
-            source.as_ptr(),
-            directory.as_raw_fd(),
-            target.as_ptr(),
-            0,
-        )
-    } == 0
-    {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
 #[cfg(windows)]
 pub(crate) fn hard_link_at(_directory: &HeldFile, source: &OsStr, target: &OsStr, path: &Path) -> io::Result<()> {
     let source = path.join(source);
     let target = path.join(target);
     std::fs::hard_link(source, target)
-}
-
-#[cfg(unix)]
-pub(crate) fn remove_file_at(directory: &HeldFile, name: &OsStr, _path: &Path) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let name = std::ffi::CString::new(name.as_bytes())?;
-    // SAFETY: the held directory descriptor and NUL-terminated child name are
-    // valid; no directory-removal flag is supplied.
-    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 #[cfg(unix)]

@@ -2,6 +2,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticCode {
+    UnsupportedPlatform,
     SourceChanged,
     UnsafeEntry,
     InvalidManifest,
@@ -33,6 +34,7 @@ impl BottleMigrationError {
     #[must_use]
     pub const fn message(&self) -> &'static str {
         match self.code {
+            DiagnosticCode::UnsupportedPlatform => "Bottle snapshot is unsupported on this platform",
             DiagnosticCode::SourceChanged => "Bottle source changed during migration",
             DiagnosticCode::UnsafeEntry => "Bottle source contains an unsafe entry",
             DiagnosticCode::InvalidManifest => "Bottle manifest is invalid",

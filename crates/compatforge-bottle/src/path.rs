@@ -105,6 +105,7 @@ pub(crate) fn validate_graph<'a>(
     Ok(())
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn normalize_link_target(link_path: &str, raw_target: &Path) -> Result<String, InvalidPath> {
     if raw_target.is_absolute() {
         return Err(InvalidPath);
