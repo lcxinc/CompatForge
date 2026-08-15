@@ -41,8 +41,11 @@ thread_local! {
     static IMPORT_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FAIL_NEXT_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_NEXT_WRITE_REPLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    #[cfg(not(target_os = "macos"))]
     static ROLLBACK_FAILURE_ORDINAL: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    #[cfg(not(target_os = "macos"))]
     static ROLLBACK_ORDINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    #[cfg(not(target_os = "macos"))]
     static FAIL_ROLLBACK_POSTCOMMIT_READBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static IMPORT_STAGE_HOOK: std::cell::RefCell<Option<ImportTestHook>> = const { std::cell::RefCell::new(None) };
     static CLEANUP_STAGE_HOOK: std::cell::RefCell<Option<CleanupTestHook>> = const { std::cell::RefCell::new(None) };
@@ -106,19 +109,19 @@ pub(crate) fn reset_import_failure() {
     IMPORT_ORDINAL.with(|current| current.set(0));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn fail_rollback_at_ordinal(ordinal: usize) {
     ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.set(Some(ordinal)));
     ROLLBACK_ORDINAL.with(|current| current.set(0));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn reset_rollback_failure() {
     ROLLBACK_FAILURE_ORDINAL.with(|failure| failure.set(None));
     ROLLBACK_ORDINAL.with(|current| current.set(0));
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) fn fail_rollback_postcommit_readback() {
     FAIL_ROLLBACK_POSTCOMMIT_READBACK.with(|failure| failure.set(true));
 }
@@ -165,7 +168,7 @@ fn checkpoint() -> Result<(), BottleMigrationError> {
 }
 
 fn rollback_checkpoint() -> Result<(), BottleMigrationError> {
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "macos")))]
     {
         let ordinal = ROLLBACK_ORDINAL.with(|current| {
             let next = current.get().saturating_add(1);
@@ -510,14 +513,18 @@ impl BottleStore {
             // successful namespace switch into an error that invites a
             // second rollback attempt against an already changed ref.
             let readback = {
-                #[cfg(test)]
-                if FAIL_ROLLBACK_POSTCOMMIT_READBACK.with(|failure| failure.replace(false)) {
-                    Err(transaction_failed())
-                } else {
+                #[cfg(all(test, not(target_os = "macos")))]
+                {
+                    if FAIL_ROLLBACK_POSTCOMMIT_READBACK.with(|failure| failure.replace(false)) {
+                        Err(transaction_failed())
+                    } else {
+                        read_active_bytes(&active_path, bottle_id)
+                    }
+                }
+                #[cfg(any(not(test), all(test, target_os = "macos")))]
+                {
                     read_active_bytes(&active_path, bottle_id)
                 }
-                #[cfg(not(test))]
-                read_active_bytes(&active_path, bottle_id)
             };
             if let Ok(Some((committed_ref, committed_bytes, _))) = readback {
                 let _matches = committed_ref == next_ref && committed_bytes == ref_bytes;
@@ -1633,6 +1640,14 @@ fn cleanup_transaction(
     fs::remove_dir(path)
 }
 
+struct CleanupDirectoryFrame {
+    path: PathBuf,
+    relative: PathBuf,
+    identity: CleanupIdentity,
+    children: fs::ReadDir,
+    pending_child: Option<(PathBuf, CleanupIdentity)>,
+}
+
 fn cleanup_transaction_directory(
     root: &Path,
     relative: &Path,
@@ -1645,12 +1660,47 @@ fn cleanup_transaction_directory(
             "transaction cleanup exceeds its bound",
         ));
     }
-    // Keep the directory identity bound across enumeration and every child
-    // operation.  A pathname-only check before recursion is insufficient: an
-    // attacker can substitute the directory immediately afterward and make
-    // cleanup traverse or remove a foreign tree.
+    // Keep directory identities on an explicit heap stack.  Recursive
+    // cleanup can overflow a Windows thread stack before MAX_PATH_DEPTH is
+    // reached; the same identity checks are retained at every descent and
+    // before removing a completed child.
     let root_identity = cleanup_identity(root)?;
-    for entry in fs::read_dir(root)? {
+    let mut stack = vec![CleanupDirectoryFrame {
+        path: root.to_path_buf(),
+        relative: relative.to_path_buf(),
+        identity: root_identity,
+        children: fs::read_dir(root)?,
+        pending_child: None,
+    }];
+    while !stack.is_empty() {
+        let child = {
+            let frame = stack.last_mut().expect("non-empty cleanup stack");
+            frame.children.next().transpose()?
+        };
+        let Some(entry) = child else {
+            let _frame = stack.pop().expect("non-empty cleanup stack");
+            if let Some(parent) = stack.last_mut() {
+                let (child, expected_identity) = parent
+                    .pending_child
+                    .take()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "cleanup child state missing"))?;
+                if cleanup_identity(&parent.path)? != parent.identity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "transaction parent identity changed",
+                    ));
+                }
+                if cleanup_identity(&child)? != expected_identity {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "transaction child identity changed",
+                    ));
+                }
+                fs::remove_dir(child)?;
+            }
+            continue;
+        };
+        let frame = stack.last_mut().expect("non-empty cleanup stack");
         if *entries_seen >= MAX_TRANSACTION_ENTRIES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1658,13 +1708,18 @@ fn cleanup_transaction_directory(
             ));
         }
         *entries_seen = entries_seen.saturating_add(1);
-        let entry = entry?;
         let name = entry.file_name();
-        let child_relative = if relative.as_os_str().is_empty() {
+        let child_relative = if frame.relative.as_os_str().is_empty() {
             PathBuf::from(&name)
         } else {
-            relative.join(&name)
+            frame.relative.join(&name)
         };
+        if child_relative.components().count() > MAX_PATH_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transaction cleanup exceeds its depth bound",
+            ));
+        }
         let child = entry.path();
         let metadata = fs::symlink_metadata(&child)?;
         let Some(expectation) = expected.get(&child_relative) else {
@@ -1683,7 +1738,7 @@ fn cleanup_transaction_directory(
             ));
         }
         run_cleanup_test_hook(&child_relative);
-        if cleanup_identity(root)? != root_identity {
+        if cleanup_identity(&frame.path)? != frame.identity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "transaction parent identity changed",
@@ -1696,14 +1751,16 @@ fn cleanup_transaction_directory(
                     "transaction directory kind changed",
                 ));
             }
-            cleanup_transaction_directory(&child, &child_relative, expected, entries_seen)?;
-            if cleanup_identity(&child)? != expected_identity {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "transaction child identity changed",
-                ));
-            }
-            fs::remove_dir(&child)?;
+            frame.pending_child = Some((child.clone(), expected_identity));
+            let child_identity = cleanup_identity(&child)?;
+            let children = fs::read_dir(&child)?;
+            stack.push(CleanupDirectoryFrame {
+                path: child,
+                relative: child_relative,
+                identity: child_identity,
+                children,
+                pending_child: None,
+            });
             continue;
         }
         let owned = match &expectation.kind {
@@ -2464,6 +2521,33 @@ mod tests {
         assert!(result.is_err(), "cleanup must fail closed after parent substitution");
         assert!(version.exists(), "the foreign replacement remains reachable");
         assert!(moved.exists(), "the originally owned directory is not discarded");
+    }
+
+    #[test]
+    fn cleanup_walks_a_deep_owned_tree_without_recursion_overflow() {
+        let temporary = TemporaryDirectory::new("cleanup-deep-tree");
+        let transaction = temporary.path().join("transaction");
+        fs::create_dir(&transaction).unwrap();
+        let mut expected = BTreeMap::new();
+        let mut current = transaction.clone();
+        let mut relative = PathBuf::new();
+        for _ in 0..70 {
+            current.push("d");
+            relative.push("d");
+            fs::create_dir(&current).unwrap();
+            expected.insert(
+                relative.clone(),
+                super::CleanupExpectation::new(super::CleanupKind::Directory),
+            );
+        }
+        for path in expected.keys().cloned().collect::<Vec<_>>() {
+            super::bind_cleanup_expectation(&transaction, &path, &mut expected).unwrap();
+        }
+
+        let transaction_identity = super::cleanup_identity(&transaction).unwrap();
+        super::cleanup_transaction(&transaction, transaction_identity, &expected).unwrap();
+
+        assert!(!transaction.exists());
     }
 
     #[test]

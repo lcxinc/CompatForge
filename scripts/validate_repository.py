@@ -236,15 +236,27 @@ BOTTLE_RUNTIME_SOURCE_FILES = (
 )
 BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES = (
     ("std::net::", "network access"),
+    ("std::os::unix::net::", "network access"),
+    ("std::os::windows::net::", "network access"),
     ("TcpStream", "network access"),
+    ("UnixStream", "network access"),
     ("UdpSocket", "network access"),
     ("ToSocketAddrs", "network access"),
     ("std::process::Command", "subprocess launch"),
     ("std::process::Stdio", "subprocess launch"),
+    ("std::env::args", "implicit environment lookup"),
+    ("std::env::args_os", "implicit environment lookup"),
+    ("std::env::current_exe", "process locator"),
+    ("std::env::vars", "implicit environment lookup"),
+    ("std::env::vars_os", "implicit environment lookup"),
     ("std::env::var", "implicit environment lookup"),
+    ("std::env::var_os", "implicit environment lookup"),
+    ("std::env::current_dir", "implicit current-directory lookup"),
     ("std::env::temp_dir", "implicit temporary-directory lookup"),
     ("remove_dir_all", "unbounded recursive cleanup"),
-    ("Mac-Win", "neighboring Mac-Win checkout access"),
+)
+BOTTLE_RUNTIME_NEIGHBOR_CALL = re.compile(
+    r"(?:std::path::)?Path\s*::\s*new\s*\(\s*['\"](?:\.\.?[/\\])+Mac-Win(?:[/\\]|['\"])",
 )
 BOTTLE_MIGRATION_CI_SNIPPETS = (
     "tests.test_bottle_migration_contracts",
@@ -1386,28 +1398,255 @@ def _bottle_validate_docs_and_ci(root: Path) -> None:
     _bottle_require_ci_sequence(workflow_text)
 
 
+def _bottle_rust_brace_deltas(text: str) -> list[tuple[int, int]]:
+    """Return code-brace deltas/counts for each source line.
+
+    The policy scanner only needs enough Rust lexical awareness to skip a
+    test-only item safely.  Counting braces in comments or string/raw-string
+    literals would let a fixture hide following production code, so those
+    tokens are consumed explicitly (including nested block comments).
+    """
+    mode = "code"
+    block_comment_depth = 0
+    raw_hashes = 0
+    result: list[tuple[int, int]] = []
+    for line in text.splitlines(keepends=True):
+        delta = 0
+        brace_count = 0
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if mode == "line-comment":
+                if char == "\n":
+                    mode = "code"
+                index += 1
+                continue
+            if mode == "block-comment":
+                if line.startswith("/*", index):
+                    block_comment_depth += 1
+                    index += 2
+                elif line.startswith("*/", index):
+                    block_comment_depth -= 1
+                    index += 2
+                    if block_comment_depth == 0:
+                        mode = "code"
+                else:
+                    index += 1
+                continue
+            if mode == "string":
+                if char == "\\":
+                    index += 2
+                else:
+                    index += 1
+                    if char == '"':
+                        mode = "code"
+                continue
+            if mode == "char":
+                if char == "\\":
+                    index += 2
+                else:
+                    index += 1
+                    if char == "'":
+                        mode = "code"
+                continue
+            if mode == "raw-string":
+                if char == '"':
+                    terminator = '"' + ("#" * raw_hashes)
+                    if line.startswith(terminator, index):
+                        index += len(terminator)
+                        mode = "code"
+                        continue
+                index += 1
+                continue
+
+            if line.startswith("//", index):
+                mode = "line-comment"
+                index += 2
+                continue
+            if line.startswith("/*", index):
+                mode = "block-comment"
+                block_comment_depth = 1
+                index += 2
+                continue
+
+            raw_prefix = 0
+            if char == "r":
+                raw_prefix = 1
+            elif char == "b" and line.startswith("br", index):
+                raw_prefix = 2
+            if raw_prefix:
+                hash_index = index + raw_prefix
+                while hash_index < len(line) and line[hash_index] == "#":
+                    hash_index += 1
+                if hash_index < len(line) and line[hash_index] == '"':
+                    raw_hashes = hash_index - index - raw_prefix
+                    mode = "raw-string"
+                    index = hash_index + 1
+                    continue
+
+            if char == '"':
+                mode = "string"
+                index += 1
+                continue
+            if char == "'":
+                # Do not mistake a Rust lifetime (``'a``) for a character
+                # literal.  A literal has a closing quote on this line or an
+                # escape/non-identifier as its first payload character.
+                next_char = line[index + 1] if index + 1 < len(line) else ""
+                closes_short_literal = index + 2 < len(line) and line[index + 2] == "'"
+                if next_char in {"\\", "'", "\n", "\r"} or not (next_char.isalnum() or next_char == "_") or closes_short_literal:
+                    mode = "char"
+                    index += 1
+                    continue
+
+            if char in "{}":
+                brace_count += 1
+                delta += 1 if char == "{" else -1
+            index += 1
+        result.append((delta, brace_count))
+    return result
+
+
+def _bottle_rust_mask_non_code(text: str) -> str:
+    """Blank comments and literals while preserving code/token positions."""
+    output = list(text)
+    mode = "code"
+    block_comment_depth = 0
+    raw_hashes = 0
+
+    def blank(index: int) -> None:
+        if output[index] not in {"\n", "\r"}:
+            output[index] = " "
+
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if mode == "line-comment":
+            blank(index)
+            if char == "\n":
+                mode = "code"
+            index += 1
+            continue
+        if mode == "block-comment":
+            blank(index)
+            if text.startswith("/*", index):
+                blank(index + 1)
+                block_comment_depth += 1
+                index += 2
+            elif text.startswith("*/", index):
+                blank(index + 1)
+                block_comment_depth -= 1
+                index += 2
+                if block_comment_depth == 0:
+                    mode = "code"
+            else:
+                index += 1
+            continue
+        if mode in {"string", "char"}:
+            blank(index)
+            if char == "\\":
+                if index + 1 < len(text):
+                    blank(index + 1)
+                index += 2
+            else:
+                index += 1
+                if (mode == "string" and char == '"') or (mode == "char" and char == "'"):
+                    mode = "code"
+            continue
+        if mode == "raw-string":
+            blank(index)
+            terminator = '"' + ("#" * raw_hashes)
+            if char == '"' and text.startswith(terminator, index):
+                for offset in range(1, len(terminator)):
+                    blank(index + offset)
+                index += len(terminator)
+                mode = "code"
+            else:
+                index += 1
+            continue
+
+        if text.startswith("//", index):
+            blank(index)
+            blank(index + 1)
+            mode = "line-comment"
+            index += 2
+            continue
+        if text.startswith("/*", index):
+            blank(index)
+            blank(index + 1)
+            mode = "block-comment"
+            block_comment_depth = 1
+            index += 2
+            continue
+
+        raw_prefix = 0
+        if char == "r":
+            raw_prefix = 1
+        elif char == "b" and text.startswith("br", index):
+            raw_prefix = 2
+        if raw_prefix:
+            hash_index = index + raw_prefix
+            while hash_index < len(text) and text[hash_index] == "#":
+                hash_index += 1
+            if hash_index < len(text) and text[hash_index] == '"':
+                raw_hashes = hash_index - index - raw_prefix
+                for offset in range(hash_index - index + 1):
+                    blank(index + offset)
+                mode = "raw-string"
+                index = hash_index + 1
+                continue
+
+        if char == '"':
+            blank(index)
+            mode = "string"
+            index += 1
+            continue
+        if char == "'":
+            next_char = text[index + 1] if index + 1 < len(text) else ""
+            closes_short_literal = index + 2 < len(text) and text[index + 2] == "'"
+            if next_char in {"\\", "'", "\n", "\r"} or not (next_char.isalnum() or next_char == "_") or closes_short_literal:
+                blank(index)
+                mode = "char"
+                index += 1
+                continue
+        index += 1
+    return "".join(output)
+
+
+def _bottle_test_only_cfg(stripped: str) -> bool:
+    """Recognize only cfg expressions that require the test configuration."""
+    normalized = "".join(stripped.split())
+    return normalized == "#[cfg(test)]" or (
+        normalized == "#[cfg(all(test))]"
+        or (normalized.startswith("#[cfg(all(test,") and normalized.endswith(")]"))
+    )
+
+
 def _bottle_production_source(text: str) -> str:
-    """Remove cfg(test) items before applying the capability policy.
+    """Remove only provably test-only items before policy scanning.
 
     Test helpers intentionally use ``temp_dir`` and child-process probes for
     descriptor accounting.  They are not reachable from a release build and
-    must not weaken the production boundary scan.  This small brace-aware
-    filter avoids importing or parsing Rust while still handling cfg-gated
-    modules and multiline function signatures.
+    must not weaken the production boundary scan.  The lexical brace helper
+    keeps literals/comments from changing the skipped-item boundary, while
+    conservative cfg recognition leaves any expression that is not visibly
+    test-required in the production scan.
     """
     kept: list[str] = []
     pending_test_item = False
     skipped_braces = 0
-    for line in text.splitlines():
+    lines = text.splitlines()
+    brace_deltas = _bottle_rust_brace_deltas(text)
+    for line, (brace_delta, brace_count) in zip(lines, brace_deltas):
         stripped = line.lstrip()
         if skipped_braces:
-            skipped_braces += line.count("{") - line.count("}")
+            skipped_braces += brace_delta
             if skipped_braces <= 0:
                 skipped_braces = 0
             continue
         if pending_test_item:
-            if "{" in line:
-                skipped_braces = line.count("{") - line.count("}")
+            if brace_count:
+                skipped_braces = brace_delta
                 pending_test_item = False
                 if skipped_braces <= 0:
                     skipped_braces = 0
@@ -1416,7 +1655,7 @@ def _bottle_production_source(text: str) -> str:
                 pending_test_item = False
                 continue
             continue
-        if stripped.startswith("#[cfg(") and "test" in stripped:
+        if stripped.startswith("#[cfg(") and _bottle_test_only_cfg(stripped):
             pending_test_item = True
             continue
         kept.append(line)
@@ -1439,11 +1678,19 @@ def _bottle_validate_runtime_side_effect_policy(root: Path) -> list[str]:
             source = _bottle_production_source(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError):
             return ["Bottle migration runtime source boundary could not be read"]
+        policy_source = _bottle_rust_mask_non_code(source)
         for marker, capability in BOTTLE_RUNTIME_FORBIDDEN_CAPABILITIES:
-            if marker in source:
+            if marker in policy_source:
                 errors.append(
                     f"Bottle migration runtime source uses forbidden {capability}: "
                     f"{path.relative_to(root).as_posix()}"
+                )
+        for call in re.finditer(r"(?:std::path::)?Path\s*::\s*new", policy_source):
+            window = source[call.start() : call.start() + 256]
+            if BOTTLE_RUNTIME_NEIGHBOR_CALL.search(window):
+                errors.append(
+                    "Bottle migration runtime source uses forbidden neighboring "
+                    f"Mac-Win checkout access: {path.relative_to(root).as_posix()}"
                 )
     return errors
 

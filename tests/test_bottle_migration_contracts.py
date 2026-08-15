@@ -2026,6 +2026,30 @@ class BottleMigrationCliTests(unittest.TestCase):
                 ["bottleId", "entryCount", "snapshotDigest", "totalFileBytes"],
             )
 
+    def test_snapshot_accepts_a_relative_store_root_with_missing_parent_components(self) -> None:
+        if sys.platform == "darwin":
+            self.skipTest("strict macOS mode rejects snapshot creation")
+        target_root = ROOT / "target"
+        target_preexisting = target_root.exists()
+        relative_store = Path("target") / f"compatforge-cli-relative-{os.getpid()}-{id(self)}"
+        try:
+            completed = self._run(
+                "bottle",
+                "snapshot",
+                str(relative_store),
+                str(self._fixture_root / "win64"),
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+            self.assertEqual(completed.stderr, b"")
+            self.assertEqual(
+                list(json.loads(completed.stdout)),
+                ["bottleId", "entryCount", "snapshotDigest", "totalFileBytes"],
+            )
+        finally:
+            shutil.rmtree(ROOT / relative_store, ignore_errors=True)
+            if not target_preexisting and target_root.exists() and not any(target_root.iterdir()):
+                target_root.rmdir()
+
     def test_all_five_subcommands_have_bounded_dispatch(self) -> None:
         commands = (
             ("snapshot", "store", "source"),
@@ -2541,9 +2565,29 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                 "platform.rs",
                 'std::net::TcpStream::connect("127.0.0.1:9");',
             ),
+            "unix-network": (
+                "platform.rs",
+                'std::os::unix::net::UnixStream::connect("/tmp/forbidden");',
+            ),
             "process": (
                 "snapshot.rs",
                 "std::process::Command::new(\"sh\");",
+            ),
+            "environment-args": (
+                "platform.rs",
+                "std::env::args();",
+            ),
+            "environment-vars": (
+                "platform.rs",
+                "std::env::vars();",
+            ),
+            "environment-current-exe": (
+                "platform.rs",
+                "std::env::current_exe();",
+            ),
+            "environment-current-dir": (
+                "platform.rs",
+                "std::env::current_dir();",
             ),
             "environment": (
                 "platform.rs",
@@ -2585,6 +2629,69 @@ class BottleMigrationSideEffectTests(unittest.TestCase):
                     errors,
                     f"validator accepted controlled {name} capability mutant",
                 )
+
+    def test_cfg_not_test_mutants_are_not_hidden_from_the_guard(self) -> None:
+        validator = self._validator()
+        repository = BottleMigrationRepositoryTests
+        cfg_mutants = (
+            "#[cfg(not(test))]",
+            '#[cfg(not(any(test, target_os = "macos")))]',
+            '#[cfg(any(test, not(target_os = "macos")))]',
+            '#[cfg(all(test = false, target_os = "windows"))]',
+        )
+        for cfg in cfg_mutants:
+            with self.subTest(cfg=cfg), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-side-effect-"
+            ) as temporary:
+                root = repository._copy_validation_tree(Path(temporary))
+                self._copy_runtime_sources(root)
+                path = root / "crates" / "compatforge-bottle" / "src" / "platform.rs"
+                content = path.read_text(encoding="utf-8")
+                content += (
+                    f"\n{cfg}\n"
+                    "fn controlled_forbidden_capability() { "
+                    'std::net::TcpStream::connect("127.0.0.1:9"); }\n'
+                )
+                path.write_text(content, encoding="utf-8")
+                errors = validator.validate_bottle_migration_repository(root)
+                self.assertTrue(errors, f"validator hid a {cfg} capability mutant")
+
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-side-effect-") as temporary:
+            root = repository._copy_validation_tree(Path(temporary))
+            self._copy_runtime_sources(root)
+            path = root / "crates" / "compatforge-bottle" / "src" / "platform.rs"
+            content = path.read_text(encoding="utf-8")
+            content += (
+                '\n#[cfg(test)]\n'
+                'mod controlled_test { const BRACE: &str = "{"; }\n'
+                'fn controlled_forbidden_capability() { '
+                'std::net::TcpStream::connect("127.0.0.1:9"); }\n'
+            )
+            path.write_text(content, encoding="utf-8")
+            errors = validator.validate_bottle_migration_repository(root)
+            self.assertTrue(errors, "validator hid a brace-in-string capability mutant")
+
+    def test_side_effect_markers_in_comments_and_literals_are_ignored(self) -> None:
+        validator = self._validator()
+        repository = BottleMigrationRepositoryTests
+        non_code_mutants = (
+            '// std::net::TcpStream::connect("127.0.0.1:9");',
+            '/* std::process::Command::new("sh"); */',
+            'const TEXT: &str = "std::env::current_dir std::env::args UnixStream Mac-Win";',
+            'const RAW: &str = r#"std::fs::remove_dir_all(std::env::temp_dir())"#;',
+            '// Path::new("../Mac-Win");',
+            'const NEIGHBOR_TEXT: &str = r#"Path::new("../Mac-Win")"#;',
+        )
+        for mutant in non_code_mutants:
+            with self.subTest(mutant=mutant), tempfile.TemporaryDirectory(
+                prefix="compatforge-bottle-side-effect-"
+            ) as temporary:
+                root = repository._copy_validation_tree(Path(temporary))
+                self._copy_runtime_sources(root)
+                path = root / "crates" / "compatforge-bottle" / "src" / "platform.rs"
+                path.write_text(path.read_text(encoding="utf-8") + f"\n{mutant}\n", encoding="utf-8")
+                errors = validator.validate_bottle_migration_repository(root)
+                self.assertFalse(errors, f"validator treated non-code marker as capability: {mutant}")
 
 
 

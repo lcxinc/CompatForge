@@ -576,12 +576,13 @@ impl PendingStoreRoot {
         if root.as_os_str().is_empty() {
             return Err(unsafe_entry());
         }
-        let absolute = if root.is_absolute() {
-            root.to_path_buf()
-        } else {
-            std::env::current_dir().map_err(|_| unsafe_entry())?.join(root)
-        };
-        let normalized = normalize_absolute_path(&absolute)?;
+        // Keep an explicitly supplied relative store root relative.  The CLI
+        // contract permits paths such as ``target/bottle-store``; resolving
+        // those through a process working-directory query would add an
+        // ambient cwd lookup to the production boundary.  Component
+        // normalization below still rejects leading ``..`` escapes and all
+        // later binds are held against the resolved ancestor directory.
+        let normalized = normalize_store_path(root)?;
         let mut existing = normalized.clone();
         let mut missing = Vec::new();
         loop {
@@ -592,7 +593,10 @@ impl PendingStoreRoot {
                     }
                     if existing == normalized {
                         let name = existing.file_name().ok_or_else(unsafe_entry)?.to_owned();
-                        let parent_path = existing.parent().ok_or_else(unsafe_entry)?;
+                        let parent_path = existing
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or_else(|| Path::new("."));
                         let resolved_parent = fs::canonicalize(parent_path).map_err(|_| unsafe_entry())?;
                         let ancestor = BoundDirectory::bind(resolved_parent.clone()).map_err(|_| unsafe_entry())?;
                         let child_path = resolved_parent.join(&name);
@@ -630,6 +634,13 @@ impl PendingStoreRoot {
                     missing.push(existing.file_name().ok_or_else(unsafe_entry)?.to_owned());
                     if !existing.pop() {
                         return Err(unsafe_entry());
+                    }
+                    if existing.as_os_str().is_empty() && existing.is_relative() {
+                        // A completely missing explicit relative chain has no
+                        // lexical parent component left.  Keep the anchor as
+                        // ``.`` so canonicalization can bind it without an
+                        // ambient cwd API call, then append the missing names.
+                        existing.push(".");
                     }
                 }
                 Err(_) => return Err(unsafe_entry()),
@@ -1565,6 +1576,13 @@ enum SourceMetadataKind {
     File,
 }
 
+struct SourceDirectoryFrame {
+    relative_path: Option<String>,
+    identity: Option<FileIdentity>,
+    handle: HeldFile,
+    children: fs::ReadDir,
+}
+
 fn classify_source_metadata(metadata: &fs::Metadata) -> Result<SourceMetadataKind, BottleMigrationError> {
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
@@ -1635,16 +1653,48 @@ fn collect_source_entries(
     entries: &mut Vec<SourceEntry>,
     total_file_bytes: &mut u64,
 ) -> Result<(), BottleMigrationError> {
-    let children = fs::read_dir(directory).map_err(|_| unsafe_entry())?;
-    for child in children {
-        let child = child.map_err(|_| unsafe_entry())?;
+    // Keep traversal state on the heap.  A recursive walk exhausts the
+    // comparatively small Windows thread stack well below MAX_PATH_DEPTH,
+    // turning a bounded input into a process abort instead of a diagnostic.
+    let root_handle = directory_handle.try_clone().map_err(|_| source_changed())?;
+    let root_children = fs::read_dir(directory).map_err(|_| unsafe_entry())?;
+    let mut stack = vec![SourceDirectoryFrame {
+        relative_path: None,
+        identity: None,
+        handle: root_handle,
+        children: root_children,
+    }];
+
+    while !stack.is_empty() {
+        let child = {
+            let frame = stack.last_mut().expect("non-empty traversal stack");
+            frame.children.next().transpose().map_err(|_| unsafe_entry())?
+        };
+        let Some(child) = child else {
+            let frame = stack.pop().expect("non-empty traversal stack");
+            if let (Some(relative_path), Some(identity)) = (frame.relative_path, frame.identity) {
+                push_entry(
+                    entries,
+                    SourceEntry::Directory {
+                        relative_path,
+                        identity,
+                        _handle: frame.handle,
+                    },
+                )?;
+            }
+            continue;
+        };
+
+        let frame_index = stack.len().saturating_sub(1);
         let path = child.path();
+        let child_name = child.file_name();
         let relative_path = portable_relative_path(root, &path)?;
         let metadata = fs::symlink_metadata(&path).map_err(|_| unsafe_entry())?;
         match classify_source_metadata(&metadata)? {
             SourceMetadataKind::Link => {
                 let (handle, identity, raw_target) =
-                    platform::bind_link_at(directory_handle, &child.file_name(), &path).map_err(|_| unsafe_entry())?;
+                    platform::bind_link_at(&stack[frame_index].handle, &child_name, &path)
+                        .map_err(|_| unsafe_entry())?;
                 let target = path::normalize_link_target(&relative_path, &raw_target).map_err(|_| unsafe_entry())?;
                 push_entry(
                     entries,
@@ -1657,17 +1707,15 @@ fn collect_source_entries(
                 )?;
             }
             SourceMetadataKind::Directory => {
-                let (handle, identity) = platform::bind_directory_at(directory_handle, &child.file_name(), &path)
+                let (handle, identity) = platform::bind_directory_at(&stack[frame_index].handle, &child_name, &path)
                     .map_err(|_| unsafe_entry())?;
-                collect_source_entries(root, &path, &handle, entries, total_file_bytes)?;
-                push_entry(
-                    entries,
-                    SourceEntry::Directory {
-                        relative_path,
-                        identity,
-                        _handle: handle,
-                    },
-                )?;
+                let children = fs::read_dir(&path).map_err(|_| unsafe_entry())?;
+                stack.push(SourceDirectoryFrame {
+                    relative_path: Some(relative_path),
+                    identity: Some(identity),
+                    handle,
+                    children,
+                });
             }
             SourceMetadataKind::File => {
                 let metadata_size = metadata.len();
@@ -1675,7 +1723,7 @@ fn collect_source_entries(
                     return Err(unsafe_entry());
                 }
                 let (mut file, identity, held_size) =
-                    platform::bind_regular_at(directory_handle, &child.file_name(), &path)
+                    platform::bind_regular_at(&stack[frame_index].handle, &child_name, &path)
                         .map_err(|_| source_changed())?;
                 if held_size != metadata_size {
                     return Err(source_changed());
@@ -2000,10 +2048,7 @@ fn compare_existing_snapshot(path: &Path, expected: &[u8]) -> Result<(), BottleM
     }
 }
 
-fn normalize_absolute_path(path: &Path) -> Result<PathBuf, BottleMigrationError> {
-    if !path.is_absolute() {
-        return Err(unsafe_entry());
-    }
+fn normalize_store_path(path: &Path) -> Result<PathBuf, BottleMigrationError> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -2018,7 +2063,7 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf, BottleMigrationError>
             }
         }
     }
-    if normalized.is_absolute() {
+    if !normalized.as_os_str().is_empty() {
         Ok(normalized)
     } else {
         Err(unsafe_entry())
@@ -2727,6 +2772,38 @@ mod tests {
             assert!(!source.join("snapshots").exists());
             assert!(!source.join("store").exists());
         }
+    }
+
+    #[test]
+    fn pending_store_accepts_an_explicit_relative_root_when_components_are_missing() {
+        let temporary = TemporaryDirectory::new("relative-store-root");
+        let current = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temporary.path()).unwrap();
+        let result = super::PendingStoreRoot::bind(Path::new("target/bottle-store"))
+            .and_then(super::PendingStoreRoot::materialize);
+        std::env::set_current_dir(current).unwrap();
+
+        let binding = result.unwrap();
+        assert!(binding.root().path.exists());
+    }
+
+    #[test]
+    fn snapshot_walks_a_deep_but_bounded_tree_without_recursion_overflow() {
+        let temporary = TemporaryDirectory::new("deep-tree");
+        let source = temporary.path().join("source");
+        let store = temporary.path().join("store");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("manifest.json"), MANIFEST).unwrap();
+        let mut nested = source.clone();
+        for _ in 0..70 {
+            nested.push("d");
+            fs::create_dir(&nested).unwrap();
+        }
+
+        let receipt = BottleStore::new(&store).snapshot(&source).unwrap();
+
+        assert_eq!(receipt.entry_count, 71);
+        assert!(!source.join("objects").exists());
     }
 
     #[cfg(windows)]
