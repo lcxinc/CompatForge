@@ -319,12 +319,52 @@ def observer(process_group_id: int, title_tokens: tuple[str, ...]) -> dict[str, 
     if result.returncode != 0:
         return {"available": False, "reason": "Accessibility permission unavailable"}
     matching = matching_windows(result.stdout, title_tokens)
+    if matching:
+        return {
+            "available": True,
+            "processGroupId": process_group_id,
+            "processIds": target_ids,
+            "expectedTitleTokens": list(title_tokens),
+            "windows": matching[:32],
+        }
+    fallback_script = (
+        "tell application \"System Events\"\\n"
+        "set resultText to {}\\n"
+        "repeat with p in (every application process whose background only is false)\\n"
+        "repeat with w in (every window of p)\\n"
+        "set t to title of w\\n"
+        "set windowSize to size of w\\n"
+        "if t is not missing value and t is not \"\" then\\n"
+        "set end of resultText to ((name of p as text) & \"|\" & (unix id of p as text) & \"|\" & t & \"|\" & (item 1 of windowSize as text) & \"x\" & (item 2 of windowSize as text))\\n"
+        "end if\\n"
+        "end repeat\\n"
+        "end repeat\\n"
+        "set AppleScript's text item delimiters to linefeed\\n"
+        "return resultText as text\\n"
+        "end tell"
+    )
+    fallback = subprocess.run(
+        ["/usr/bin/osascript", "-e", fallback_script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=10,
+    )
+    if fallback.returncode == 0:
+        matching_all = matching_windows(fallback.stdout, title_tokens)
+        if matching_all:
+            return {
+                "available": True,
+                "processGroupId": process_group_id,
+                "processIds": target_ids,
+                "expectedTitleTokens": list(title_tokens),
+                "windows": matching_all[:32],
+            }
     return {
-        "available": bool(matching),
+        "available": False,
+        "reason": "launch process group is no longer visible",
         "processGroupId": process_group_id,
-        "processIds": target_ids,
-        "expectedTitleTokens": list(title_tokens),
-        "windows": matching[:32],
     }
 
 
