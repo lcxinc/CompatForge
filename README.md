@@ -2,9 +2,9 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core/API `0.11.0`，ABI major `1`。Rust Core 现在统一负责受限 macOS Wine 自动发现、Preview Pack 登记、GUI/Console PE inspection，以及 `bottleInPlace` 的 Bottle 路径/哈希复验；C ABI 提供 `cf_macos_local_context_create`。`apps/desktop` 是 Qt 6/QML 薄壳，所有阻塞 FFI 都在工作线程，默认中文文案并支持 offscreen smoke。默认 CI 不下载或运行真实 Windows GUI 应用；Apple Silicon 开发者可用仓库外缓存和显式 `--allow-network` 执行三个固定 GUI 基线的 opt-in 验收。真实窗口、应用行为和清理证据不扩大为通用兼容结论。
+> 当前状态：Core/API `0.12.0`，ABI major `1`。Rust Core 统一负责受限 macOS Wine 自动发现、Preview Pack 登记、GUI/Console PE inspection、`bottleInPlace` 路径/哈希复验，以及持久化 Application/Bottle/Settings/Job 服务。C ABI 新增 `cf_service_create/cf_service_call/cf_service_release`，CLI 提供单次 `api` 与常驻 JSON Lines `api-session`。`apps/desktop` 是只消费同一 Service API 的 Tauri 2 薄壳：主窗口专注应用启动与管理，设置使用独立的 macOS 风格窗口。默认 CI 不下载或运行真实 Windows GUI 应用；真实窗口、应用行为和清理证据不扩大为通用兼容结论。
 
-> 工程方向：`CompatForge` 是唯一主工程，macOS 与 Linux 同步演进；桌面 UI 统一使用 Qt 6/QML，当前迭代优先 Rust 内核。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
+> 工程方向：`CompatForge` 是唯一主工程；桌面 UI 使用 Tauri 2 + TypeScript，当前里程碑优先 macOS ARM64，同时保留 Rust Core 的跨平台能力。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
 ## 目标
 
@@ -51,7 +51,7 @@ flowchart TD
 ## 仓库结构
 
 ```text
-apps/                         CLI 与 Qt/QML 桌面薄前端
+apps/                         CLI 与 Tauri/Vite 桌面薄前端
 crates/                       领域模型、存储、编排、进程监督与 C ABI
 schemas/                      稳定的跨进程/跨语言数据契约
 examples/                     契约示例，不是可发布 Runtime
@@ -92,14 +92,17 @@ cargo run -p compatforge-cli -- plan \
   examples/launch-request.json
 ```
 
-C/Qt 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_macos_local_context_create`、Context/plan/process API，以及 `cf_launch_prepare`、PreparedLaunch getter/start/release。`ExecutableRequest.mode` 默认为 `immutableArtifact`；安装后需要保留 Bottle 内相邻 DLL/资源时使用 `bottleInPlace`，Core 会在 spawn 前再次检查 `<storageRoot>/bottles/<bottleId>/prefix/drive_c` 内的普通文件和 SHA-256。Bottle 不是安全沙箱。调用方必须先检查 API 版本再解析 additive symbol。
+C/C++ 客户端可使用 `cf_probe_capabilities`、`cf_inspect_executable`、`cf_macos_local_context_create`、Context/plan/process API，以及 `cf_launch_prepare`、PreparedLaunch getter/start/release。Tauri 桌面壳在同一进程内直接调用这些 Rust Core 类型，不重新实现发现或启动策略。`ExecutableRequest.mode` 默认为 `immutableArtifact`；安装后需要保留 Bottle 内相邻 DLL/资源时使用 `bottleInPlace`，Core 会在 spawn 前再次检查 `<storageRoot>/bottles/<bottleId>/prefix/drive_c` 内的普通文件和 SHA-256。Bottle 不是安全沙箱。外部调用方必须先检查 API 版本再解析 additive symbol。
 
-构建 Qt 薄壳（最低 Qt 6.8，本机可用 Qt 6.11.1）：
+构建 Tauri 桌面壳（Node.js 24、Rust stable、Tauri 2）：
 
 ```bash
-cmake -S apps/desktop -B build/desktop -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/desktop --parallel 2
-QT_QPA_PLATFORM=offscreen ctest --test-dir build/desktop --output-on-failure
+npm ci --prefix apps/desktop
+npm run build --prefix apps/desktop
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+npm run tauri --prefix apps/desktop -- build --bundles app
+COMPATFORGE_DESKTOP_SMOKE=1 \
+  apps/desktop/src-tauri/target/release/bundle/macos/CompatForge.app/Contents/MacOS/CompatForge
 ```
 
 三个 GUI 基线的下载与验收必须使用仓库外目录；下载命令默认拒绝网络：
@@ -115,7 +118,10 @@ python tools/run_gui_baseline.py \
   --allow-network
 ```
 
-验收结果逐应用标记为 `accepted`、`failed` 或 `unverified`；截图和 RuntimeEvent 证据不会进入 Git，也不由默认 CI 生成。
+默认运行只生成 `unverified` 证据。只有完成逐应用人工行为检查后，才可追加
+`--accept-interactive --interaction-evidence /absolute/external/interactions.json`；该 JSON 的固定字段见
+`docs/implementation/phase-2-tauri-gui-baseline.md`。验收结果逐应用标记为 `accepted`、`failed` 或
+`unverified`；截图和 RuntimeEvent 证据不会进入 Git，也不由默认 CI 生成。
 
 ## 设计入口
 
@@ -129,12 +135,14 @@ python tools/run_gui_baseline.py \
 - [macOS Provider 纵向切片](docs/implementation/phase-1-macos-provider.md)
 - [PE inspection 纵向切片](docs/implementation/phase-1-pe-inspection.md)
 - [Trusted Launch Preparation 纵向切片](docs/implementation/phase-1-trusted-launch-preparation.md)
+- [Tauri 桌面壳与 GUI 基线](docs/implementation/phase-2-tauri-gui-baseline.md)
 - [Apple Silicon 本地无头预览指南](docs/guides/macos-headless-preview.md)
 - [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [能力证据与 Provider 声明决策](docs/decisions/0007-capability-evidence-boundary.md)
 - [Runtime Pack 内容寻址与原子激活决策](docs/decisions/0008-runtime-pack-content-store.md)
 - [macOS Provider 证据决策](docs/decisions/0009-macos-provider-evidence.md)
 - [Inspection-bound Guest Artifact 决策](docs/decisions/0011-inspection-bound-guest-artifacts.md)
+- [Tauri 桌面壳决策](docs/decisions/0012-tauri-desktop-shell.md)
 - [Mac-Win 迁移总计划](MIGRATION.md)
 - [迁移工作分解与退出标准](docs/migration/work-breakdown.md)
 - [Mac-Win portable asset 迁移边界与离线结果](docs/migration/macwin-portable-assets.md)

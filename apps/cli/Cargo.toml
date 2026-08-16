@@ -14,6 +14,7 @@ compatforge-orchestrator = { path = "../../crates/compatforge-orchestrator" }
 compatforge-process = { path = "../../crates/compatforge-process" }
 compatforge-provider-macos = { path = "../../crates/compatforge-provider-macos" }
 compatforge-runtime = { path = "../../crates/compatforge-runtime" }
+compatforge-service = { path = "../../crates/compatforge-service" }
 serde.workspace = true
 serde_json.workspace = true
 

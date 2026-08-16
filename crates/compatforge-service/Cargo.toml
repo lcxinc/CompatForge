@@ -1,0 +1,18 @@
+[package]
+name = "compatforge-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+compatforge-domain = { path = "../compatforge-domain" }
+compatforge-inspect = { path = "../compatforge-inspect" }
+compatforge-orchestrator = { path = "../compatforge-orchestrator" }
+compatforge-process = { path = "../compatforge-process" }
+compatforge-storage = { path = "../compatforge-storage" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

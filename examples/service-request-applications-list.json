@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1",
+  "requestId": "example-request-01",
+  "operation": "applications.list",
+  "payload": {}
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/job.schema.json",
+  "title": "CompatForge Automation Job",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "applicationId",
+    "kind",
+    "status",
+    "createdAtMilliseconds",
+    "updatedAtMilliseconds"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "id": { "$ref": "#/$defs/id" },
+    "applicationId": { "$ref": "#/$defs/id" },
+    "kind": { "enum": ["install", "launch", "compatibility-test", "adaptation-trial"] },
+    "status": { "enum": ["preparing", "running", "cancelling", "succeeded", "failed", "cancelled"] },
+    "createdAtMilliseconds": { "type": "integer", "minimum": 0 },
+    "updatedAtMilliseconds": { "type": "integer", "minimum": 0 },
+    "inspection": { "type": "object" },
+    "launchPlan": { "type": "object" },
+    "events": { "type": "array", "maxItems": 4096 },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "outcome", "summary", "checks", "assessedAtMilliseconds"],
+      "properties": {
+        "schemaVersion": { "const": "1" },
+        "outcome": { "enum": ["accepted", "failed", "unverified"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "assessedAtMilliseconds": { "type": "integer", "minimum": 0 },
+        "checks": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "outcome"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "outcome": { "enum": ["passed", "failed", "blocked", "skipped"] },
+              "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+              "evidence": { "type": "array", "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+            }
+          }
+        }
+      }
+    },
+    "error": { "type": "string" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" }
+  }
+}

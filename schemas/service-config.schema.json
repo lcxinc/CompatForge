@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/service-config.schema.json",
+  "title": "CompatForge Service Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "serviceRoot"],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "serviceRoot": { "type": "string", "minLength": 1 }
+  }
+}

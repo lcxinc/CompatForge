@@ -15,6 +15,7 @@ compatforge-inspect = { path = "../compatforge-inspect" }
 compatforge-orchestrator = { path = "../compatforge-orchestrator" }
 compatforge-process = { path = "../compatforge-process" }
 compatforge-provider-macos = { path = "../compatforge-provider-macos" }
+compatforge-service = { path = "../compatforge-service" }
 serde_json.workspace = true
 
 [lints]

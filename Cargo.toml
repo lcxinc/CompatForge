@@ -12,11 +12,13 @@ members = [
   "crates/compatforge-orchestrator",
   "crates/compatforge-process",
   "crates/compatforge-provider-macos",
+  "crates/compatforge-service",
   "crates/compatforge-ffi",
 ]
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 rust-version = "1.78"
 publish = false

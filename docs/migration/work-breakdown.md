@@ -1,6 +1,6 @@
 # 迁移工作分解与退出标准
 
-工作按能力依赖排序，不按 UI 页面排序。当前以 CompatForge Rust Core 为唯一主线，macOS 与 Linux 共用 Qt 6/QML 薄前端同步演进，再进入 Linux ARM64 与 Android ARM64；核心契约未稳定前不启动完整 Android 产品化。
+工作按能力依赖排序，不按 UI 页面排序。当前以 CompatForge Rust Core 为唯一主线，macOS 桌面使用 Tauri 2 + TypeScript 薄前端，再进入 Linux ARM64 与 Android ARM64；核心契约未稳定前不启动完整 Android 产品化。
 
 ## Phase 0：契约与仓库基线
 
@@ -16,22 +16,22 @@
 - 已完成：64 MiB 有界 PE32/PE32+ 只读 inspection、Schema v1、CLI/C ABI 与确定性无代码 fixture；
 - 已完成：Guest Artifact SHA-256 内容库、inspection-bound PreparedLaunch、Context 指纹、启动前对象复验与 additive ABI v1；
 - 已冻结：Mac-Win Bridge 检查点 `4e421fbea6f59e73e4f813c1f0a14e8db9e36de7`，不再继续 SwiftUI 接入；
-- 已确定：桌面 UI 为 Qt 6/QML，UI 只消费 Core API；
+- 已确定：桌面 UI 为 Tauri 2 + TypeScript，WebView 只消费 Rust Commands 的版本化 view model；
 - 仍未实现：`compatforged` 认证 IPC、可信公钥/撤销 provider、Runtime artifact 通用解包/GC、真实 GPU/driver 能力认证、D3DMetal 分发授权、OS sandbox/资源配额、Bottle 迁移写入。
 
 ### 工作包
 
 - P0.1：确认根许可证、贡献方式和第三方合规负责人；
 - P0.2：稳定 schema v1/v2、canonical JSON 与签名算法 ADR；
-- P0.3：稳定 Qt/C++ ↔ C ABI 的 Context/Launch/Event ownership；
-- P0.4：建立 macOS/Linux C ABI 与无头 Qt smoke target；
+- P0.3：稳定 Tauri Command 与外部 C ABI 的 Context/Launch/Event ownership；
+- P0.4：建立 macOS Tauri build/smoke 与三平台 C ABI 门禁；
 - P0.5：把源 Wine/Recipe/fixture 清单导出为带 digest 的迁移 inventory；
 - P0.6：建立 macOS 实机 CI runner 与代表应用最小集合。
 
 ### 退出标准
 
 - Rust workspace 在 Linux/macOS/Windows CI 通过；
-- Qt/C++ 能读取 ABI/API 版本、执行一次 plan 并消费受控 helper 的完整事件流；
+- Tauri 壳能执行 Bootstrap/PreparedLaunch 并消费受控 helper 的完整事件流；
 - Recipe v1→v2 转换器对现有 catalog 全量通过；
 - 所有迁移输入固定到源 commit 与 digest；
 - 根许可证与第三方分发政策明确。
@@ -51,7 +51,7 @@
 | P1.5 | macOS Providers | Wine、Rosetta、D3DMetal/WineD3D、App Support/沙箱适配 |
 | P1.6 | Recipe v2 | 现有 profile/recipes 数据化、typed action、签名与灰度 |
 | P1.7 | Bottle Bridge | 旧 manifest 双读、read-only snapshot、content-addressed layout migration、verify-before-switch rollback |
-| P1.8 | Qt/QML Desktop | C++ client、feature models、macOS/Linux 平台适配与无头 smoke |
+| P1.8 | Tauri Desktop | Rust Commands、TypeScript feature models、macOS 平台适配与 app smoke |
 | P1.9 | Diagnostics | 结构化事件、脱敏、support bundle、repair audit |
 | P1.10 | macOS Lab | Intel/Apple Silicon、20 个代表应用、图形/IME/字体 probes |
 
@@ -64,7 +64,7 @@
 5. Recipe/compatibility profile；
 6. install flow；
 7. Bottle 写入与迁移；
-8. 建立 Qt/QML macOS/Linux 可启动桌面壳。
+8. 建立 Tauri macOS 可启动桌面壳，并在后续里程碑验证 Linux WebView 适配。
 
 ### Bottle Bridge evidence
 

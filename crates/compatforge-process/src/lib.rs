@@ -693,8 +693,20 @@ fn spawn_exit_watcher(child: Arc<Mutex<Child>>, process_tree: Arc<platform::Proc
         root_exited.store(true, Ordering::Release);
 
         if keep_alive_after_root_exit {
-            while !termination_started.load(Ordering::Acquire) {
-                thread::sleep(PROCESS_POLL_INTERVAL);
+            if let Some(wine_session) = wine_session.as_ref() {
+                if let Err(error) = wine_session.wait_until_idle() {
+                    emitter.emit(
+                        RuntimeEventKind::Failed,
+                        None,
+                        None,
+                        None,
+                        Some(format!("waiting for wineserver idle failed: {error}")),
+                    );
+                }
+            } else {
+                while !termination_started.load(Ordering::Acquire) {
+                    thread::sleep(PROCESS_POLL_INTERVAL);
+                }
             }
         }
 
@@ -784,6 +796,7 @@ struct WineSession {
     environment: Vec<(String, String)>,
     working_directory: String,
     stop_started: AtomicBool,
+    stop_completed: AtomicBool,
     lease_released: AtomicBool,
 }
 
@@ -808,6 +821,7 @@ impl WineSession {
                 .collect(),
             working_directory: plan.process.working_directory.clone(),
             stop_started: AtomicBool::new(false),
+            stop_completed: AtomicBool::new(false),
             lease_released: AtomicBool::new(false),
         })))
     }
@@ -818,6 +832,9 @@ impl WineSession {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
+            while !self.stop_completed.load(Ordering::Acquire) {
+                thread::sleep(PROCESS_POLL_INTERVAL);
+            }
             return Ok(());
         }
         emitter.emit(
@@ -838,31 +855,26 @@ impl WineSession {
             (Ok(()), Err(error)) | (Err(error), Err(_)) => Err(error),
         };
         self.release_lease();
+        self.stop_completed.store(true, Ordering::Release);
         stop_result
     }
 
+    /// Wait until the pinned Wine server reports that every process in the
+    /// managed prefix has exited. Unlike `stop`, this does not terminate a
+    /// normally closing GUI application; an explicit termination request may
+    /// still run `stop` concurrently and wake this rendezvous.
+    fn wait_until_idle(&self) -> io::Result<()> {
+        let mut child = self.spawn_command("-w")?;
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("wineserver -w exited with {status}")))
+        }
+    }
+
     fn run_command(&self, argument: &str) -> io::Result<()> {
-        let mut command = Command::new(&self.lifecycle.executable);
-        command
-            .arg(argument)
-            .current_dir(&self.working_directory)
-            .env_clear()
-            .envs(self.environment.iter().cloned())
-            .env("WINEPREFIX", &self.lifecycle.prefix)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut attempts = 0;
-        let mut child = loop {
-            match command.spawn() {
-                Ok(child) => break child,
-                Err(error) if is_executable_file_busy(&error) && attempts < EXECUTABLE_BUSY_RETRY_LIMIT => {
-                    attempts += 1;
-                    thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
-                }
-                Err(error) => return Err(error),
-            }
-        };
+        let mut child = self.spawn_command(argument)?;
         let deadline = Instant::now() + WINE_SERVER_COMMAND_TIMEOUT;
         loop {
             if let Some(status) = child.try_wait()? {
@@ -881,6 +893,30 @@ impl WineSession {
                 ));
             }
             thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+    }
+
+    fn spawn_command(&self, argument: &str) -> io::Result<Child> {
+        let mut command = Command::new(&self.lifecycle.executable);
+        command
+            .arg(argument)
+            .current_dir(&self.working_directory)
+            .env_clear()
+            .envs(self.environment.iter().cloned())
+            .env("WINEPREFIX", &self.lifecycle.prefix)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut attempts = 0;
+        loop {
+            match command.spawn() {
+                Ok(child) => return Ok(child),
+                Err(error) if is_executable_file_busy(&error) && attempts < EXECUTABLE_BUSY_RETRY_LIMIT => {
+                    attempts += 1;
+                    thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -1329,6 +1365,82 @@ mod tests {
         assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn gui_launch_reaches_exit_after_wineserver_becomes_idle_without_termination() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("compatforge-gui-idle-{}-{nonce}", std::process::id()));
+        let prefix = directory.join("prefix");
+        let system32 = prefix.join("drive_c/windows/system32");
+        std::fs::create_dir_all(&system32).unwrap();
+        std::fs::write(system32.join("ntdll.dll"), b"marker").unwrap();
+        let runtime = directory.join("wine");
+        let wineserver = directory.join("wineserver");
+        for (path, source) in [
+            (&runtime, b"#!/bin/sh\nexit 0\n".as_slice()),
+            (&wineserver, b"#!/bin/sh\nexit 0\n".as_slice()),
+        ] {
+            let mut file = std::fs::File::create(path).unwrap();
+            file.write_all(source).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let guest = directory.join("guest.exe");
+        std::fs::write(&guest, b"gui").unwrap();
+        let guest_digest = sha256_file(&guest).unwrap();
+
+        let mut plan = fixture_plan();
+        plan.process.executable = runtime.to_string_lossy().into_owned();
+        plan.process.arguments = vec![guest.to_string_lossy().into_owned()];
+        plan.process.working_directory = directory.to_string_lossy().into_owned();
+        plan.process
+            .environment
+            .insert("WINEPREFIX".into(), prefix.to_string_lossy().into_owned());
+        plan.process
+            .environment
+            .insert(RUNTIME_EXECUTABLE_DIGEST_ENV.into(), sha256_file(&runtime).unwrap());
+        plan.process.environment.insert(
+            WINESERVER_EXECUTABLE_DIGEST_ENV.into(),
+            sha256_file(&wineserver).unwrap(),
+        );
+        plan.guest_artifact = Some(GuestArtifactBinding {
+            digest: guest_digest,
+            size_bytes: 3,
+            stored_path: guest.to_string_lossy().into_owned(),
+            original_name: "guest.exe".into(),
+            architecture: CpuArchitecture::X86_64,
+            image_kind: "executable".into(),
+            subsystem: "windowsGui".into(),
+            inspection_schema_version: SCHEMA_VERSION_V1.into(),
+        });
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: wineserver.to_string_lossy().into_owned(),
+            prefix: prefix.to_string_lossy().into_owned(),
+        });
+
+        let handle = ProcessSupervisor::start(&plan).unwrap();
+        let events = collect_until_exit(&handle, Instant::now() + Duration::from_secs(10));
+
+        assert!(!events
+            .iter()
+            .any(|event| event.kind == RuntimeEventKind::TerminateRequested));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == RuntimeEventKind::WineServerStopRequested));
+        assert_eq!(events.last().map(|event| event.kind), Some(RuntimeEventKind::Exited));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn explicit_termination_is_idempotent_and_reaches_exit() {
         let handle = ProcessSupervisor::start(&helper_plan()).unwrap();
@@ -1457,6 +1569,58 @@ mod tests {
             std::fs::read_to_string(output).unwrap(),
             format!("-k:{prefix}\n-w:{prefix}\n")
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wineserver_idle_wait_uses_pinned_executable_and_releases_prefix() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "compatforge-wineserver-wait-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("wineserver");
+        let output = directory.join("calls.log");
+        let mut executable_file = std::fs::File::create(&executable).unwrap();
+        executable_file
+            .write_all(b"#!/bin/sh\nprintf '%s:%s\\n' \"$1\" \"$WINEPREFIX\" >> \"$COMPATFORGE_WINESERVER_LOG\"\n")
+            .unwrap();
+        executable_file.sync_all().unwrap();
+        drop(executable_file);
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let mut plan = fixture_plan();
+        let prefix = directory.join("prefix").to_string_lossy().into_owned();
+        plan.lifecycle.wineserver = Some(WineServerLifecycle {
+            executable: executable.to_string_lossy().into_owned(),
+            prefix: prefix.clone(),
+        });
+        plan.process.environment.insert(
+            "COMPATFORGE_WINESERVER_LOG".into(),
+            output.to_string_lossy().into_owned(),
+        );
+        plan.process.working_directory = directory.to_string_lossy().into_owned();
+        let session = WineSession::acquire(&plan).unwrap().unwrap();
+
+        session.wait_until_idle().unwrap();
+
+        assert_eq!(std::fs::read_to_string(output).unwrap(), format!("-w:{prefix}\n"));
+        assert!(matches!(
+            WineSession::acquire(&plan),
+            Err(ProcessError::WinePrefixBusy(_))
+        ));
+        let (sender, _receiver) = mpsc::channel();
+        let emitter = EventEmitter::new("wine-idle-test".into(), sender);
+        session.stop(&emitter).unwrap();
+        assert!(WineSession::acquire(&plan).unwrap().is_some());
         std::fs::remove_dir_all(directory).unwrap();
     }
 
