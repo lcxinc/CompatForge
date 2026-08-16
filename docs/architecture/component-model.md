@@ -12,8 +12,9 @@
 | Runtime Pack | `crates/compatforge-runtime` | 规范化 manifest digest、artifact SHA-256、内容寻址发布、原子 active ref、校验与回滚 | 可信密钥 provider、归档物化、垃圾回收与跨进程 writer |
 | Orchestrator | `crates/compatforge-orchestrator` | 硬约束、Provider 回退、固定 Runtime Pack、PreparedLaunch 和完整 LaunchPlan | Provider probe、认证结果评分、可解释 scoring |
 | Process | `crates/compatforge-process` | Unix process group、Windows Job Object、有序事件、超时/分级终止、prefix 排他租约与 wineserver 清理 | OS sandbox、资源限制、daemon 级持久租约 |
-| C ABI | `crates/compatforge-ffi` | capabilities/plan/start/events/terminate、opaque handle、稳定 status 与所有权释放 | IPC daemon 与 Qt C++ wrapper |
+| C ABI | `crates/compatforge-ffi` | capabilities/plan/start/events/terminate、opaque handle、稳定 status 与所有权释放 | IPC daemon 与外部 C/C++ 客户端 |
 | CLI | `apps/cli` | probe、plan、受控 launch 与 Runtime Pack install/verify/rollback | doctor、lab 子命令 |
+| Desktop | `apps/desktop` | Tauri Commands、macOS 应用网格、原生文件选择、状态筛选与事件呈现 | Bottle/catalog/diagnostics 完整工作流 |
 | Contracts | `schemas/` | 版本化交换格式 | 生成绑定、兼容性测试、签名 canonicalization |
 
 Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未知字段，避免安全相关配置被静默忽略。异步运行时、数据库和遥测仍留到相应 Provider/进程监督需求出现后单独决策。
@@ -45,14 +46,14 @@ Phase 0.1 仅引入 `serde`/`serde_json`，并把反序列化设置为拒绝未�
 
 ### macOS 与 Linux Desktop
 
-两端统一采用 Qt 6/QML，并保持为 Core 的薄客户端：
+桌面端采用 Tauri 2 + TypeScript，并保持为 Core 的薄客户端：
 
 - `RuntimeClient`：capabilities、compile、launch、events、terminate；
 - `BottleClient`：list、create、snapshot、migrate、restore；
 - `CatalogClient`：refresh、list、verify、install；
 - `DiagnosticsClient`：query events、run checks、export redacted bundle。
 
-QML 不读取 Bottle/Runtime 文件、不持有 PID、不拼接命令。C++ client 只管理 opaque handle、JSON DTO 与线程调度；平台差异限制在窗口、输入、portal/权限与发行适配器。Mac-Win/SwiftUI 暂停维护，不再作为过渡交付路径。
+WebView 不读取 Bottle/Runtime 文件、不持有 PID、不拼接命令。Tauri Rust Commands 只负责 Runtime Bootstrap 和转发版本化 `ServiceRequest`；应用、Bottle、设置和 Job 均由 `compatforge-service` 调用 Core 类型。所有阻塞调用离开 WebView 线程。平台差异限制在窗口、输入、portal/权限与发行适配器。Mac-Win/SwiftUI 和 Qt 壳均不再作为过渡交付路径。
 
 ### Android
 

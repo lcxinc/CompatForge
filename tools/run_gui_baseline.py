@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import platform
+import selectors
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD = ROOT / "tools" / "download_gui_assets.py"
 MAX_COMMAND_SECONDS = 180
+WINDOW_APPEARANCE_SECONDS = 30
+INTERACTIVE_RUNTIME_MILLISECONDS = 60_000
+
+REQUIRED_INTERACTIONS = {
+    "7zip": ("fileList", "menus"),
+    "sumatrapdf": ("mainWindow", "openDialog"),
+    "notepad-plus-plus": ("open", "edit", "saveUtf8Chinese", "rereadMatches"),
+}
 
 
 class AcceptanceError(Exception):
@@ -54,6 +63,10 @@ def parser() -> argparse.ArgumentParser:
         "--accept-interactive",
         action="store_true",
         help="promote non-empty window/screenshot evidence after manual GUI behavior checks",
+    )
+    value.add_argument(
+        "--interaction-evidence",
+        help="absolute JSON record of the required per-application manual checks",
     )
     return value
 
@@ -113,13 +126,13 @@ def exit_observation(events: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
-def process_snapshot(marker: str) -> list[str]:
-    """List launch command lines still tied to this external Bottle root."""
+def process_table() -> list[tuple[int, int, str]]:
+    """Return a bounded macOS process table projection without shelling out."""
     if platform.system() != "Darwin":
         return []
     try:
         result = subprocess.run(
-            ["/bin/ps", "-axo", "pid=,command="],
+            ["/bin/ps", "-axo", "pid=,pgid=,command="],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -127,17 +140,72 @@ def process_snapshot(marker: str) -> list[str]:
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows: list[tuple[int, int, str]] = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) != 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            continue
+    return rows
+
+
+def process_snapshot(marker: str, process_group_id: int | None = None) -> list[str]:
+    """List residual commands tied to either the Bottle path or launch group."""
+    current = os.getpid()
+    rows = process_table()
+    if not rows:
         return ["process observation unavailable"]
-    current = str(os.getpid())
-    return [line.strip() for line in result.stdout.splitlines() if marker in line and not line.lstrip().startswith(current)]
+    return [
+        f"{pid} {command}"
+        for pid, pgid, command in rows
+        if pid != current and (marker in command or (process_group_id is not None and pgid == process_group_id))
+    ]
+
+
+def process_group_ids(process_group_id: int) -> list[int]:
+    return [pid for pid, pgid, _command in process_table() if pgid == process_group_id]
+
+
+def matching_windows(output: str, title_tokens: tuple[str, ...]) -> list[dict[str, object]]:
+    matching: list[dict[str, object]] = []
+    for line in output.splitlines():
+        parts = line.strip().split("|", 2)
+        if len(parts) != 3 or not any(token.casefold() in parts[1].casefold() for token in title_tokens):
+            continue
+        dimensions = parts[2].split("x", 1)
+        try:
+            process_id = int(parts[0])
+            width = int(dimensions[0])
+            height = int(dimensions[1])
+        except (ValueError, IndexError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        matching.append({"processId": process_id, "title": parts[1], "width": width, "height": height})
+    return matching
+
+
+def parse_event_line(line: str, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError as error:
+        raise AcceptanceError(f"{label} emitted invalid RuntimeEvent JSON") from error
+    if not isinstance(value, dict):
+        raise AcceptanceError(f"{label} emitted a non-object RuntimeEvent")
+    return value
 
 
 def observed_launch(
     argv: list[str],
     screenshot_path: Path,
+    title_tokens: tuple[str, ...],
     *,
     timeout: int = MAX_COMMAND_SECONDS,
-) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object], int | None]:
     """Keep the Core launch process alive while collecting visual evidence."""
     process = subprocess.Popen(
         argv,
@@ -145,31 +213,58 @@ def observed_launch(
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=1,
     )
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        raise AcceptanceError("GUI launch pipes were not created")
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
     started = time.monotonic()
     windows: dict[str, object] = {"available": False, "reason": "observation pending"}
     shot: dict[str, object] = {"available": False, "path": str(screenshot_path)}
-    observed = False
+    events: list[dict[str, object]] = []
+    root_process_id: int | None = None
+    next_observation = started
     while process.poll() is None:
         elapsed = time.monotonic() - started
-        if not observed and elapsed >= 2:
-            windows = observer()
-            shot = screenshot(screenshot_path)
-            observed = True
+        for key, _mask in selector.select(timeout=0.1):
+            line = key.fileobj.readline()
+            if not line:
+                continue
+            event = parse_event_line(line, "GUI launch")
+            events.append(event)
+            if event.get("kind") == "started" and isinstance(event.get("processId"), int):
+                root_process_id = event["processId"]
+        now = time.monotonic()
+        if (
+            root_process_id is not None
+            and not windows.get("available")
+            and elapsed <= WINDOW_APPEARANCE_SECONDS
+            and now >= next_observation
+        ):
+            windows = observer(root_process_id, title_tokens)
+            if windows.get("available") is True:
+                shot = screenshot(screenshot_path)
+            next_observation = now + 0.5
         if elapsed >= timeout:
             process.kill()
             process.wait(timeout=10)
             raise AcceptanceError("GUI launch exceeded the bounded observation timeout")
         time.sleep(0.1)
-    stdout, stderr = process.communicate(timeout=10)
-    if not observed:
-        windows = observer()
-        shot = screenshot(screenshot_path)
+    selector.unregister(process.stdout)
+    selector.close()
+    for line in process.stdout.read().splitlines():
+        if line.strip():
+            events.append(parse_event_line(line, "GUI launch"))
+    stderr = process.stderr.read()
+    process.wait(timeout=10)
     if process.returncode != 0:
         detail = stderr.strip().splitlines()[-1] if stderr.strip() else "no stderr"
         raise AcceptanceError(f"GUI launch failed: {detail}")
-    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
-    return run_events(result, "GUI launch"), windows, shot
+    if not events:
+        raise AcceptanceError("GUI launch emitted no RuntimeEvent")
+    return events, windows, shot, root_process_id
 
 
 def status(events: list[dict[str, object]]) -> str:
@@ -186,18 +281,27 @@ def status(events: list[dict[str, object]]) -> str:
     return "failed"
 
 
-def observer() -> dict[str, object]:
+def observer(process_group_id: int, title_tokens: tuple[str, ...]) -> dict[str, object]:
     if platform.system() != "Darwin":
         return {"available": False, "reason": "window observation requires macOS"}
+    target_ids = process_group_ids(process_group_id)
+    if not target_ids:
+        return {"available": False, "reason": "launch process group is no longer visible", "processGroupId": process_group_id}
+    ids = ",".join(str(value) for value in target_ids)
     script = (
         'tell application "System Events"\n'
         "set resultText to {}\n"
+        f"set targetIds to {{{ids}}}\n"
         "repeat with p in (every process whose background only is false)\n"
+        "if targetIds contains (unix id of p) then\n"
         "repeat with w in (every window of p)\n"
         "set t to title of w\n"
-        "if t is not missing value and t is not \"\" then set end of resultText to (t & \"|\" & (size of w as text))\n"
+        "set windowSize to size of w\n"
+        "if t is not missing value and t is not \"\" then set end of resultText to ((unix id of p as text) & \"|\" & t & \"|\" & (item 1 of windowSize as text) & \"x\" & (item 2 of windowSize as text))\n"
         "end repeat\n"
+        "end if\n"
         "end repeat\n"
+        "set AppleScript's text item delimiters to linefeed\n"
         "return resultText as text\n"
         "end tell"
     )
@@ -214,8 +318,14 @@ def observer() -> dict[str, object]:
         return {"available": False, "reason": "osascript unavailable"}
     if result.returncode != 0:
         return {"available": False, "reason": "Accessibility permission unavailable"}
-    windows = [line for line in result.stdout.splitlines() if line.strip()]
-    return {"available": bool(windows), "windows": windows[:32]}
+    matching = matching_windows(result.stdout, title_tokens)
+    return {
+        "available": bool(matching),
+        "processGroupId": process_group_id,
+        "processIds": target_ids,
+        "expectedTitleTokens": list(title_tokens),
+        "windows": matching[:32],
+    }
 
 
 def screenshot(path: Path) -> dict[str, object]:
@@ -234,6 +344,31 @@ def screenshot(path: Path) -> dict[str, object]:
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def interaction_evidence(path: Path | None, accept_interactive: bool) -> dict[str, dict[str, bool]]:
+    if not accept_interactive:
+        if path is not None:
+            raise AcceptanceError("--interaction-evidence requires --accept-interactive")
+        return {}
+    if path is None:
+        raise AcceptanceError("--accept-interactive requires --interaction-evidence")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AcceptanceError("interaction evidence is not readable JSON") from error
+    if not isinstance(value, dict) or value.get("schemaVersion") != "1":
+        raise AcceptanceError("interaction evidence must use schemaVersion 1")
+    applications = value.get("applications")
+    if not isinstance(applications, dict):
+        raise AcceptanceError("interaction evidence omitted applications")
+    result: dict[str, dict[str, bool]] = {}
+    for app_id, required in REQUIRED_INTERACTIONS.items():
+        checks = applications.get(app_id)
+        if not isinstance(checks, dict) or any(checks.get(name) is not True for name in required):
+            raise AcceptanceError(f"interaction evidence is incomplete for {app_id}")
+        result[app_id] = {name: True for name in required}
+    return result
 
 
 def installed_executable(asset, bottle_root: Path) -> Path:  # type: ignore[no-untyped-def]
@@ -300,6 +435,12 @@ def main() -> int:
         explicit = [arguments.wine_root, arguments.wine, arguments.wineserver, arguments.version]
         if any(explicit) and not all(explicit):
             raise AcceptanceError("wine-root, wine, wineserver and version must be provided together")
+        evidence_path = (
+            absolute(arguments.interaction_evidence, "interaction-evidence", external=True)
+            if arguments.interaction_evidence
+            else None
+        )
+        manual_checks = interaction_evidence(evidence_path, arguments.accept_interactive)
 
         request = {
             "schemaVersion": "1",
@@ -452,30 +593,36 @@ def main() -> int:
                     ),
                     f"{asset.app_id} GUI plan",
                 )
-                events, windows, shot = observed_launch(
+                events, windows, shot, process_group_id = observed_launch(
                     [
                         str(arguments.compatforge_cli),
                         "prepared-launch-terminate",
                         str(context_path),
                         str(installed),
                         str(launch_request_path),
-                        "8000",
+                        str(INTERACTIVE_RUNTIME_MILLISECONDS if arguments.accept_interactive else 30_000),
                     ],
                     arguments.work_root / f"{asset.app_id}.png",
+                    asset.window_title_tokens,
                 )
                 evidence["events"] = events
                 evidence["exit"] = exit_observation(events)
                 evidence["windows"] = windows
                 evidence["screenshot"] = shot
-                evidence["residualProcesses"] = process_snapshot(str(bottle_root))
+                evidence["interactionChecks"] = manual_checks.get(asset.app_id, {})
+                evidence["residualProcesses"] = process_snapshot(str(bottle_root), process_group_id)
                 basic = status(events) == "accepted" and evidence["windows"].get("available") is True and evidence[
                     "screenshot"
-                ].get("available") is True
-                evidence["status"] = "accepted" if basic and arguments.accept_interactive else "unverified"
+                ].get("available") is True and not evidence["residualProcesses"]
+                interactions_complete = all(
+                    evidence["interactionChecks"].get(name) is True
+                    for name in REQUIRED_INTERACTIONS[asset.app_id]
+                )
+                evidence["status"] = "accepted" if basic and interactions_complete else "unverified"
                 if not basic:
-                    evidence["reason"] = "no non-empty interactive window and screenshot evidence"
-                elif not arguments.accept_interactive:
-                    evidence["reason"] = "manual app behavior confirmation not supplied"
+                    evidence["reason"] = "target window/screenshot/exit cleanup evidence is incomplete"
+                elif not interactions_complete:
+                    evidence["reason"] = "required per-application interaction evidence was not supplied"
             except (AcceptanceError, OSError, subprocess.TimeoutExpired) as error:
                 evidence["status"] = "failed"
                 evidence["reason"] = str(error)
@@ -489,6 +636,9 @@ def main() -> int:
                 except (OSError, AcceptanceError) as error:
                     evidence["cleanup"] = False
                     evidence["cleanupError"] = str(error)
+                if evidence["status"] == "accepted" and evidence["cleanup"] is not True:
+                    evidence["status"] = "failed"
+                    evidence["reason"] = "Bottle cleanup failed"
                 write_json(arguments.work_root / f"{asset.app_id}-evidence.json", evidence)
                 results.append(evidence)
 

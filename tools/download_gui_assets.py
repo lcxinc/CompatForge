@@ -32,6 +32,7 @@ class GuiAsset:
     sha256: str
     install_args: tuple[str, ...]
     installed_executable: str
+    window_title_tokens: tuple[str, ...]
 
 
 ASSETS = (
@@ -43,6 +44,7 @@ ASSETS = (
         "d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d",
         ("/S",),
         "Program Files/7-Zip/7zFM.exe",
+        ("7-Zip",),
     ),
     GuiAsset(
         "sumatrapdf",
@@ -52,6 +54,7 @@ ASSETS = (
         "1eee71cccd2ea6e94d5bcea54ee2f759844da3e1a0ee2f6045035b1d17b94381",
         ("-silent",),
         "Program Files/SumatraPDF/SumatraPDF.exe",
+        ("SumatraPDF",),
     ),
     GuiAsset(
         "notepad-plus-plus",
@@ -61,6 +64,7 @@ ASSETS = (
         "7c243203265ce8fdac76c839bf744ae35dcf620760eb97c2ea279af498560e45",
         ("/S",),
         "Program Files/Notepad++/notepad++.exe",
+        ("Notepad++",),
     ),
 )
 
@@ -183,6 +187,7 @@ def asset_json(asset: GuiAsset) -> dict[str, object]:
         "sha256": asset.sha256,
         "installArgs": list(asset.install_args),
         "installedExecutable": asset.installed_executable,
+        "windowTitleTokens": list(asset.window_title_tokens),
     }
 
 

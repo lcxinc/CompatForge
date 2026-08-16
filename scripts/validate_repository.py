@@ -121,6 +121,7 @@ BOTTLE_MIGRATION_SCHEMA_SHA256 = {
 BOTTLE_MIGRATION_SCHEMA_NAMES = frozenset(
     {
         "bottle.schema.json",
+        "application.schema.json",
         "bottle-active-ref.schema.json",
         "bottle-migration-plan.schema.json",
         "bottle-runtime-map.schema.json",
@@ -133,6 +134,7 @@ BOTTLE_MIGRATION_SCHEMA_NAMES = frozenset(
         "guest-artifact.schema.json",
         "launch-plan.schema.json",
         "launch-request.schema.json",
+        "job.schema.json",
         "macos-provider.schema.json",
         "macos-bootstrap-request.schema.json",
         "macwin-patch-review.schema.json",
@@ -144,6 +146,10 @@ BOTTLE_MIGRATION_SCHEMA_NAMES = frozenset(
         "recipe.schema.json",
         "runtime-event.schema.json",
         "runtime-pack.schema.json",
+        "service-config.schema.json",
+        "service-request.schema.json",
+        "service-response.schema.json",
+        "service-settings.schema.json",
     }
 )
 BOTTLE_MIGRATION_FILE_SHA256 = {
