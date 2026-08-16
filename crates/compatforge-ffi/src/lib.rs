@@ -8,6 +8,7 @@ use compatforge_inspect::inspect_path;
 use compatforge_orchestrator::{PolicyEngine, PreparedLaunch};
 use compatforge_process::{EventPoll, LaunchHandle, ProcessSupervisor};
 use compatforge_provider_macos::{create_local_context, MacOsLocalContextRequest};
+use compatforge_service::{AutomationService, ServiceConfig, ServiceError, ServiceRequest};
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -38,6 +39,9 @@ pub enum CfStatus {
     InspectionFailed = 11,
     PreparationFailed = 12,
     BootstrapFailed = 13,
+    ServiceFailed = 14,
+    NotFound = 15,
+    Conflict = 16,
     Panic = 255,
 }
 
@@ -54,6 +58,11 @@ pub struct CfLaunch {
 #[repr(C)]
 pub struct CfPreparedLaunch {
     prepared: PreparedLaunch,
+}
+
+#[repr(C)]
+pub struct CfService {
+    service: AutomationService,
 }
 
 struct FfiFailure {
@@ -263,6 +272,78 @@ pub unsafe extern "C" fn cf_macos_local_context_create(
         unsafe { write_owned_string(receipt, out_receipt_json) }?;
         unsafe { ptr::write(out_context, Box::into_raw(context)) };
         Ok(())
+    })
+}
+
+/// Create the persistent application/Bottle/settings/job service for a Core
+/// context. The service never discovers a Runtime independently; every launch
+/// is prepared and authorized against the supplied context.
+///
+/// # Safety
+///
+/// `context` must be live, `service_config_json` must be valid UTF-8 JSON and
+/// `out_service` must be valid for one pointer write. Release the result with
+/// [`cf_service_release`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_service_create(
+    context: *const CfContext,
+    service_config_json: *const c_char,
+    out_service: *mut *mut CfService,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_service.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_service is null"));
+        }
+        unsafe { ptr::write(out_service, ptr::null_mut()) };
+        if context.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "context is null"));
+        }
+        let config_text = unsafe { read_utf8(service_config_json, "service_config_json") }?;
+        let service_config: ServiceConfig = serde_json::from_str(&config_text)
+            .map_err(|error| FfiFailure::new(CfStatus::InvalidJson, format!("invalid service config JSON: {error}")))?;
+        let context = unsafe { &*context };
+        let service = AutomationService::new(context.config.clone(), service_config).map_err(service_failure)?;
+        unsafe { ptr::write(out_service, Box::into_raw(Box::new(CfService { service }))) };
+        Ok(())
+    })
+}
+
+/// Execute one versioned service operation and return its owned JSON response.
+/// This is the complete headless application-management API used by desktop,
+/// CLI, tests and external automation agents.
+///
+/// # Safety
+///
+/// `service` must be live, `request_json` must be valid UTF-8 JSON and
+/// `out_response_json` must be valid for one pointer write. Free the returned
+/// string with [`cf_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn cf_service_call(
+    service: *const CfService,
+    request_json: *const c_char,
+    out_response_json: *mut *mut c_char,
+) -> CfStatus {
+    ffi_boundary(|| {
+        if out_response_json.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "out_response_json is null"));
+        }
+        unsafe { ptr::write(out_response_json, ptr::null_mut()) };
+        if service.is_null() {
+            return Err(FfiFailure::new(CfStatus::NullPointer, "service is null"));
+        }
+        let request_text = unsafe { read_utf8(request_json, "request_json") }?;
+        let request: ServiceRequest = serde_json::from_str(&request_text).map_err(|error| {
+            FfiFailure::new(CfStatus::InvalidJson, format!("invalid service request JSON: {error}"))
+        })?;
+        let service = unsafe { &*service };
+        let response = service.service.call(request).map_err(service_failure)?;
+        let json = serde_json::to_string(&response).map_err(|error| {
+            FfiFailure::new(
+                CfStatus::ServiceFailed,
+                format!("service response serialization failed: {error}"),
+            )
+        })?;
+        unsafe { write_owned_string(json, out_response_json) }
     })
 }
 
@@ -569,6 +650,21 @@ pub unsafe extern "C" fn cf_context_release(context: *mut CfContext) {
     }
 }
 
+/// Release a service, requesting termination of every job still owned by it.
+///
+/// # Safety
+///
+/// `service` must be null or a pointer returned by [`cf_service_create`] that
+/// has not already been released.
+#[no_mangle]
+pub unsafe extern "C" fn cf_service_release(service: *mut CfService) {
+    if !service.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            drop(Box::from_raw(service));
+        }));
+    }
+}
+
 /// Release an opaque prepared launch.
 ///
 /// # Safety
@@ -611,6 +707,16 @@ fn ffi_boundary(operation: impl FnOnce() -> Result<(), FfiFailure>) -> CfStatus 
             CfStatus::Panic
         }
     }
+}
+
+fn service_failure(error: ServiceError) -> FfiFailure {
+    let status = match error.code() {
+        "not-found" => CfStatus::NotFound,
+        "conflict" => CfStatus::Conflict,
+        "invalid-request" => CfStatus::InvalidArgument,
+        _ => CfStatus::ServiceFailed,
+    };
+    FfiFailure::new(status, error.to_string())
 }
 
 unsafe fn read_utf8(value: *const c_char, name: &'static str) -> Result<String, FfiFailure> {
@@ -811,6 +917,51 @@ mod tests {
         let context = create_context(&example_config());
         unsafe {
             assert_eq!(cf_capabilities_get(context, ptr::null_mut()), CfStatus::NullPointer);
+            cf_context_release(context);
+        }
+    }
+
+    #[test]
+    fn manages_applications_through_the_generic_service_abi() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("compatforge-service-ffi-{}-{unique}", std::process::id()));
+        let mut config = example_config();
+        config.storage_root = root.join("storage").to_string_lossy().into_owned();
+        let context = create_context(&config);
+        let service_config = CString::new(
+            serde_json::json!({
+                "schemaVersion": "1",
+                "serviceRoot": root.join("service").to_string_lossy(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut service = ptr::null_mut();
+        let mut output = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                cf_service_create(context, service_config.as_ptr(), &mut service),
+                CfStatus::Ok
+            );
+            let seed = CString::new(
+                r#"{"schemaVersion":"1","requestId":"ffi-request-01","operation":"applications.seed-defaults","payload":{}}"#,
+            )
+            .unwrap();
+            assert_eq!(cf_service_call(service, seed.as_ptr(), &mut output), CfStatus::Ok);
+            cf_string_free(output);
+            output = ptr::null_mut();
+            let list = CString::new(
+                r#"{"schemaVersion":"1","requestId":"ffi-request-02","operation":"applications.list","payload":{}}"#,
+            )
+            .unwrap();
+            assert_eq!(cf_service_call(service, list.as_ptr(), &mut output), CfStatus::Ok);
+            let response: serde_json::Value = serde_json::from_str(CStr::from_ptr(output).to_str().unwrap()).unwrap();
+            assert_eq!(response["result"].as_array().unwrap().len(), 3);
+            cf_string_free(output);
+            cf_service_release(service);
             cf_context_release(context);
         }
     }

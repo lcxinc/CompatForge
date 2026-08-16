@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compatforge.dev/schemas/application.schema.json",
+  "title": "CompatForge Managed Application",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "name",
+    "version",
+    "publisher",
+    "category",
+    "bottleId",
+    "launchers",
+    "compatibilityRating"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "id": { "$ref": "#/$defs/id" },
+    "name": { "$ref": "#/$defs/text" },
+    "version": { "$ref": "#/$defs/text" },
+    "publisher": { "$ref": "#/$defs/text" },
+    "category": { "$ref": "#/$defs/text" },
+    "bottleId": { "$ref": "#/$defs/id" },
+    "installer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName"],
+      "properties": {
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "arguments": { "$ref": "#/$defs/arguments" }
+      }
+    },
+    "launchers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "executable"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "$ref": "#/$defs/text" },
+          "executable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "arguments": { "$ref": "#/$defs/arguments" },
+          "environment": { "$ref": "#/$defs/environment" }
+        }
+      }
+    },
+    "compatibilityRating": { "enum": ["excellent", "good", "limited", "experimental", "unknown"] },
+    "tags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/text" },
+      "maxItems": 256
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "arguments": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string", "maxLength": 4096 }
+    },
+    "environment": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "minLength": 1, "maxLength": 256 },
+      "additionalProperties": { "type": "string", "maxLength": 4096 }
+    }
+  }
+}

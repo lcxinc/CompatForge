@@ -8,11 +8,12 @@ use compatforge_provider_macos::{
     create_local_context, MacOsLocalContextRequest, MacOsProviderConfig, MacOsProviderSet,
 };
 use compatforge_runtime::{sha256_digest_bytes, RejectAllSignatures, RuntimePackStore};
+use compatforge_service::{AutomationService, ServiceConfig, ServiceRequest};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::error::Error;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -104,6 +105,18 @@ fn run_arguments(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             let config = read_json::<CoreConfig>(Path::new(config_path))?;
             let request = read_json::<LaunchRequest>(Path::new(request_path))?;
             launch(&config, &request, None)?;
+        }
+        [command, config_path, service_config_path, request_path] if command == "api" => {
+            let config = read_json::<CoreConfig>(Path::new(config_path))?;
+            let service_config = read_json::<ServiceConfig>(Path::new(service_config_path))?;
+            let request = read_json::<ServiceRequest>(Path::new(request_path))?;
+            let service = AutomationService::new(config, service_config)?;
+            println!("{}", serde_json::to_string(&service.call(request)?)?);
+        }
+        [command, config_path, service_config_path] if command == "api-session" => {
+            let config = read_json::<CoreConfig>(Path::new(config_path))?;
+            let service_config = read_json::<ServiceConfig>(Path::new(service_config_path))?;
+            run_api_session(AutomationService::new(config, service_config)?)?;
         }
         [command, config_path, request_path, milliseconds] if command == "launch-terminate" => {
             let config = read_json::<CoreConfig>(Path::new(config_path))?;
@@ -445,6 +458,22 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn E
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+fn run_api_session(service: AutomationService) -> Result<(), Box<dyn Error>> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let request: ServiceRequest = serde_json::from_str(&line)?;
+        serde_json::to_writer(&mut stdout, &service.call(request)?)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
 fn print_plan(config: &CoreConfig, request: &LaunchRequest) -> Result<(), Box<dyn Error>> {
     let plan = PolicyEngine::compile(config, request)?;
     println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -512,6 +541,8 @@ fn print_help() {
     println!("  compatforge-cli prepared-launch-terminate <context-config.json> <absolute-windows-executable> <launch-request.json> <delay-ms>");
     println!("  compatforge-cli launch <context-config.json> <launch-request.json>");
     println!("  compatforge-cli launch-terminate <context-config.json> <launch-request.json> <delay-ms>");
+    println!("  compatforge-cli api <context-config.json> <service-config.json> <service-request.json>");
+    println!("  compatforge-cli api-session <context-config.json> <service-config.json>  # JSON Lines on stdin/stdout");
     println!("  compatforge-cli runtime manifest-digest <manifest.json>");
     println!("  compatforge-cli runtime install <store-root> <bundle-root> <manifest-relative-path>");
     println!("  compatforge-cli runtime verify <store-root> <pack-digest>");
