@@ -2,7 +2,7 @@
 
 CompatForge 是从 [Mac-Win](https://github.com/a1112/Mac-Win) 演进而来的跨平台 Windows 应用兼容运行控制平面。它不重写 Wine，而是统一编排 Wine、CPU 二进制翻译、图形转换、虚拟机和远程 Windows，并用签名运行包、兼容配方与可重复测试交付“可验证的兼容性”。
 
-> 当前状态：Core/API `0.12.0`，ABI major `1`。Rust Core 统一负责受限 macOS Wine 自动发现、Preview Pack 登记、GUI/Console PE inspection、`bottleInPlace` 路径/哈希复验，以及持久化 Application/Bottle/Settings/Job 服务。C ABI 新增 `cf_service_create/cf_service_call/cf_service_release`，CLI 提供单次 `api` 与常驻 JSON Lines `api-session`。`apps/desktop` 是只消费同一 Service API 的 Tauri 2 薄壳：主窗口专注应用启动与管理，设置使用独立的 macOS 风格窗口。默认 CI 不下载或运行真实 Windows GUI 应用；真实窗口、应用行为和清理证据不扩大为通用兼容结论。
+> 当前状态：Core/API `0.12.0`，ABI major `1`。Rust Core 统一负责受限 macOS Wine 自动发现、Preview Pack 登记、GUI/Console PE inspection、`bottleInPlace` 路径/哈希复验、摘要绑定的 CJK 字体准备，以及持久化 Application/Bottle/Settings/Job 服务。C ABI 新增 `cf_service_create/cf_service_call/cf_service_release`，CLI 提供单次 `api` 与常驻 JSON Lines `api-session`。`apps/desktop` 是只消费同一 Service API 的 Tauri 2 薄壳：主窗口专注应用启动与管理，设置使用独立的 macOS 风格窗口。默认 CI 不下载或运行真实 Windows GUI 应用；真实窗口、应用行为和清理证据不扩大为通用兼容结论。
 
 > 工程方向：`CompatForge` 是唯一主工程；桌面 UI 使用 Tauri 2 + TypeScript，当前里程碑优先 macOS ARM64，同时保留 Rust Core 的跨平台能力。`Mac-Win` 暂停维护，仅作为迁移知识与测试资产来源。
 
@@ -122,6 +122,8 @@ python tools/run_gui_baseline.py \
 `--accept-interactive --interaction-evidence /absolute/external/interactions.json`；该 JSON 的固定字段见
 `docs/implementation/phase-2-tauri-gui-baseline.md`。验收结果逐应用标记为 `accepted`、`failed` 或
 `unverified`；截图和 RuntimeEvent 证据不会进入 Git，也不由默认 CI 生成。
+
+默认只运行三个基线应用。Firefox/Gecko 与 Krita/Qt/OpenGL 属于显式扩展矩阵，可分别追加 `--app firefox`、`--app krita`，或重复 `--app` 同时运行；扩展应用不会静默进入默认发布门禁。
 
 ## 设计入口
 

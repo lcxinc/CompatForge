@@ -33,11 +33,11 @@ class GuiBaselineContractTests(unittest.TestCase):
 
     def test_fixed_official_asset_matrix_is_closed(self) -> None:
         self.assertEqual(
-            [asset.app_id for asset in self.assets.ASSETS],
+            [asset.app_id for asset in self.assets.BASELINE_ASSETS],
             ["7zip", "sumatrapdf", "notepad-plus-plus"],
         )
         self.assertEqual(
-            [asset.sha256 for asset in self.assets.ASSETS],
+            [asset.sha256 for asset in self.assets.BASELINE_ASSETS],
             [
                 "d64a0468f5b5b0b0fc5b2188450bcd655b70809d97b1c4535f2884635094377d",
                 "1eee71cccd2ea6e94d5bcea54ee2f759844da3e1a0ee2f6045035b1d17b94381",
@@ -48,6 +48,15 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assertTrue(asset.url.startswith("https://"))
             self.assertEqual(len(asset.sha256), 64)
             self.assertTrue(asset.window_title_tokens)
+        self.assertEqual([asset.app_id for asset in self.assets.EXTENDED_ASSETS], ["firefox", "krita"])
+        self.assertTrue(all(asset.launch_args for asset in self.assets.EXTENDED_ASSETS))
+        self.assertEqual(
+            [asset.install_wait_milliseconds for asset in self.assets.EXTENDED_ASSETS],
+            [20_000, 45_000],
+        )
+        self.assertEqual([asset.screenshot_delay_seconds for asset in self.assets.EXTENDED_ASSETS], [35, 30])
+        self.assertEqual(dict(self.assets.EXTENDED_ASSETS[1].runtime_environment)["QT_OPENGL"], "desktop")
+        self.assertEqual(self.assets.EXTENDED_ASSETS[1].window_appearance_seconds, 55)
 
     def test_desktop_shell_is_tauri_and_qt_sources_are_removed(self) -> None:
         self.assertTrue((DESKTOP / "package-lock.json").is_file())
@@ -164,13 +173,14 @@ class GuiBaselineContractTests(unittest.TestCase):
                     {
                         "schemaVersion": "1",
                         "applications": {
-                            "7zip": {"fileList": True, "menus": True},
-                            "sumatrapdf": {"mainWindow": True, "openDialog": True},
+                            "7zip": {"fileList": True, "menus": True, "cjkTextReadable": True},
+                            "sumatrapdf": {"mainWindow": True, "openDialog": True, "cjkTextReadable": True},
                             "notepad-plus-plus": {
                                 "open": True,
                                 "edit": True,
                                 "saveUtf8Chinese": True,
                                 "rereadMatches": True,
+                                "cjkTextReadable": True,
                             },
                         },
                     }
@@ -225,7 +235,10 @@ class GuiBaselineContractTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual([item["appId"] for item in json.loads(result.stdout)], ["7zip", "sumatrapdf", "notepad-plus-plus"])
+            self.assertEqual(
+                [item["appId"] for item in json.loads(result.stdout)],
+                ["7zip", "sumatrapdf", "notepad-plus-plus", "firefox", "krita"],
+            )
             self.assertFalse(cache.exists())
 
 

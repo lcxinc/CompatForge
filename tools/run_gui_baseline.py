@@ -28,10 +28,13 @@ WINDOW_APPEARANCE_SECONDS = 30
 INTERACTIVE_RUNTIME_MILLISECONDS = 60_000
 
 REQUIRED_INTERACTIONS = {
-    "7zip": ("fileList", "menus"),
-    "sumatrapdf": ("mainWindow", "openDialog"),
-    "notepad-plus-plus": ("open", "edit", "saveUtf8Chinese", "rereadMatches"),
+    "7zip": ("fileList", "menus", "cjkTextReadable"),
+    "sumatrapdf": ("mainWindow", "openDialog", "cjkTextReadable"),
+    "notepad-plus-plus": ("open", "edit", "saveUtf8Chinese", "rereadMatches", "cjkTextReadable"),
+    "firefox": ("mainWindow", "browserContentRendered", "cjkTextReadable"),
+    "krita": ("mainWindow", "workspaceVisible", "cjkTextReadable"),
 }
+BASELINE_APPLICATION_IDS = {"7zip", "sumatrapdf", "notepad-plus-plus"}
 
 
 class AcceptanceError(Exception):
@@ -59,6 +62,12 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--wine")
     value.add_argument("--wineserver")
     value.add_argument("--version")
+    value.add_argument(
+        "--app",
+        action="append",
+        dest="applications",
+        help="run only the named baseline application; repeat for multiple applications",
+    )
     value.add_argument(
         "--accept-interactive",
         action="store_true",
@@ -204,6 +213,8 @@ def observed_launch(
     screenshot_path: Path,
     title_tokens: tuple[str, ...],
     *,
+    screenshot_delay_seconds: int = 0,
+    window_appearance_seconds: int = WINDOW_APPEARANCE_SECONDS,
     timeout: int = MAX_COMMAND_SECONDS,
 ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object], int | None]:
     """Keep the Core launch process alive while collecting visual evidence."""
@@ -237,14 +248,14 @@ def observed_launch(
             if event.get("kind") == "started" and isinstance(event.get("processId"), int):
                 root_process_id = event["processId"]
         now = time.monotonic()
-        if (
-            root_process_id is not None
-            and not windows.get("available")
-            and elapsed <= WINDOW_APPEARANCE_SECONDS
-            and now >= next_observation
-        ):
-            windows = observer(root_process_id, title_tokens)
-            if windows.get("available") is True:
+        if root_process_id is not None and now >= next_observation:
+            if not windows.get("available") and elapsed <= window_appearance_seconds:
+                windows = observer(root_process_id, title_tokens)
+            if (
+                windows.get("available") is True
+                and not shot.get("available")
+                and elapsed >= screenshot_delay_seconds
+            ):
                 shot = screenshot(screenshot_path)
             next_observation = now + 0.5
         if elapsed >= timeout:
@@ -386,7 +397,12 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def interaction_evidence(path: Path | None, accept_interactive: bool) -> dict[str, dict[str, bool]]:
+def interaction_evidence(
+    path: Path | None,
+    accept_interactive: bool,
+    application_ids: set[str] | None = None,
+) -> dict[str, dict[str, bool]]:
+    application_ids = application_ids or BASELINE_APPLICATION_IDS
     if not accept_interactive:
         if path is not None:
             raise AcceptanceError("--interaction-evidence requires --accept-interactive")
@@ -403,7 +419,8 @@ def interaction_evidence(path: Path | None, accept_interactive: bool) -> dict[st
     if not isinstance(applications, dict):
         raise AcceptanceError("interaction evidence omitted applications")
     result: dict[str, dict[str, bool]] = {}
-    for app_id, required in REQUIRED_INTERACTIONS.items():
+    for app_id in application_ids:
+        required = REQUIRED_INTERACTIONS[app_id]
         checks = applications.get(app_id)
         if not isinstance(checks, dict) or any(checks.get(name) is not True for name in required):
             raise AcceptanceError(f"interaction evidence is incomplete for {app_id}")
@@ -480,7 +497,14 @@ def main() -> int:
             if arguments.interaction_evidence
             else None
         )
-        manual_checks = interaction_evidence(evidence_path, arguments.accept_interactive)
+        from download_gui_assets import ASSETS, BASELINE_ASSETS  # type: ignore[import-not-found]
+
+        known_applications = {asset.app_id for asset in ASSETS}
+        selected_applications = set(arguments.applications or (asset.app_id for asset in BASELINE_ASSETS))
+        unknown_applications = selected_applications - known_applications
+        if unknown_applications:
+            raise AcceptanceError(f"unknown baseline application: {sorted(unknown_applications)[0]}")
+        manual_checks = interaction_evidence(evidence_path, arguments.accept_interactive, selected_applications)
 
         request = {
             "schemaVersion": "1",
@@ -519,10 +543,10 @@ def main() -> int:
         write_json(context_path, context)
         write_json(arguments.work_root / "bootstrap-receipt.json", receipt)
 
-        from download_gui_assets import ASSETS, asset_for  # type: ignore[import-not-found]
-
         results: list[dict[str, object]] = []
         for asset in ASSETS:
+            if asset.app_id not in selected_applications:
+                continue
             bottle_id = f"gui-{asset.app_id}"
             bottle_root = arguments.storage_root / "bottles" / bottle_id / "prefix" / "drive_c"
             bottle_root.mkdir(parents=True, exist_ok=True)
@@ -553,6 +577,7 @@ def main() -> int:
                         "mode": "immutableArtifact",
                     },
                     "arguments": list(asset.install_args),
+                    "environment": dict(asset.runtime_environment),
                     "constraints": {
                         "allowVirtualMachine": False,
                         "allowRemote": False,
@@ -582,7 +607,7 @@ def main() -> int:
                             str(context_path),
                             str(installer),
                             str(installer_request_path),
-                            "8000",
+                            str(asset.install_wait_milliseconds),
                         ]
                     ),
                     f"{asset.app_id} installer",
@@ -604,6 +629,8 @@ def main() -> int:
                         "architecture": "x86_64",
                         "mode": "bottleInPlace",
                     },
+                    "arguments": list(asset.launch_args),
+                    "environment": dict(asset.runtime_environment),
                     "constraints": {
                         "allowVirtualMachine": False,
                         "allowRemote": False,
@@ -644,6 +671,8 @@ def main() -> int:
                     ],
                     arguments.work_root / f"{asset.app_id}.png",
                     asset.window_title_tokens,
+                    screenshot_delay_seconds=asset.screenshot_delay_seconds,
+                    window_appearance_seconds=asset.window_appearance_seconds,
                 )
                 evidence["events"] = events
                 evidence["exit"] = exit_observation(events)

@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 384 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -33,9 +33,14 @@ class GuiAsset:
     install_args: tuple[str, ...]
     installed_executable: str
     window_title_tokens: tuple[str, ...]
+    launch_args: tuple[str, ...] = ()
+    install_wait_milliseconds: int = 8_000
+    screenshot_delay_seconds: int = 0
+    runtime_environment: tuple[tuple[str, str], ...] = ()
+    window_appearance_seconds: int = 30
 
 
-ASSETS = (
+BASELINE_ASSETS = (
     GuiAsset(
         "7zip",
         "7-Zip 26.01",
@@ -68,6 +73,56 @@ ASSETS = (
     ),
 )
 
+EXTENDED_ASSETS = (
+    GuiAsset(
+        "firefox",
+        "Mozilla Firefox 152.0.1",
+        "Firefox_Setup_152.0.1.exe",
+        "https://download.mozilla.org/?product=firefox-152.0.1-ssl&os=win64&lang=zh-CN",
+        "5435b3117b1789eacb7443259dbea06c6e221cc676d1295b70c190bbac24d72c",
+        ("/S",),
+        "Program Files/Mozilla Firefox/firefox.exe",
+        ("Firefox", "Mozilla"),
+        (
+            "--no-remote",
+            "--new-instance",
+            "data:text/html;charset=utf-8,%3Ctitle%3ECompatForge%20Firefox%3C/title%3E%3Ch1%3ECompatForge%20%E4%B8%AD%E6%96%87%E5%85%BC%E5%AE%B9%E9%AA%8C%E8%AF%81%3C/h1%3E",
+        ),
+        20_000,
+        35,
+    ),
+    GuiAsset(
+        "krita",
+        "Krita 5.2.9",
+        "krita-x64-5.2.9-setup.exe",
+        "https://download.kde.org/stable/krita/5.2.9/krita-x64-5.2.9-setup.exe",
+        "e394029b3529a7c7411fc200e5627368ac3818a4fda4f453d18c86e220db7057",
+        ("/S",),
+        "Program Files/Krita (x64)/bin/krita.exe",
+        ("Krita",),
+        ("--nosplash",),
+        45_000,
+        30,
+        (
+            ("WINE_D3D_CONFIG", "renderer=gl,csmt=0x0"),
+            ("PYTHONHASHSEED", "0"),
+            ("MACWIN_COMPAT_PROFILE", "krita-opengl"),
+            ("MACWIN_APP_MODE_INPUT_REPAIR", "1"),
+            ("MACWIN_FORCE_MOUSE_FOCUS", "1"),
+            ("MACWIN_KRITA_OPENGL_REPAIR", "1"),
+            ("QT_ACCESSIBILITY", "0"),
+            ("QT_AUTO_SCREEN_SCALE_FACTOR", "0"),
+            ("QT_ENABLE_HIGHDPI_SCALING", "0"),
+            ("QT_FONT_DPI", "96"),
+            ("QT_OPENGL", "desktop"),
+            ("QT_SCALE_FACTOR", "1"),
+        ),
+        55,
+    ),
+)
+
+ASSETS = BASELINE_ASSETS + EXTENDED_ASSETS
+
 ALLOWED_HOSTS = {
     "www.7-zip.org",
     "7-zip.org",
@@ -77,6 +132,10 @@ ALLOWED_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    "download.mozilla.org",
+    "download-installer.cdn.mozilla.net",
+    "download.kde.org",
+    "mirrors.xtom.com",
 }
 
 
@@ -188,6 +247,11 @@ def asset_json(asset: GuiAsset) -> dict[str, object]:
         "installArgs": list(asset.install_args),
         "installedExecutable": asset.installed_executable,
         "windowTitleTokens": list(asset.window_title_tokens),
+        "launchArgs": list(asset.launch_args),
+        "installWaitMilliseconds": asset.install_wait_milliseconds,
+        "screenshotDelaySeconds": asset.screenshot_delay_seconds,
+        "runtimeEnvironment": dict(asset.runtime_environment),
+        "windowAppearanceSeconds": asset.window_appearance_seconds,
     }
 
 
