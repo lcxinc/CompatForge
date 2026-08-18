@@ -529,20 +529,120 @@ class GuiBaselineContractTests(unittest.TestCase):
                 selected,
             )
 
+    def test_soak_report_records_fail_fast_reason(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-soak-report-") as temporary:
+            path = Path(temporary) / "summary.json"
+            report = self.soak_tool.write_report(
+                path,
+                [
+                    {
+                        "status": "unverified",
+                        "hardFailure": False,
+                        "infrastructureBlocked": True,
+                    }
+                ],
+                60,
+                "cycle 1 completed with status unverified",
+            )
+            self.assertTrue(report["stoppedEarly"])
+            self.assertEqual(report["releaseGate"], "blocked")
+            self.assertEqual(report["stopReason"], "cycle 1 completed with status unverified")
+
     def test_residual_process_check_uses_the_launch_process_group(self) -> None:
-        with mock.patch.object(
-            self.baseline,
-            "process_table",
-            return_value=[
-                (100, 100, "/runtime/wine unrelated.exe"),
-                (101, 777, "/runtime/wine target.exe"),
-                (102, 102, "/runtime/wine /external/bottle/drive_c/app.exe"),
-            ],
+        with (
+            mock.patch.object(
+                self.baseline,
+                "process_table",
+                return_value=[
+                    (100, 100, "/runtime/wine unrelated.exe"),
+                    (101, 777, "/runtime/wine target.exe"),
+                    (102, 102, "/runtime/wine /external/bottle/drive_c/app.exe"),
+                    (103, 103, "C:\\windows\\system32\\services.exe"),
+                ],
+            ),
+            mock.patch.object(self.baseline, "prefix_process_ids", return_value={103}),
         ):
-            residual = self.baseline.process_snapshot("/external/bottle", 777)
-        self.assertEqual(len(residual), 2)
+            residual = self.baseline.process_snapshot(Path("/external/bottle/drive_c"), 777)
+        self.assertEqual(len(residual), 3)
         self.assertTrue(any(value.startswith("101 ") for value in residual))
         self.assertTrue(any(value.startswith("102 ") for value in residual))
+        self.assertTrue(any(value.startswith("103 ") for value in residual))
+
+    def test_cleanup_uses_digest_bound_wineserver_and_exact_prefix(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-cleanup-") as temporary:
+            root = Path(temporary)
+            storage = root / "storage"
+            bottle = storage / "bottles" / "probe-fixture"
+            drive_c = bottle / "prefix" / "drive_c"
+            drive_c.mkdir(parents=True)
+            wineserver = root / "wineserver"
+            wineserver.write_bytes(b"fixed-wineserver-fixture")
+            wineserver.chmod(0o700)
+            context = {
+                "runtimeBindings": [
+                    {
+                        "wineserverExecutable": str(wineserver),
+                        "environment": {
+                            "COMPATFORGE_WINESERVER_EXECUTABLE_SHA256": (
+                                "sha256:" + self.baseline.file_sha256(wineserver)
+                            ),
+                            "WINEDEBUG": "-all",
+                        },
+                    }
+                ]
+            }
+            completed = subprocess.CompletedProcess([str(wineserver), "-k"], 0, "", "")
+            with (
+                mock.patch.object(self.baseline.subprocess, "run", return_value=completed) as run,
+                mock.patch.object(self.baseline, "prefix_process_ids", return_value=set()),
+                mock.patch.object(self.baseline, "process_table", return_value=[]),
+                mock.patch.object(self.baseline.time, "sleep"),
+            ):
+                result = self.baseline.cleanup_bottle(context, storage, "probe-fixture")
+            self.assertTrue(result["success"])
+            self.assertFalse(bottle.exists())
+            self.assertEqual(run.call_args.args[0], [str(wineserver), "-k"])
+            self.assertEqual(run.call_args.kwargs["env"]["WINEPREFIX"], str(bottle / "prefix"))
+
+    def test_cleanup_rejects_wineserver_digest_drift(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-bottle-cleanup-") as temporary:
+            root = Path(temporary)
+            storage = root / "storage"
+            (storage / "bottles" / "probe-fixture").mkdir(parents=True)
+            wineserver = root / "wineserver"
+            wineserver.write_bytes(b"changed")
+            wineserver.chmod(0o700)
+            result = self.baseline.cleanup_bottle(
+                {
+                    "runtimeBindings": [
+                        {
+                            "wineserverExecutable": str(wineserver),
+                            "environment": {
+                                "COMPATFORGE_WINESERVER_EXECUTABLE_SHA256": "sha256:" + "0" * 64,
+                            },
+                        }
+                    ]
+                },
+                storage,
+                "probe-fixture",
+            )
+            self.assertFalse(result["success"])
+            self.assertTrue((storage / "bottles" / "probe-fixture").exists())
+
+    def test_desktop_session_requires_console_and_awake_display(self) -> None:
+        def completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(["fixture"], returncode, stdout, "")
+
+        console = '"kCGSSessionOnConsoleKey"=Yes'
+        awake = "Assertion status system-wide:\n   UserIsActive                 1\n"
+        with mock.patch.object(self.baseline.subprocess, "run", side_effect=[completed(console), completed(awake)]):
+            self.assertEqual(self.baseline.desktop_session_state()["state"], "interactive")
+
+        asleep = "Assertion status system-wide:\n   UserIsActive                 0\n"
+        with mock.patch.object(self.baseline.subprocess, "run", side_effect=[completed(console), completed(asleep)]):
+            value = self.baseline.desktop_session_state()
+        self.assertEqual(value["state"], "display-inactive")
+        self.assertEqual(value["failureClassification"], "test-infrastructure")
 
     def test_window_evidence_is_structured_and_title_bound(self) -> None:
         windows = self.baseline.matching_windows(

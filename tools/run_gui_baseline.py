@@ -54,6 +54,10 @@ class AcceptanceError(Exception):
     pass
 
 
+class InfrastructureUnavailable(AcceptanceError):
+    pass
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -179,21 +183,129 @@ def process_table() -> list[tuple[int, int, str]]:
     return rows
 
 
-def process_snapshot(marker: str, process_group_id: int | None = None) -> list[str]:
-    """List residual commands tied to either the Bottle path or launch group."""
+def prefix_process_ids(bottle_root: Path) -> set[int] | None:
+    """Return macOS clients retaining this exact prefix marker/directory."""
+    if platform.system() != "Darwin":
+        return set()
+    system32 = bottle_root / "windows" / "system32"
+    marker = system32 / "ntdll.dll"
+    if not system32.is_dir() or system32.is_symlink() or not marker.is_file() or marker.is_symlink():
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/lsof", "-t", "--", str(marker), str(system32)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+            env={},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode not in (0, 1) or len(result.stdout.encode("utf-8")) > 64 * 1024:
+        return None
+    process_ids: set[int] = set()
+    for line in result.stdout.splitlines():
+        try:
+            process_id = int(line)
+        except ValueError:
+            return None
+        if process_id > 1:
+            process_ids.add(process_id)
+    return process_ids
+
+
+def process_snapshot(bottle_root: Path, process_group_id: int | None = None) -> list[str]:
+    """List residual commands or loaded clients tied to the exact Bottle."""
     current = os.getpid()
     rows = process_table()
     if not rows:
         return ["process observation unavailable"]
+    loaded = prefix_process_ids(bottle_root)
+    if loaded is None:
+        return ["prefix process observation unavailable"]
+    marker = str(bottle_root)
     return [
         f"{pid} {command}"
         for pid, pgid, command in rows
-        if pid != current and (marker in command or (process_group_id is not None and pgid == process_group_id))
+        if pid != current
+        and (pid in loaded or marker in command or (process_group_id is not None and pgid == process_group_id))
     ]
 
 
 def process_group_ids(process_group_id: int) -> list[int]:
     return [pid for pid, pgid, _command in process_table() if pgid == process_group_id]
+
+
+def cleanup_bottle(context: dict[str, object], storage_root: Path, bottle_id: str) -> dict[str, object]:
+    """Stop only the bound Bottle's Wine server, verify, then remove its directory."""
+    if not bottle_id or bottle_id in {".", ".."} or "/" in bottle_id or "\\" in bottle_id:
+        return {"success": False, "reason": "Bottle identifier is not a single path component"}
+    bottle_directory = storage_root / "bottles" / bottle_id
+    prefix = bottle_directory / "prefix"
+    drive_c = prefix / "drive_c"
+    if not bottle_directory.exists() and not bottle_directory.is_symlink():
+        return {"success": True, "method": "already-absent", "residualProcessIds": []}
+    if bottle_directory.is_symlink() or not bottle_directory.is_dir():
+        return {"success": False, "reason": "Bottle directory is not a regular directory"}
+
+    bindings = context.get("runtimeBindings")
+    if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], dict):
+        return {"success": False, "reason": "context must contain exactly one runtime binding"}
+    binding = bindings[0]
+    wineserver_value = binding.get("wineserverExecutable")
+    environment_value = binding.get("environment")
+    if not isinstance(wineserver_value, str) or not isinstance(environment_value, dict):
+        return {"success": False, "reason": "runtime binding omitted wineserver cleanup data"}
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in environment_value.items()):
+        return {"success": False, "reason": "runtime binding environment must contain only strings"}
+    wineserver = Path(wineserver_value)
+    if not wineserver.is_absolute() or not wineserver.is_file() or wineserver.is_symlink() or not os.access(wineserver, os.X_OK):
+        return {"success": False, "reason": "bound wineserver is not an absolute regular executable"}
+    expected_digest = environment_value.get("COMPATFORGE_WINESERVER_EXECUTABLE_SHA256")
+    if not isinstance(expected_digest, str) or expected_digest != f"sha256:{file_sha256(wineserver)}":
+        return {"success": False, "reason": "bound wineserver digest changed before cleanup"}
+
+    cleanup_environment = dict(environment_value)
+    cleanup_environment["WINEPREFIX"] = str(prefix)
+    try:
+        terminated = subprocess.run(
+            [str(wineserver), "-k"],
+            cwd=bottle_directory,
+            env=cleanup_environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"success": False, "reason": f"Bottle-scoped wineserver cleanup failed: {error}"}
+    if terminated.returncode not in (0, 1):
+        return {"success": False, "reason": f"Bottle-scoped wineserver returned {terminated.returncode}"}
+
+    time.sleep(0.5)
+    loaded = prefix_process_ids(drive_c)
+    command_residuals = [pid for pid, _pgid, command in process_table() if str(prefix) in command]
+    residuals = sorted((loaded or set()).union(command_residuals))
+    if residuals:
+        return {
+            "success": False,
+            "reason": "Bottle-scoped processes remained after wineserver cleanup",
+            "wineserverReturnCode": terminated.returncode,
+            "residualProcessIds": residuals,
+        }
+    try:
+        shutil.rmtree(bottle_directory)
+    except OSError as error:
+        return {"success": False, "reason": f"Bottle directory removal failed: {error}"}
+    return {
+        "success": not bottle_directory.exists() and not bottle_directory.is_symlink(),
+        "method": "bound-wineserver-kill-and-remove",
+        "wineserverReturnCode": terminated.returncode,
+        "residualProcessIds": [],
+    }
 
 
 def matching_windows(output: str, title_tokens: tuple[str, ...]) -> list[dict[str, object]]:
@@ -318,8 +430,16 @@ def desktop_session_state() -> dict[str, object]:
             "failureClassification": "test-infrastructure",
         }
     try:
-        result = subprocess.run(
+        session_result = subprocess.run(
             ["/usr/sbin/ioreg", "-n", "Root", "-d1"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+        )
+        power_result = subprocess.run(
+            ["/usr/bin/pmset", "-g", "assertions"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -332,11 +452,42 @@ def desktop_session_state() -> dict[str, object]:
             "state": "session-probe-unavailable",
             "failureClassification": "test-infrastructure",
         }
-    locked = '"CGSSessionScreenIsLocked" = Yes' in result.stdout or '"CGSSessionScreenIsLocked" = true' in result.stdout
+    locked = (
+        '"CGSSessionScreenIsLocked" = Yes' in session_result.stdout
+        or '"CGSSessionScreenIsLocked" = true' in session_result.stdout
+    )
+    on_console = '"kCGSSessionOnConsoleKey"=Yes' in session_result.stdout
+    assertions = {
+        parts[0]: parts[1] == "1"
+        for line in power_result.stdout.splitlines()
+        if len(parts := line.split()) == 2 and parts[1] in {"0", "1"}
+    }
+    user_active = assertions.get("UserIsActive") is True
+    display_held_awake = assertions.get("PreventUserIdleDisplaySleep") is True
+    observable = (
+        session_result.returncode == 0
+        and power_result.returncode == 0
+        and on_console
+        and not locked
+        and (user_active or display_held_awake)
+    )
+    if locked:
+        state = "locked"
+    elif not on_console:
+        state = "not-console-session"
+    elif not user_active and not display_held_awake:
+        state = "display-inactive"
+    elif session_result.returncode != 0 or power_result.returncode != 0:
+        state = "session-probe-unavailable"
+    else:
+        state = "interactive"
     return {
-        "observable": result.returncode == 0 and not locked,
-        "state": "locked" if locked else ("interactive" if result.returncode == 0 else "session-probe-unavailable"),
-        **({"failureClassification": "test-infrastructure"} if locked or result.returncode != 0 else {}),
+        "observable": observable,
+        "state": state,
+        "onConsole": on_console,
+        "userActive": user_active,
+        "displayHeldAwake": display_held_awake,
+        **({"failureClassification": "test-infrastructure"} if not observable else {}),
     }
 
 
@@ -345,7 +496,8 @@ def observation_diagnostic(windows: dict[str, object], shot: dict[str, object]) 
         return {"state": "observed"}
     reason = str(windows.get("reason") or shot.get("reason") or "visual evidence incomplete")
     infrastructure = windows.get("failureClassification") == "test-infrastructure" or any(
-        token in reason.casefold() for token in ("locked", "accessibility", "osascript", "screencapture", "unavailable")
+        token in reason.casefold()
+        for token in ("locked", "inactive", "console-session", "accessibility", "osascript", "screencapture", "unavailable")
     )
     return {
         "state": "infrastructure-unavailable" if infrastructure else "target-not-observed",
@@ -883,6 +1035,10 @@ def main() -> int:
                 "cleanup": False,
             }
             try:
+                desktop_preflight = desktop_session_state()
+                evidence["desktopPreflight"] = desktop_preflight
+                if desktop_preflight.get("observable") is not True:
+                    raise InfrastructureUnavailable(f"desktop session is {desktop_preflight.get('state')}")
                 package = fetch_asset(arguments, asset.app_id)
                 if asset.package_kind == "portable-zip":
                     evidence["installerInspection"] = materialize_portable_zip(
@@ -1018,7 +1174,7 @@ def main() -> int:
                 evidence["interactionChecks"] = manual_checks.get(asset.app_id, {})
                 if manual_attestation:
                     evidence["interactionAttestation"] = manual_attestation
-                evidence["residualProcesses"] = process_snapshot(str(bottle_root), process_group_id)
+                evidence["residualProcesses"] = process_snapshot(bottle_root, process_group_id)
                 basic = status(events) == "accepted" and evidence["windows"].get("available") is True and evidence[
                     "screenshot"
                 ].get("available") is True and not evidence["residualProcesses"]
@@ -1035,6 +1191,10 @@ def main() -> int:
                 elif not interactions_complete:
                     evidence["reason"] = "required per-application interaction evidence was not supplied"
                     evidence["failureClassification"] = "policy-blocked"
+            except InfrastructureUnavailable as error:
+                evidence["status"] = "unverified"
+                evidence["reason"] = str(error)
+                evidence["failureClassification"] = "test-infrastructure"
             except (AcceptanceError, OSError, subprocess.TimeoutExpired, zipfile.BadZipFile) as error:
                 evidence["status"] = "failed"
                 evidence["reason"] = str(error)
@@ -1043,15 +1203,11 @@ def main() -> int:
                     else "runtime-regression"
                 )
             finally:
-                try:
-                    if bottle_root.exists() or bottle_root.is_symlink():
-                        if bottle_root.is_symlink():
-                            raise AcceptanceError("Bottle root became a symlink")
-                        shutil.rmtree(arguments.storage_root / "bottles" / bottle_id)
-                    evidence["cleanup"] = True
-                except (OSError, AcceptanceError) as error:
-                    evidence["cleanup"] = False
-                    evidence["cleanupError"] = str(error)
+                cleanup_evidence = cleanup_bottle(context, arguments.storage_root, bottle_id)
+                evidence["cleanupEvidence"] = cleanup_evidence
+                evidence["cleanup"] = cleanup_evidence.get("success") is True
+                if evidence["cleanup"] is not True:
+                    evidence["cleanupError"] = cleanup_evidence.get("reason", "Bottle cleanup failed")
                 if evidence["status"] == "accepted" and evidence["cleanup"] is not True:
                     evidence["status"] = "failed"
                     evidence["reason"] = "Bottle cleanup failed"

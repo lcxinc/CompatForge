@@ -173,3 +173,29 @@ python3 -S -B tools/run_gui_soak.py \
 ```
 
 每轮必须使用新 Bottle，并保留固定包摘要、PE inspection、目标窗口、非空截图、退出事件、Bottle 清理和空残留进程证据。`policy-blocked` 的人工交互项不构成 soak 硬失败，但 soak 通过也不能替代 schemaVersion 2 的人工签署。锁屏或桌面观察基础设施不可用必须保持 `unverified`。
+
+下一轮 MSI、.NET/WPF、D3D probes、真实生产力应用和 Linux x86_64 验证采用 capability-first 顺序；范围、信任边界与退出门禁见 [Phase 2.3 跨宿主能力验证设计](plans/2026-08-18-phase-2-3-cross-host-validation-design.md)。
+
+Phase 2.3 的首个离线合同门禁不执行 probe 或 MSI：
+
+```text
+python3 -S -B -m unittest tests.test_phase_2_3_contracts -v
+python3 -S -B tools/validate_capability_probe.py /absolute/probe-manifest.json --result /absolute/probe-result.json
+python3 -S -B tools/validate_install_request.py /absolute/install-request.json
+```
+
+Probe validator 交叉绑定 manifest、构建 artifact 和 result 摘要；MSI validator 只接受本地固定包与闭合 `msiexec` 语义字段，不接受任意 argv，也没有执行能力。
+
+首个 Win32 GUI probe 只提交 C 源码。使用固定 MinGW 工具链在仓库外生成 EXE 和 manifest 后，显式运行：
+
+```text
+python3 -S -B tools/run_macos_capability_probe.py \
+  --compatforge-cli /absolute/compatforge-cli \
+  --manifest /absolute/external/probe-manifest.json \
+  --artifact /absolute/external/win32-window-text-x64.exe \
+  --runtime-store /absolute/external/runtime \
+  --storage-root /absolute/external/storage \
+  --work-root /absolute/external/work
+```
+
+Runner 复验 manifest/artifact、PE inspection、PreparedLaunch、目标窗口、截图、退出、Bottle 清理和前缀残留。`cjk-text-readable` 未经人工签署时，结果保持 `policy-blocked`。

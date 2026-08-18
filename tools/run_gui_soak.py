@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import uuid
@@ -119,7 +120,12 @@ def classify_summary(summary: dict[str, object], expected_apps: set[str]) -> dic
     }
 
 
-def write_report(path: Path, entries: list[dict[str, object]], requested_cycles: int) -> dict[str, object]:
+def write_report(
+    path: Path,
+    entries: list[dict[str, object]],
+    requested_cycles: int,
+    stop_reason: str | None = None,
+) -> dict[str, object]:
     statuses = Counter(str(entry.get("status")) for entry in entries)
     report = {
         "schemaVersion": "1",
@@ -130,6 +136,8 @@ def write_report(path: Path, entries: list[dict[str, object]], requested_cycles:
         "hardFailures": sum(entry.get("hardFailure") is True for entry in entries),
         "infrastructureBlocked": sum(entry.get("infrastructureBlocked") is True for entry in entries),
         "finished": len(entries) == requested_cycles,
+        "stoppedEarly": stop_reason is not None,
+        **({"stopReason": stop_reason} if stop_reason is not None else {}),
         "releaseGate": (
             "failed"
             if any(entry.get("hardFailure") is True for entry in entries)
@@ -187,7 +195,36 @@ def validate_configuration(path: Path, selected: set[str], cycles: int) -> None:
         raise AcceptanceError("resume configuration does not match the requested soak")
 
 
+def start_power_assertion() -> subprocess.Popen[bytes] | None:
+    """Keep the interactive display awake only for this bounded soak process."""
+    if platform.system() != "Darwin":
+        return None
+    try:
+        return subprocess.Popen(
+            ["/usr/bin/caffeinate", "-d", "-i", "-w", str(os.getpid())],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={},
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise AcceptanceError("caffeinate is unavailable for the GUI soak") from error
+
+
+def stop_power_assertion(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def main() -> int:
+    power_assertion: subprocess.Popen[bytes] | None = None
     try:
         arguments = parser().parse_args()
         if not 1 <= arguments.cycles <= MAX_CYCLES:
@@ -220,10 +257,13 @@ def main() -> int:
             write_configuration(configuration_path, selected, arguments.cycles)
         if len(entries) > arguments.cycles:
             raise AcceptanceError("cycles.jsonl already exceeds the requested cycle count")
+        if arguments.resume and any(entry.get("status") != "verified" for entry in entries):
+            raise AcceptanceError("cannot resume a soak containing a non-verified cycle; use a new output-root")
         runtime_root = output_root / "runtime"
         runtime_root.mkdir(exist_ok=True)
         if runtime_root.is_symlink():
             raise AcceptanceError("runtime directory must not be a symbolic link")
+        power_assertion = start_power_assertion()
         for cycle in range(len(entries) + 1, arguments.cycles + 1):
             cycle_root = output_root / "runs" / f"cycle-{cycle:03d}"
             if cycle_root.exists() or cycle_root.is_symlink():
@@ -290,7 +330,10 @@ def main() -> int:
                 log.flush()
                 os.fsync(log.fileno())
             entries.append(entry)
-            report = write_report(report_path, entries, arguments.cycles)
+            stop_reason = None
+            if entry["status"] != "verified":
+                stop_reason = f"cycle {cycle} completed with status {entry['status']}"
+            report = write_report(report_path, entries, arguments.cycles, stop_reason)
             print(
                 json.dumps(
                     {
@@ -304,12 +347,17 @@ def main() -> int:
                 ),
                 flush=True,
             )
+            if stop_reason is not None:
+                print(json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")), flush=True)
+                return 1
         report = write_report(report_path, entries, arguments.cycles)
         print(json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")), flush=True)
         return 0 if report["releaseGate"] == "passed" else 1
     except (AcceptanceError, OSError, ValueError) as error:
         print(f"compatforge-gui-soak: {error}", file=sys.stderr)
         return 2
+    finally:
+        stop_power_assertion(power_assertion)
 
 
 if __name__ == "__main__":
