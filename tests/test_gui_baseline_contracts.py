@@ -644,6 +644,16 @@ class GuiBaselineContractTests(unittest.TestCase):
         self.assertEqual(value["state"], "display-inactive")
         self.assertEqual(value["failureClassification"], "test-infrastructure")
 
+        locked = (
+            '"IOConsoleLocked" = No\n'
+            '"IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,'
+            '"CGSSessionScreenIsLocked"=Yes})\n'
+        )
+        with mock.patch.object(self.baseline.subprocess, "run", side_effect=[completed(locked), completed(awake)]):
+            value = self.baseline.desktop_session_state()
+        self.assertEqual(value["state"], "locked")
+        self.assertFalse(value["observable"])
+
     def test_window_evidence_is_structured_and_title_bound(self) -> None:
         windows = self.baseline.matching_windows(
             (

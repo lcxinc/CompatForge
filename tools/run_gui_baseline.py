@@ -458,9 +458,16 @@ def desktop_session_state() -> dict[str, object]:
             "state": "session-probe-unavailable",
             "failureClassification": "test-infrastructure",
         }
-    locked = (
-        '"CGSSessionScreenIsLocked" = Yes' in session_result.stdout
-        or '"CGSSessionScreenIsLocked" = true' in session_result.stdout
+    locked = any(
+        marker in session_result.stdout
+        for marker in (
+            '"CGSSessionScreenIsLocked"=Yes',
+            '"CGSSessionScreenIsLocked" = Yes',
+            '"CGSSessionScreenIsLocked"=true',
+            '"CGSSessionScreenIsLocked" = true',
+            '"IOConsoleLocked"=Yes',
+            '"IOConsoleLocked" = Yes',
+        )
     )
     on_console = '"kCGSSessionOnConsoleKey"=Yes' in session_result.stdout
     assertions = {
