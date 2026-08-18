@@ -10,6 +10,7 @@ external directories and are excluded from the repository.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +28,8 @@ DOWNLOAD = ROOT / "tools" / "download_gui_assets.py"
 MAX_COMMAND_SECONDS = 180
 WINDOW_APPEARANCE_SECONDS = 30
 INTERACTIVE_RUNTIME_MILLISECONDS = 60_000
+MAX_INTERACTION_EVIDENCE_BYTES = 1024 * 1024
+TEST_SUITE_VERSION = "gui-interactive-v2"
 
 REQUIRED_INTERACTIONS = {
     "7zip": ("fileList", "menus", "cjkTextReadable"),
@@ -33,12 +37,21 @@ REQUIRED_INTERACTIONS = {
     "notepad-plus-plus": ("open", "edit", "saveUtf8Chinese", "rereadMatches", "cjkTextReadable"),
     "firefox": ("mainWindow", "browserContentRendered", "cjkTextReadable"),
     "krita": ("mainWindow", "workspaceVisible", "cjkTextReadable"),
+    "7zip-x86": ("fileList", "menus", "cjkTextReadable"),
+    "vlc": ("mainWindow", "mediaControls", "cjkTextReadable"),
+    "winmerge": ("mainWindow", "compareDialog", "cjkTextReadable"),
+    "audacity-x86": ("mainWindow", "waveformWorkspace", "cjkTextReadable"),
+    "everything-x86": ("mainWindow", "searchField", "cjkTextReadable"),
 }
 BASELINE_APPLICATION_IDS = {"7zip", "sumatrapdf", "notepad-plus-plus"}
 
 
 class AcceptanceError(Exception):
     pass
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def absolute(value: str, field: str, *, external: bool = False) -> Path:
@@ -292,12 +305,67 @@ def status(events: list[dict[str, object]]) -> str:
     return "failed"
 
 
+def desktop_session_state() -> dict[str, object]:
+    """Classify whether macOS can currently provide interactive GUI evidence."""
+    if platform.system() != "Darwin":
+        return {
+            "observable": False,
+            "state": "unsupported-host",
+            "failureClassification": "test-infrastructure",
+        }
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/ioreg", "-n", "Root", "-d1"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "observable": False,
+            "state": "session-probe-unavailable",
+            "failureClassification": "test-infrastructure",
+        }
+    locked = '"CGSSessionScreenIsLocked" = Yes' in result.stdout or '"CGSSessionScreenIsLocked" = true' in result.stdout
+    return {
+        "observable": result.returncode == 0 and not locked,
+        "state": "locked" if locked else ("interactive" if result.returncode == 0 else "session-probe-unavailable"),
+        **({"failureClassification": "test-infrastructure"} if locked or result.returncode != 0 else {}),
+    }
+
+
+def observation_diagnostic(windows: dict[str, object], shot: dict[str, object]) -> dict[str, object]:
+    if windows.get("available") is True and shot.get("available") is True:
+        return {"state": "observed"}
+    reason = str(windows.get("reason") or shot.get("reason") or "visual evidence incomplete")
+    infrastructure = windows.get("failureClassification") == "test-infrastructure" or any(
+        token in reason.casefold() for token in ("locked", "accessibility", "osascript", "screencapture", "unavailable")
+    )
+    return {
+        "state": "infrastructure-unavailable" if infrastructure else "target-not-observed",
+        "failureClassification": "test-infrastructure" if infrastructure else "runtime-regression",
+        "reason": reason,
+    }
+
+
 def observer(process_group_id: int, title_tokens: tuple[str, ...]) -> dict[str, object]:
     if platform.system() != "Darwin":
-        return {"available": False, "reason": "window observation requires macOS"}
+        return {
+            "available": False,
+            "reason": "window observation requires macOS",
+            "failureClassification": "test-infrastructure",
+        }
+    session = desktop_session_state()
+    if session.get("observable") is not True:
+        return {
+            "available": False,
+            "reason": f"desktop session is {session.get('state')}",
+            "session": session,
+            "failureClassification": "test-infrastructure",
+        }
     target_ids = process_group_ids(process_group_id)
-    if not target_ids:
-        return {"available": False, "reason": "launch process group is no longer visible", "processGroupId": process_group_id}
     ids = ",".join(str(value) for value in target_ids)
     script = (
         'tell application "System Events"\n'
@@ -326,9 +394,17 @@ def observer(process_group_id: int, title_tokens: tuple[str, ...]) -> dict[str, 
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"available": False, "reason": "osascript unavailable"}
+        return {
+            "available": False,
+            "reason": "osascript unavailable",
+            "failureClassification": "test-infrastructure",
+        }
     if result.returncode != 0:
-        return {"available": False, "reason": "Accessibility permission unavailable"}
+        return {
+            "available": False,
+            "reason": "Accessibility permission unavailable",
+            "failureClassification": "test-infrastructure",
+        }
     matching = matching_windows(result.stdout, title_tokens)
     if matching:
         return {
@@ -374,8 +450,10 @@ def observer(process_group_id: int, title_tokens: tuple[str, ...]) -> dict[str, 
             }
     return {
         "available": False,
-        "reason": "launch process group is no longer visible",
+        "reason": "target window was not observed",
         "processGroupId": process_group_id,
+        "processIds": target_ids,
+        "failureClassification": "runtime-regression",
     }
 
 
@@ -389,32 +467,66 @@ def screenshot(path: Path) -> dict[str, object]:
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"available": False, "reason": "screencapture unavailable"}
-    return {"available": result.returncode == 0 and path.is_file() and path.stat().st_size > 0, "path": str(path)}
+        return {
+            "available": False,
+            "reason": "screencapture unavailable",
+            "failureClassification": "test-infrastructure",
+        }
+    available = result.returncode == 0 and path.is_file() and path.stat().st_size > 0
+    return {
+        "available": available,
+        "path": str(path),
+        **(
+            {}
+            if available
+            else {"reason": "screencapture returned no image", "failureClassification": "test-infrastructure"}
+        ),
+    }
 
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def interaction_evidence(
+def load_interaction_evidence(
     path: Path | None,
     accept_interactive: bool,
     application_ids: set[str] | None = None,
-) -> dict[str, dict[str, bool]]:
+) -> tuple[dict[str, dict[str, bool]], dict[str, str]]:
     application_ids = application_ids or BASELINE_APPLICATION_IDS
     if not accept_interactive:
         if path is not None:
             raise AcceptanceError("--interaction-evidence requires --accept-interactive")
-        return {}
+        return {}, {}
     if path is None:
         raise AcceptanceError("--accept-interactive requires --interaction-evidence")
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_INTERACTION_EVIDENCE_BYTES:
+        raise AcceptanceError("interaction evidence must be a bounded regular file")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise AcceptanceError("interaction evidence is not readable JSON") from error
-    if not isinstance(value, dict) or value.get("schemaVersion") != "1":
-        raise AcceptanceError("interaction evidence must use schemaVersion 1")
+    if not isinstance(value, dict) or value.get("schemaVersion") != "2":
+        raise AcceptanceError("interaction evidence must use schemaVersion 2")
+    if set(value) != {"schemaVersion", "attestation", "applications"}:
+        raise AcceptanceError("interaction evidence contains unknown fields")
+    attestation = value.get("attestation")
+    if not isinstance(attestation, dict) or set(attestation) != {"mode", "observer", "observedAt"}:
+        raise AcceptanceError("interaction evidence omitted the closed attestation")
+    if attestation.get("mode") != "human":
+        raise AcceptanceError("interactive acceptance requires a human attestation")
+    observer_name = attestation.get("observer")
+    observed_at = attestation.get("observedAt")
+    if not isinstance(observer_name, str) or not observer_name.strip() or len(observer_name.encode("utf-8")) > 256:
+        raise AcceptanceError("interaction observer is invalid")
+    if not isinstance(observed_at, str):
+        raise AcceptanceError("interaction observedAt is invalid")
+    try:
+        parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise AcceptanceError("interaction observedAt is invalid") from error
+    if parsed_observed_at.tzinfo is None:
+        raise AcceptanceError("interaction observedAt must include a timezone")
     applications = value.get("applications")
     if not isinstance(applications, dict):
         raise AcceptanceError("interaction evidence omitted applications")
@@ -422,16 +534,33 @@ def interaction_evidence(
     for app_id in application_ids:
         required = REQUIRED_INTERACTIONS[app_id]
         checks = applications.get(app_id)
-        if not isinstance(checks, dict) or any(checks.get(name) is not True for name in required):
+        if (
+            not isinstance(checks, dict)
+            or set(checks) != set(required)
+            or any(checks.get(name) is not True for name in required)
+        ):
             raise AcceptanceError(f"interaction evidence is incomplete for {app_id}")
         result[app_id] = {name: True for name in required}
-    return result
+    return result, {
+        "mode": "human",
+        "observer": observer_name.strip(),
+        "observedAt": observed_at,
+    }
+
+
+def interaction_evidence(
+    path: Path | None,
+    accept_interactive: bool,
+    application_ids: set[str] | None = None,
+) -> dict[str, dict[str, bool]]:
+    """Return validated checks for callers that do not need attestation metadata."""
+    return load_interaction_evidence(path, accept_interactive, application_ids)[0]
 
 
 def installed_executable(asset, bottle_root: Path) -> Path:  # type: ignore[no-untyped-def]
     """Resolve only fixed, application-specific install locations."""
     primary = bottle_root / Path(asset.installed_executable)
-    candidates = [primary]
+    candidates = [primary, *(bottle_root / Path(value) for value in asset.alternate_installed_executables)]
     if asset.app_id == "sumatrapdf":
         candidates.append(
             bottle_root
@@ -476,6 +605,109 @@ def fetch_asset(arguments: argparse.Namespace, app_id: str) -> Path:
     return absolute(path, f"{app_id} asset")
 
 
+def matrix_entry_digest(asset) -> str:  # type: ignore[no-untyped-def]
+    value = {
+        "appId": asset.app_id,
+        "displayName": asset.display_name,
+        "installerSha256": asset.sha256,
+        "installArgs": list(asset.install_args),
+        "installedExecutable": asset.installed_executable,
+        "alternateInstalledExecutables": list(asset.alternate_installed_executables),
+        "launchArgs": list(asset.launch_args),
+        "runtimeEnvironment": dict(asset.runtime_environment),
+        "category": asset.category,
+        "toolkit": asset.toolkit,
+        "guestArchitecture": asset.guest_architecture,
+        "requiredInteractions": list(REQUIRED_INTERACTIONS[asset.app_id]),
+    }
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def check_outcome(passed: bool, *, blocked: bool = False) -> str:
+    if passed:
+        return "passed"
+    return "blocked" if blocked else "failed"
+
+
+def compatibility_result(
+    asset,  # type: ignore[no-untyped-def]
+    evidence: dict[str, object],
+    receipt: dict[str, object],
+    started_at: str,
+    finished_at: str,
+) -> dict[str, object]:
+    status_value = evidence.get("status")
+    blocked = status_value == "unverified"
+    accepted = status_value == "accepted"
+    windows = evidence.get("windows") if isinstance(evidence.get("windows"), dict) else {}
+    shot = evidence.get("screenshot") if isinstance(evidence.get("screenshot"), dict) else {}
+    exit_value = evidence.get("exit") if isinstance(evidence.get("exit"), dict) else {}
+    interactions = evidence.get("interactionChecks") if isinstance(evidence.get("interactionChecks"), dict) else {}
+    residual = evidence.get("residualProcesses") if isinstance(evidence.get("residualProcesses"), list) else []
+    failure_classification = evidence.get("failureClassification")
+    if not accepted and failure_classification is None:
+        failure_classification = "policy-blocked" if blocked else "runtime-regression"
+    checks = [
+        {
+            "id": "installer-inspection",
+            "outcome": check_outcome(isinstance(evidence.get("installerInspection"), dict)),
+        },
+        {
+            "id": "window-visible",
+            "outcome": check_outcome(windows.get("available") is True, blocked=blocked),
+            **({"message": str(windows.get("reason"))} if windows.get("reason") else {}),
+        },
+        {
+            "id": "screenshot",
+            "outcome": check_outcome(shot.get("available") is True, blocked=blocked),
+            **(
+                {"artifacts": [Path(str(shot["path"])).name]}
+                if shot.get("available") is True and isinstance(shot.get("path"), str)
+                else {}
+            ),
+        },
+        {
+            "id": "interactive-behavior",
+            "outcome": check_outcome(
+                all(interactions.get(name) is True for name in REQUIRED_INTERACTIONS[asset.app_id]),
+                blocked=True,
+            ),
+        },
+        {
+            "id": "lifecycle-exit",
+            "outcome": check_outcome(exit_value.get("present") is True),
+        },
+        {
+            "id": "bottle-cleanup",
+            "outcome": check_outcome(evidence.get("cleanup") is True),
+        },
+        {
+            "id": "no-residual-processes",
+            "outcome": check_outcome(not residual),
+        },
+    ]
+    return {
+        "schemaVersion": "1",
+        "runId": str(uuid.uuid4()),
+        "recipeId": asset.app_id,
+        "recipeDigest": matrix_entry_digest(asset),
+        "installerDigest": "sha256:" + asset.sha256,
+        "testSuiteVersion": TEST_SUITE_VERSION,
+        "host": {
+            "os": "macos",
+            "version": platform.mac_ver()[0],
+            "architecture": platform.machine(),
+        },
+        "runtimePackDigest": receipt.get("packDigest"),
+        "outcome": "passed" if accepted else ("blocked" if blocked else "failed"),
+        **({"failureClassification": failure_classification} if failure_classification is not None else {}),
+        "startedAt": started_at,
+        "finishedAt": finished_at,
+        "checks": checks,
+    }
+
+
 def main() -> int:
     try:
         arguments = parser().parse_args()
@@ -504,7 +736,11 @@ def main() -> int:
         unknown_applications = selected_applications - known_applications
         if unknown_applications:
             raise AcceptanceError(f"unknown baseline application: {sorted(unknown_applications)[0]}")
-        manual_checks = interaction_evidence(evidence_path, arguments.accept_interactive, selected_applications)
+        manual_checks, manual_attestation = load_interaction_evidence(
+            evidence_path,
+            arguments.accept_interactive,
+            selected_applications,
+        )
 
         request = {
             "schemaVersion": "1",
@@ -544,16 +780,25 @@ def main() -> int:
         write_json(arguments.work_root / "bootstrap-receipt.json", receipt)
 
         results: list[dict[str, object]] = []
+        compatibility_results: list[dict[str, object]] = []
         for asset in ASSETS:
             if asset.app_id not in selected_applications:
                 continue
             bottle_id = f"gui-{asset.app_id}"
             bottle_root = arguments.storage_root / "bottles" / bottle_id / "prefix" / "drive_c"
             bottle_root.mkdir(parents=True, exist_ok=True)
+            started_at = utc_now()
             evidence: dict[str, object] = {
                 "schemaVersion": "1",
                 "appId": asset.app_id,
                 "bottleId": bottle_id,
+                "matrix": {
+                    "category": asset.category,
+                    "toolkit": asset.toolkit,
+                    "guestArchitecture": asset.guest_architecture,
+                    "recipeDigest": matrix_entry_digest(asset),
+                },
+                "startedAt": started_at,
                 "status": "unverified",
                 "cleanup": False,
             }
@@ -618,7 +863,7 @@ def main() -> int:
                 if not installed.is_file() or installed.is_symlink():
                     evidence["status"] = "unverified"
                     evidence["reason"] = "installer exited but expected GUI executable was not found"
-                    results.append(evidence)
+                    evidence["failureClassification"] = "installer-upstream"
                     continue
                 launch_request = {
                     "schemaVersion": "1",
@@ -645,6 +890,8 @@ def main() -> int:
                 gui_architecture = gui_inspection.get("architecture")
                 if not isinstance(gui_architecture, str):
                     raise AcceptanceError(f"{asset.app_id} GUI inspection omitted architecture")
+                if request_architecture(gui_architecture) != asset.guest_architecture:
+                    raise AcceptanceError(f"{asset.app_id} GUI architecture does not match the fixed matrix")
                 launch_request["executable"]["architecture"] = request_architecture(gui_architecture)  # type: ignore[index]
                 write_json(launch_request_path, launch_request)
                 evidence["inspection"] = gui_inspection
@@ -678,7 +925,10 @@ def main() -> int:
                 evidence["exit"] = exit_observation(events)
                 evidence["windows"] = windows
                 evidence["screenshot"] = shot
+                evidence["observation"] = observation_diagnostic(windows, shot)
                 evidence["interactionChecks"] = manual_checks.get(asset.app_id, {})
+                if manual_attestation:
+                    evidence["interactionAttestation"] = manual_attestation
                 evidence["residualProcesses"] = process_snapshot(str(bottle_root), process_group_id)
                 basic = status(events) == "accepted" and evidence["windows"].get("available") is True and evidence[
                     "screenshot"
@@ -690,11 +940,19 @@ def main() -> int:
                 evidence["status"] = "accepted" if basic and interactions_complete else "unverified"
                 if not basic:
                     evidence["reason"] = "target window/screenshot/exit cleanup evidence is incomplete"
+                    diagnostic = evidence["observation"]
+                    if isinstance(diagnostic, dict):
+                        evidence["failureClassification"] = diagnostic.get("failureClassification", "runtime-regression")
                 elif not interactions_complete:
                     evidence["reason"] = "required per-application interaction evidence was not supplied"
+                    evidence["failureClassification"] = "policy-blocked"
             except (AcceptanceError, OSError, subprocess.TimeoutExpired) as error:
                 evidence["status"] = "failed"
                 evidence["reason"] = str(error)
+                evidence["failureClassification"] = (
+                    "installer-upstream" if "asset" in str(error).casefold() or "installer" in str(error).casefold()
+                    else "runtime-regression"
+                )
             finally:
                 try:
                     if bottle_root.exists() or bottle_root.is_symlink():
@@ -708,10 +966,22 @@ def main() -> int:
                 if evidence["status"] == "accepted" and evidence["cleanup"] is not True:
                     evidence["status"] = "failed"
                     evidence["reason"] = "Bottle cleanup failed"
+                    evidence["failureClassification"] = "runtime-regression"
+                finished_at = utc_now()
+                evidence["finishedAt"] = finished_at
+                result = compatibility_result(asset, evidence, receipt, started_at, finished_at)
                 write_json(arguments.work_root / f"{asset.app_id}-evidence.json", evidence)
+                write_json(arguments.work_root / f"{asset.app_id}-compatibility-result.json", result)
                 results.append(evidence)
+                compatibility_results.append(result)
 
-        summary = {"schemaVersion": "1", "receipt": receipt, "applications": results}
+        summary = {
+            "schemaVersion": "1",
+            "testSuiteVersion": TEST_SUITE_VERSION,
+            "receipt": receipt,
+            "applications": results,
+            "compatibilityResults": compatibility_results,
+        }
         write_json(arguments.work_root / "summary.json", summary)
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         return 0 if all(value["status"] == "accepted" for value in results) else 1

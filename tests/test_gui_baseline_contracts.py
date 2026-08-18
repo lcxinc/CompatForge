@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ASSET_TOOL = ROOT / "tools" / "download_gui_assets.py"
 BASELINE_TOOL = ROOT / "tools" / "run_gui_baseline.py"
+INTERACTION_TOOL = ROOT / "tools" / "prepare_gui_interaction_evidence.py"
+SUMMARY_TOOL = ROOT / "tools" / "summarize_gui_compatibility.py"
 DESKTOP = ROOT / "apps" / "desktop"
 TAURI = DESKTOP / "src-tauri"
 
@@ -30,6 +32,7 @@ class GuiBaselineContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.assets = load_tool(ASSET_TOOL)
         cls.baseline = load_tool(BASELINE_TOOL)
+        cls.summary_tool = load_tool(SUMMARY_TOOL)
 
     def test_fixed_official_asset_matrix_is_closed(self) -> None:
         self.assertEqual(
@@ -49,6 +52,19 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assertEqual(len(asset.sha256), 64)
             self.assertTrue(asset.window_title_tokens)
         self.assertEqual([asset.app_id for asset in self.assets.EXTENDED_ASSETS], ["firefox", "krita"])
+        self.assertEqual(
+            [asset.app_id for asset in self.assets.CERTIFICATION_ASSETS],
+            ["7zip-x86", "vlc", "winmerge", "audacity-x86", "everything-x86"],
+        )
+        self.assertEqual(len(self.assets.ASSETS), 10)
+        self.assertEqual(
+            {asset.guest_architecture for asset in self.assets.CERTIFICATION_ASSETS},
+            {"i386", "x86_64"},
+        )
+        self.assertEqual(
+            {asset.category for asset in self.assets.CERTIFICATION_ASSETS},
+            {"win32", "multimedia", "developer-tool", "audio", "search"},
+        )
         self.assertTrue(all(asset.launch_args for asset in self.assets.EXTENDED_ASSETS))
         self.assertEqual(
             [asset.install_wait_milliseconds for asset in self.assets.EXTENDED_ASSETS],
@@ -171,7 +187,12 @@ class GuiBaselineContractTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schemaVersion": "1",
+                        "schemaVersion": "2",
+                        "attestation": {
+                            "mode": "human",
+                            "observer": "Compatibility Lab",
+                            "observedAt": "2026-08-18T10:00:00+08:00",
+                        },
                         "applications": {
                             "7zip": {"fileList": True, "menus": True, "cjkTextReadable": True},
                             "sumatrapdf": {"mainWindow": True, "openDialog": True, "cjkTextReadable": True},
@@ -189,6 +210,204 @@ class GuiBaselineContractTests(unittest.TestCase):
             )
             checks = self.baseline.interaction_evidence(path, True)
             self.assertTrue(checks["notepad-plus-plus"]["rereadMatches"])
+            checks, attestation = self.baseline.load_interaction_evidence(path, True)
+            self.assertTrue(checks["7zip"]["menus"])
+            self.assertEqual(
+                attestation,
+                {
+                    "mode": "human",
+                    "observer": "Compatibility Lab",
+                    "observedAt": "2026-08-18T10:00:00+08:00",
+                },
+            )
+
+    def test_interaction_evidence_rejects_legacy_or_automated_attestations(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-interactions-") as temporary:
+            path = Path(temporary) / "interactions.json"
+            for value in (
+                {"schemaVersion": "1", "applications": {}},
+                {
+                    "schemaVersion": "2",
+                    "attestation": {
+                        "mode": "automation",
+                        "observer": "runner",
+                        "observedAt": "2026-08-18T10:00:00Z",
+                    },
+                    "applications": {},
+                },
+            ):
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaises(self.baseline.AcceptanceError):
+                    self.baseline.interaction_evidence(path, True, {"7zip"})
+
+    def test_interaction_evidence_rejects_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-interactions-") as temporary:
+            target = Path(temporary) / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            link = Path(temporary) / "link.json"
+            link.symlink_to(target)
+            with self.assertRaises(self.baseline.AcceptanceError):
+                self.baseline.interaction_evidence(link, True, {"7zip"})
+
+    def test_interaction_worksheet_is_external_closed_and_fails_safe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-interaction-template-") as temporary:
+            output = Path(temporary) / "worksheet.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-S",
+                    "-B",
+                    str(INTERACTION_TOOL),
+                    "--output",
+                    str(output),
+                    "--observer",
+                    "Compatibility Lab",
+                    "--app",
+                    "vlc",
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            worksheet = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(set(worksheet), {"schemaVersion", "attestation", "applications"})
+            self.assertEqual(worksheet["attestation"]["observedAt"], "")
+            self.assertTrue(all(value is False for value in worksheet["applications"]["vlc"].values()))
+            with self.assertRaises(self.baseline.AcceptanceError):
+                self.baseline.interaction_evidence(output, True, {"vlc"})
+
+    def test_visual_observation_classifies_infrastructure_separately(self) -> None:
+        self.assertEqual(
+            self.baseline.observation_diagnostic(
+                {
+                    "available": False,
+                    "reason": "desktop session is locked",
+                    "failureClassification": "test-infrastructure",
+                },
+                {"available": False},
+            )["failureClassification"],
+            "test-infrastructure",
+        )
+        self.assertEqual(
+            self.baseline.observation_diagnostic(
+                {"available": False, "reason": "target window was not observed"},
+                {"available": False},
+            )["failureClassification"],
+            "runtime-regression",
+        )
+
+    def test_compatibility_result_binds_matrix_and_failure_classification(self) -> None:
+        asset = self.assets.asset_for("vlc")
+        evidence = {
+            "status": "unverified",
+            "cleanup": True,
+            "failureClassification": "test-infrastructure",
+            "windows": {"available": False, "reason": "desktop session is locked"},
+            "screenshot": {"available": False},
+            "exit": {"present": True},
+            "interactionChecks": {},
+            "residualProcesses": [],
+            "installerInspection": {"architecture": "x86_64"},
+        }
+        result = self.baseline.compatibility_result(
+            asset,
+            evidence,
+            {"packDigest": "sha256:" + "a" * 64},
+            "2026-08-18T10:00:00Z",
+            "2026-08-18T10:01:00Z",
+        )
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["failureClassification"], "test-infrastructure")
+        self.assertEqual(result["installerDigest"], "sha256:" + asset.sha256)
+        self.assertRegex(result["recipeDigest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_compatibility_schema_requires_reproducibility_keys_and_closed_failures(self) -> None:
+        schema = json.loads((ROOT / "schemas" / "compatibility-result.schema.json").read_text(encoding="utf-8"))
+        self.assertTrue(
+            {"recipeDigest", "installerDigest", "testSuiteVersion"}.issubset(schema["required"])
+        )
+        self.assertEqual(
+            set(schema["properties"]["failureClassification"]["enum"]),
+            self.summary_tool.FAILURE_CLASSIFICATIONS,
+        )
+
+    def test_summary_separates_policy_and_infrastructure_blocks(self) -> None:
+        assets = [self.assets.asset_for("7zip"), self.assets.asset_for("vlc")]
+        results = []
+        for asset, classification in zip(assets, ("policy-blocked", "test-infrastructure"), strict=True):
+            results.append(
+                self.baseline.compatibility_result(
+                    asset,
+                    {
+                        "status": "unverified",
+                        "cleanup": True,
+                        "failureClassification": classification,
+                        "windows": {"available": classification == "policy-blocked"},
+                        "screenshot": {"available": classification == "policy-blocked"},
+                        "exit": {"present": True},
+                        "interactionChecks": {},
+                        "residualProcesses": [],
+                        "installerInspection": {"architecture": "x86_64"},
+                    },
+                    {"packDigest": "sha256:" + "b" * 64},
+                    "2026-08-18T10:00:00Z",
+                    "2026-08-18T10:01:00Z",
+                )
+            )
+        report = self.summary_tool.aggregate(
+            {
+                "schemaVersion": "1",
+                "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                "compatibilityResults": results,
+            }
+        )
+        self.assertEqual(report["releaseGate"], "blocked")
+        self.assertEqual(report["policyBlocked"], 1)
+        self.assertEqual(report["infrastructureBlocked"], 1)
+
+    def test_summary_fails_closed_for_skips_and_matrix_digest_drift(self) -> None:
+        asset = self.assets.asset_for("7zip")
+        result = self.baseline.compatibility_result(
+            asset,
+            {
+                "status": "accepted",
+                "cleanup": True,
+                "windows": {"available": True},
+                "screenshot": {"available": True, "path": "/external/7zip.png"},
+                "exit": {"present": True},
+                "interactionChecks": {
+                    "fileList": True,
+                    "menus": True,
+                    "cjkTextReadable": True,
+                },
+                "residualProcesses": [],
+                "installerInspection": {"architecture": "x86_64"},
+            },
+            {"packDigest": "sha256:" + "c" * 64},
+            "2026-08-18T10:00:00Z",
+            "2026-08-18T10:01:00Z",
+        )
+        result["outcome"] = "skipped"
+        report = self.summary_tool.aggregate(
+            {
+                "schemaVersion": "1",
+                "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                "compatibilityResults": [result],
+            }
+        )
+        self.assertEqual(report["releaseGate"], "blocked")
+        result["recipeDigest"] = "sha256:" + "0" * 64
+        with self.assertRaises(self.baseline.AcceptanceError):
+            self.summary_tool.aggregate(
+                {
+                    "schemaVersion": "1",
+                    "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                    "compatibilityResults": [result],
+                }
+            )
 
     def test_residual_process_check_uses_the_launch_process_group(self) -> None:
         with mock.patch.object(
@@ -237,7 +456,18 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 [item["appId"] for item in json.loads(result.stdout)],
-                ["7zip", "sumatrapdf", "notepad-plus-plus", "firefox", "krita"],
+                [
+                    "7zip",
+                    "sumatrapdf",
+                    "notepad-plus-plus",
+                    "firefox",
+                    "krita",
+                    "7zip-x86",
+                    "vlc",
+                    "winmerge",
+                    "audacity-x86",
+                    "everything-x86",
+                ],
             )
             self.assertFalse(cache.exists())
 

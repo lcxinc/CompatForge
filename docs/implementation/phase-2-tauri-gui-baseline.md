@@ -34,11 +34,16 @@ Tauri Rust Commands 直接调用 `compatforge-provider-macos`、`compatforge-ins
 
 `tools/download_gui_assets.py` 固定官方 URL、重定向主机、流式大小上限和 SHA-256，只有 `--allow-network` 才下载，缓存必须在仓库外。`tools/run_gui_baseline.py` 为 7-Zip、SumatraPDF、Notepad++ 各建独立 Bottle，先以 immutable installer 启动，再以 `bottleInPlace` 启动安装后的 EXE，并记录 inspection、LaunchPlan、RuntimeEvent、窗口/截图和清理。空白窗口或仅进程启动只能得到 `unverified`。
 
-真实窗口观察只接受与 RuntimeEvent `started.processId` 相同进程组的目标标题，并在 30 秒窗口出现期限内轮询；整屏截图本身不构成通过证据。`--accept-interactive` 必须同时提供仓库外的 `--interaction-evidence` JSON，其中逐项确认 7-Zip 文件列表/菜单、SumatraPDF 主窗口/Open 流程，以及 Notepad++ 打开、编辑、UTF-8 中文保存和复读一致。三个应用都必须显式确认中文界面没有方框或缺字；目标进程残留或 Bottle 清理失败都会阻止 `accepted`。可重复使用 `--app <id>` 仅运行指定应用，以进行有界的兼容性实验。
+真实窗口观察优先接受与 RuntimeEvent `started.processId` 相同进程组的目标标题，并在固定窗口出现期限内轮询；Wine GUI 脱离原始进程组时才使用全局标题回退。锁屏、Accessibility 或截图设施不可用归为 `test-infrastructure`，目标窗口在可观察桌面上缺失归为 `runtime-regression`，二者不再混写。整屏截图本身不构成通过证据。`--accept-interactive` 必须同时提供仓库外的 v2 `--interaction-evidence` JSON，其中包含闭集 human attestation、观察者、带时区时间和逐应用检查。目标进程残留或 Bottle 清理失败都会阻止 `accepted`。可重复使用 `--app <id>` 仅运行指定应用，以进行有界的兼容性实验。
 
 ```json
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
+  "attestation": {
+    "mode": "human",
+    "observer": "Compatibility Lab",
+    "observedAt": "2026-08-18T10:00:00+08:00"
+  },
   "applications": {
     "7zip": { "fileList": true, "menus": true, "cjkTextReadable": true },
     "sumatrapdf": { "mainWindow": true, "openDialog": true, "cjkTextReadable": true },
@@ -60,3 +65,7 @@ Tauri Rust Commands 直接调用 `compatforge-provider-macos`、`compatforge-ins
 默认三应用基线之外，资产工具固定 Firefox 152.0.1 与 Krita 5.2.9 的官方 URL、SHA-256、安装位置、启动参数和稳定截图延迟。它们只在显式 `--app firefox` 或 `--app krita` 时运行：Firefox覆盖 Gecko 多进程、浏览器内容和中文渲染；Krita 覆盖大型 NSIS 安装器、COFF 长节名、Qt、OpenGL 工作区和中文界面。
 
 Krita 的兼容环境是资产级请求数据：`QT_OPENGL=desktop`、固定 DPI/缩放、`WINE_D3D_CONFIG=renderer=gl,csmt=0x0` 及当前 Runtime 支持的 Krita 修复开关都会进入 LaunchPlan，不修改全局环境。PE 检查上限为 256 MiB，并仍在读取前检查普通文件、符号链接和大小；COFF 长节名只接受 `/` 后跟十进制数字的标准字符串表引用形式。
+
+Phase 2.1 再加入五个显式认证资产：7-Zip x86（i386）、VLC 3.0.21（Qt/媒体）、WinMerge 2.16.58（MFC/开发工具）、Audacity 3.7.8 x86（wxWidgets/音频）和 Everything 1.4.1.1032 x86（Win32/搜索）。十项矩阵全部固定官方 URL、SHA-256、安装参数、安装位置、Guest 架构、窗口标题和人工检查闭集。下载仍是 opt-in，新增资产不进入默认 CI。
+
+每个应用同时输出 `*-compatibility-result.json`，绑定矩阵摘要、安装器摘要、Runtime Pack 摘要、主机版本/架构和 `gui-interactive-v2` 测试套件。非通过结果必须使用测试策略中的闭集失败分类。`tools/summarize_gui_compatibility.py` 汇总 release gate，并分别统计人工策略阻塞与桌面基础设施阻塞。

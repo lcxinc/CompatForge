@@ -38,6 +38,10 @@ class GuiAsset:
     screenshot_delay_seconds: int = 0
     runtime_environment: tuple[tuple[str, str], ...] = ()
     window_appearance_seconds: int = 30
+    category: str = "win32"
+    toolkit: str = "win32"
+    guest_architecture: str = "x86_64"
+    alternate_installed_executables: tuple[str, ...] = ()
 
 
 BASELINE_ASSETS = (
@@ -90,6 +94,8 @@ EXTENDED_ASSETS = (
         ),
         20_000,
         35,
+        category="browser",
+        toolkit="gecko",
     ),
     GuiAsset(
         "krita",
@@ -118,10 +124,92 @@ EXTENDED_ASSETS = (
             ("QT_SCALE_FACTOR", "1"),
         ),
         55,
+        category="graphics",
+        toolkit="qt-opengl",
     ),
 )
 
-ASSETS = BASELINE_ASSETS + EXTENDED_ASSETS
+CERTIFICATION_ASSETS = (
+    GuiAsset(
+        "7zip-x86",
+        "7-Zip 26.01 x86",
+        "7z2601.exe",
+        "https://www.7-zip.org/a/7z2601.exe",
+        "615976598f800c70827c5a47e68c2b0d2b17d048b9721ba071c8af825d2476bd",
+        ("/S",),
+        "Program Files (x86)/7-Zip/7zFM.exe",
+        ("7-Zip",),
+        guest_architecture="i386",
+        alternate_installed_executables=("Program Files/7-Zip/7zFM.exe",),
+    ),
+    GuiAsset(
+        "vlc",
+        "VLC media player 3.0.21",
+        "vlc-3.0.21-win64.exe",
+        "https://ftp.osuosl.org/pub/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.exe",
+        "9742689a50e96ddc04d80ceff046b28da2beefd617be18166f8c5e715ec60c59",
+        ("/S",),
+        "Program Files/VideoLAN/VLC/vlc.exe",
+        ("VLC media player", "VLC"),
+        ("--no-qt-privacy-ask", "--no-video-title-show"),
+        12_000,
+        3,
+        category="multimedia",
+        toolkit="qt",
+    ),
+    GuiAsset(
+        "winmerge",
+        "WinMerge 2.16.58 x64",
+        "WinMerge-2.16.58-x64-Setup.exe",
+        "https://github.com/WinMerge/winmerge/releases/download/v2.16.58/WinMerge-2.16.58-x64-Setup.exe",
+        "af00357fdbbfef71a31a350974cec98e3cb0548cfa6fd54a3cd3a0cce28f2ab3",
+        ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"),
+        "Program Files/WinMerge/WinMergeU.exe",
+        ("WinMerge",),
+        ("/noprefs",),
+        15_000,
+        category="developer-tool",
+        toolkit="mfc",
+    ),
+    GuiAsset(
+        "audacity-x86",
+        "Audacity 3.7.8 x86",
+        "audacity-win-3.7.8-32bit.exe",
+        "https://github.com/audacity/audacity/releases/download/Audacity-3.7.8/audacity-win-3.7.8-32bit.exe",
+        "c0482d84a05ddd26905d010daff32b79eba18673489d2cb90ee87a386d24c74f",
+        ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"),
+        "Program Files (x86)/Audacity/Audacity.exe",
+        ("Audacity",),
+        install_wait_milliseconds=20_000,
+        window_appearance_seconds=45,
+        category="audio",
+        toolkit="wxwidgets",
+        guest_architecture="i386",
+        alternate_installed_executables=("Program Files/Audacity/Audacity.exe",),
+    ),
+    GuiAsset(
+        "everything-x86",
+        "Everything 1.4.1.1032 x86",
+        "Everything-1.4.1.1032.x86-Setup.exe",
+        "https://ftp.voidtools.com/Everything-1.4.1.1032.x86-Setup.exe",
+        "781a31b440045219752a1bb40fbd204b1d96964d4bf56af01b18e3d549b037aa",
+        (
+            "/S",
+            "-install-options",
+            "-app-data -disable-run-as-admin -uninstall-run-on-system-startup -uninstall-service -uninstall-desktop-shortcut -install-start-menu-shortcuts -language 2052",
+        ),
+        "Program Files (x86)/Everything/Everything.exe",
+        ("Everything",),
+        ("-nodb", "-no-first-instance", "-no-choose-volumes"),
+        10_000,
+        category="search",
+        toolkit="win32",
+        guest_architecture="i386",
+        alternate_installed_executables=("Program Files/Everything/Everything.exe",),
+    ),
+)
+
+ASSETS = BASELINE_ASSETS + EXTENDED_ASSETS + CERTIFICATION_ASSETS
 
 ALLOWED_HOSTS = {
     "www.7-zip.org",
@@ -136,6 +224,8 @@ ALLOWED_HOSTS = {
     "download-installer.cdn.mozilla.net",
     "download.kde.org",
     "mirrors.xtom.com",
+    "ftp.osuosl.org",
+    "ftp.voidtools.com",
 }
 
 
@@ -252,6 +342,10 @@ def asset_json(asset: GuiAsset) -> dict[str, object]:
         "screenshotDelaySeconds": asset.screenshot_delay_seconds,
         "runtimeEnvironment": dict(asset.runtime_environment),
         "windowAppearanceSeconds": asset.window_appearance_seconds,
+        "category": asset.category,
+        "toolkit": asset.toolkit,
+        "guestArchitecture": asset.guest_architecture,
+        "alternateInstalledExecutables": list(asset.alternate_installed_executables),
     }
 
 

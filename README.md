@@ -110,7 +110,7 @@ COMPATFORGE_DESKTOP_SMOKE=1 \
 ```bash
 python tools/download_gui_assets.py list --cache-root /absolute/external/cache
 python tools/run_gui_baseline.py \
-  --compatforge-cli target/release/compatforge-cli \
+  --compatforge-cli /absolute/path/to/compatforge-cli \
   --cache-root /absolute/external/cache \
   --runtime-store /absolute/external/runtime-store \
   --storage-root /absolute/external/storage \
@@ -123,7 +123,20 @@ python tools/run_gui_baseline.py \
 `docs/implementation/phase-2-tauri-gui-baseline.md`。验收结果逐应用标记为 `accepted`、`failed` 或
 `unverified`；截图和 RuntimeEvent 证据不会进入 Git，也不由默认 CI 生成。
 
-默认只运行三个基线应用。Firefox/Gecko 与 Krita/Qt/OpenGL 属于显式扩展矩阵，可分别追加 `--app firefox`、`--app krita`，或重复 `--app` 同时运行；扩展应用不会静默进入默认发布门禁。
+人工验收先生成 fail-safe 工作表；所有检查默认是 `false`，观察者必须填写带时区的 `observedAt`
+并逐项确认后才能用于 `accepted`：
+
+```bash
+python tools/prepare_gui_interaction_evidence.py \
+  --output /absolute/external/interactions.json \
+  --observer "Compatibility Lab" \
+  --app 7zip
+python tools/summarize_gui_compatibility.py \
+  --input /absolute/external/gui-evidence/summary.json \
+  --output /absolute/external/gui-evidence/release-gate.json
+```
+
+默认只运行三个基线应用。显式认证矩阵共十项：Firefox/Gecko、Krita/Qt/OpenGL、7-Zip x86、VLC、WinMerge、Audacity x86 和 Everything x86 均须通过重复 `--app` 选择，不会静默进入默认发布门禁。
 
 ## 设计入口
 
@@ -138,6 +151,7 @@ python tools/run_gui_baseline.py \
 - [PE inspection 纵向切片](docs/implementation/phase-1-pe-inspection.md)
 - [Trusted Launch Preparation 纵向切片](docs/implementation/phase-1-trusted-launch-preparation.md)
 - [Tauri 桌面壳与 GUI 基线](docs/implementation/phase-2-tauri-gui-baseline.md)
+- [Phase 2.1 交互式兼容认证](docs/implementation/phase-2-1-interactive-certification.md)
 - [Apple Silicon 本地无头预览指南](docs/guides/macos-headless-preview.md)
 - [进程树与 Wine 生命周期决策](docs/decisions/0006-process-tree-and-wine-lifecycle.md)
 - [能力证据与 Provider 声明决策](docs/decisions/0007-capability-evidence-boundary.md)
