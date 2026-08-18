@@ -646,12 +646,20 @@ class GuiBaselineContractTests(unittest.TestCase):
 
     def test_window_evidence_is_structured_and_title_bound(self) -> None:
         windows = self.baseline.matching_windows(
-            "48498|7-Zip|1288x711\n99|Unrelated|800x600\n100|7-Zip|0x600\n",
+            (
+                "48498|7-Zip|1288x711\n"
+                "wine64-preloader|48499|7-Zip Child|900x700\n"
+                "99|Unrelated|800x600\n"
+                "100|7-Zip|0x600\n"
+            ),
             ("7-Zip",),
         )
         self.assertEqual(
             windows,
-            [{"processId": 48498, "title": "7-Zip", "width": 1288, "height": 711}],
+            [
+                {"processId": 48498, "title": "7-Zip", "width": 1288, "height": 711},
+                {"processId": 48499, "title": "7-Zip Child", "width": 900, "height": 700},
+            ],
         )
 
     def test_list_output_is_json_and_does_not_download(self) -> None:

@@ -311,19 +311,25 @@ def cleanup_bottle(context: dict[str, object], storage_root: Path, bottle_id: st
 def matching_windows(output: str, title_tokens: tuple[str, ...]) -> list[dict[str, object]]:
     matching: list[dict[str, object]] = []
     for line in output.splitlines():
-        parts = line.strip().split("|", 2)
-        if len(parts) != 3 or not any(token.casefold() in parts[1].casefold() for token in title_tokens):
+        parts = line.strip().split("|")
+        if len(parts) == 3:
+            process_id_value, title, dimensions_value = parts
+        elif len(parts) == 4:
+            _process_name, process_id_value, title, dimensions_value = parts
+        else:
             continue
-        dimensions = parts[2].split("x", 1)
+        if not any(token.casefold() in title.casefold() for token in title_tokens):
+            continue
+        dimensions = dimensions_value.split("x", 1)
         try:
-            process_id = int(parts[0])
+            process_id = int(process_id_value)
             width = int(dimensions[0])
             height = int(dimensions[1])
         except (ValueError, IndexError):
             continue
         if width <= 0 or height <= 0:
             continue
-        matching.append({"processId": process_id, "title": parts[1], "width": width, "height": height})
+        matching.append({"processId": process_id, "title": title, "width": width, "height": height})
     return matching
 
 
