@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 
@@ -14,6 +15,7 @@ ASSET_TOOL = ROOT / "tools" / "download_gui_assets.py"
 BASELINE_TOOL = ROOT / "tools" / "run_gui_baseline.py"
 INTERACTION_TOOL = ROOT / "tools" / "prepare_gui_interaction_evidence.py"
 SUMMARY_TOOL = ROOT / "tools" / "summarize_gui_compatibility.py"
+SOAK_TOOL = ROOT / "tools" / "run_gui_soak.py"
 DESKTOP = ROOT / "apps" / "desktop"
 TAURI = DESKTOP / "src-tauri"
 
@@ -33,6 +35,7 @@ class GuiBaselineContractTests(unittest.TestCase):
         cls.assets = load_tool(ASSET_TOOL)
         cls.baseline = load_tool(BASELINE_TOOL)
         cls.summary_tool = load_tool(SUMMARY_TOOL)
+        cls.soak_tool = load_tool(SOAK_TOOL)
 
     def test_fixed_official_asset_matrix_is_closed(self) -> None:
         self.assertEqual(
@@ -51,6 +54,7 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assertTrue(asset.url.startswith("https://"))
             self.assertEqual(len(asset.sha256), 64)
             self.assertTrue(asset.window_title_tokens)
+            self.assertIn(asset.package_kind, {"installer", "portable-zip"})
         self.assertEqual([asset.app_id for asset in self.assets.EXTENDED_ASSETS], ["firefox", "krita"])
         self.assertEqual(
             [asset.app_id for asset in self.assets.CERTIFICATION_ASSETS],
@@ -61,6 +65,13 @@ class GuiBaselineContractTests(unittest.TestCase):
             {asset.guest_architecture for asset in self.assets.CERTIFICATION_ASSETS},
             {"i386", "x86_64"},
         )
+        self.assertEqual(self.assets.asset_for("winmerge").guest_architecture, "x86_64")
+        self.assertEqual(self.assets.asset_for("winmerge").package_kind, "portable-zip")
+        self.assertEqual(
+            self.assets.asset_for("winmerge").installed_executable,
+            "WinMerge/WinMergeU.exe",
+        )
+        self.assertEqual(self.assets.asset_for("everything-x86").launch_args, ("-nodb",))
         self.assertEqual(
             {asset.category for asset in self.assets.CERTIFICATION_ASSETS},
             {"win32", "multimedia", "developer-tool", "audio", "search"},
@@ -168,6 +179,35 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
             self.assertIn("--allow-network", result.stderr)
+
+    def test_portable_zip_materialization_is_bounded_and_traversal_safe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-portable-zip-") as temporary:
+            root = Path(temporary)
+            archive = root / "winmerge.zip"
+            bottle = root / "drive_c"
+            bottle.mkdir()
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("WinMerge/WinMergeU.exe", b"MZ-fixed-fixture")
+                bundle.writestr("WinMerge/Languages/ChineseSimplified.po", "中文")
+            inspection = self.baseline.materialize_portable_zip(
+                archive,
+                bottle,
+                self.baseline.file_sha256(archive),
+            )
+            self.assertEqual(inspection["format"], "zip")
+            self.assertEqual(inspection["entryCount"], 2)
+            self.assertEqual((bottle / "WinMerge" / "WinMergeU.exe").read_bytes(), b"MZ-fixed-fixture")
+
+            malicious = root / "traversal.zip"
+            with zipfile.ZipFile(malicious, "w") as bundle:
+                bundle.writestr("../escape.exe", b"MZ")
+            with self.assertRaises(self.baseline.AcceptanceError):
+                self.baseline.materialize_portable_zip(
+                    malicious,
+                    root / "malicious-drive-c",
+                    self.baseline.file_sha256(malicious),
+                )
+            self.assertFalse((root / "escape.exe").exists())
 
     def test_cache_and_evidence_tools_have_no_shell_or_repository_artifacts(self) -> None:
         source = BASELINE_TOOL.read_text(encoding="utf-8")
@@ -407,6 +447,86 @@ class GuiBaselineContractTests(unittest.TestCase):
                     "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
                     "compatibilityResults": [result],
                 }
+            )
+
+    def test_soak_distinguishes_verified_lifecycle_from_acceptance_and_infrastructure(self) -> None:
+        asset = self.assets.asset_for("everything-x86")
+
+        def result(classification: str, visible: bool) -> dict[str, object]:
+            return self.baseline.compatibility_result(
+                asset,
+                {
+                    "status": "unverified",
+                    "cleanup": True,
+                    "failureClassification": classification,
+                    "windows": {"available": visible},
+                    "screenshot": {
+                        "available": visible,
+                        **({"path": "/external/everything.png"} if visible else {}),
+                    },
+                    "exit": {"present": True},
+                    "interactionChecks": {},
+                    "residualProcesses": [],
+                    "installerInspection": {"format": "pe32"},
+                },
+                {"packDigest": "sha256:" + "d" * 64},
+                "2026-08-18T10:00:00Z",
+                "2026-08-18T10:01:00Z",
+            )
+
+        verified = self.soak_tool.classify_summary(
+            {
+                "schemaVersion": "1",
+                "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                "compatibilityResults": [result("policy-blocked", True)],
+            },
+            {"everything-x86"},
+        )
+        self.assertEqual(verified["status"], "verified")
+        self.assertFalse(verified["hardFailure"])
+        self.assertEqual(verified["applications"][0]["outcome"], "blocked")
+
+        duplicate_check = result("policy-blocked", True)
+        duplicate_check["checks"].append(duplicate_check["checks"][0])
+        with self.assertRaises(self.baseline.AcceptanceError):
+            self.soak_tool.classify_summary(
+                {
+                    "schemaVersion": "1",
+                    "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                    "compatibilityResults": [duplicate_check],
+                },
+                {"everything-x86"},
+            )
+
+        unavailable = self.soak_tool.classify_summary(
+            {
+                "schemaVersion": "1",
+                "testSuiteVersion": self.baseline.TEST_SUITE_VERSION,
+                "compatibilityResults": [result("test-infrastructure", False)],
+            },
+            {"everything-x86"},
+        )
+        self.assertEqual(unavailable["status"], "unverified")
+        self.assertFalse(unavailable["hardFailure"])
+
+    def test_soak_resume_configuration_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="compatforge-soak-resume-") as temporary:
+            path = Path(temporary) / "configuration.json"
+            selected = {"winmerge", "everything-x86"}
+            self.soak_tool.write_configuration(path, selected, 60)
+            self.soak_tool.validate_configuration(path, selected, 60)
+            with self.assertRaises(self.baseline.AcceptanceError):
+                self.soak_tool.validate_configuration(path, {"winmerge"}, 60)
+            self.assertEqual(
+                self.soak_tool.cycle_application_ids(
+                    {
+                        "applications": [
+                            {"recipeId": "winmerge"},
+                            {"recipeId": "everything-x86"},
+                        ]
+                    }
+                ),
+                selected,
             )
 
     def test_residual_process_check_uses_the_launch_process_group(self) -> None:

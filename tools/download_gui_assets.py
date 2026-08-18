@@ -42,6 +42,7 @@ class GuiAsset:
     toolkit: str = "win32"
     guest_architecture: str = "x86_64"
     alternate_installed_executables: tuple[str, ...] = ()
+    package_kind: str = "installer"
 
 
 BASELINE_ASSETS = (
@@ -159,17 +160,17 @@ CERTIFICATION_ASSETS = (
     ),
     GuiAsset(
         "winmerge",
-        "WinMerge 2.16.58 x64",
-        "WinMerge-2.16.58-x64-Setup.exe",
-        "https://github.com/WinMerge/winmerge/releases/download/v2.16.58/WinMerge-2.16.58-x64-Setup.exe",
-        "af00357fdbbfef71a31a350974cec98e3cb0548cfa6fd54a3cd3a0cce28f2ab3",
-        ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"),
-        "Program Files/WinMerge/WinMergeU.exe",
+        "WinMerge 2.16.58 x64 portable",
+        "winmerge-2.16.58-x64-exe.zip",
+        "https://github.com/WinMerge/winmerge/releases/download/v2.16.58/winmerge-2.16.58-x64-exe.zip",
+        "58a0e36abc99b0da539d3b33b1df8a494239d53900f1ab57c305853df5da94a6",
+        (),
+        "WinMerge/WinMergeU.exe",
         ("WinMerge",),
         ("/noprefs",),
-        15_000,
         category="developer-tool",
         toolkit="mfc",
+        package_kind="portable-zip",
     ),
     GuiAsset(
         "audacity-x86",
@@ -200,7 +201,7 @@ CERTIFICATION_ASSETS = (
         ),
         "Program Files (x86)/Everything/Everything.exe",
         ("Everything",),
-        ("-nodb", "-no-first-instance", "-no-choose-volumes"),
+        ("-nodb",),
         10_000,
         category="search",
         toolkit="win32",
@@ -346,6 +347,7 @@ def asset_json(asset: GuiAsset) -> dict[str, object]:
         "toolkit": asset.toolkit,
         "guestArchitecture": asset.guest_architecture,
         "alternateInstalledExecutables": list(asset.alternate_installed_executables),
+        "packageKind": asset.package_kind,
     }
 
 

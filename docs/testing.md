@@ -159,3 +159,17 @@ python3 -S -B tools/run_macos_headless_preview.py \
 `--version`，不接受部分覆盖。发现器不使用 `PATH`、网络或 shell。
 
 完整限制、证据和清理方式见[本地预览指南](guides/macos-headless-preview.md)。
+
+## GUI certification soak
+
+长期 GUI 测试是 Apple Silicon macOS 上的显式门禁，不进入默认 CI：
+
+```text
+python3 -S -B tools/run_gui_soak.py \
+  --compatforge-cli /absolute/path/to/compatforge-cli \
+  --cache-root /absolute/external/cache \
+  --output-root /absolute/external/soak-60 \
+  --cycles 60
+```
+
+每轮必须使用新 Bottle，并保留固定包摘要、PE inspection、目标窗口、非空截图、退出事件、Bottle 清理和空残留进程证据。`policy-blocked` 的人工交互项不构成 soak 硬失败，但 soak 通过也不能替代 schemaVersion 2 的人工签署。锁屏或桌面观察基础设施不可用必须保持 `unverified`。

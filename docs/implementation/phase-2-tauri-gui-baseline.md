@@ -66,6 +66,6 @@ Tauri Rust Commands 直接调用 `compatforge-provider-macos`、`compatforge-ins
 
 Krita 的兼容环境是资产级请求数据：`QT_OPENGL=desktop`、固定 DPI/缩放、`WINE_D3D_CONFIG=renderer=gl,csmt=0x0` 及当前 Runtime 支持的 Krita 修复开关都会进入 LaunchPlan，不修改全局环境。PE 检查上限为 256 MiB，并仍在读取前检查普通文件、符号链接和大小；COFF 长节名只接受 `/` 后跟十进制数字的标准字符串表引用形式。
 
-Phase 2.1 再加入五个显式认证资产：7-Zip x86（i386）、VLC 3.0.21（Qt/媒体）、WinMerge 2.16.58（MFC/开发工具）、Audacity 3.7.8 x86（wxWidgets/音频）和 Everything 1.4.1.1032 x86（Win32/搜索）。十项矩阵全部固定官方 URL、SHA-256、安装参数、安装位置、Guest 架构、窗口标题和人工检查闭集。下载仍是 opt-in，新增资产不进入默认 CI。
+Phase 2.1 再加入五个显式认证资产：7-Zip x86（i386）、VLC 3.0.21（Qt/媒体）、WinMerge 2.16.58 x64 portable（MFC/开发工具）、Audacity 3.7.8 x86（wxWidgets/音频）和 Everything 1.4.1.1032 x86（Win32/搜索）。十项矩阵全部固定官方 URL、SHA-256、包类型、安装/物化位置、Guest 架构、窗口标题和人工检查闭集。下载仍是 opt-in，新增资产不进入默认 CI。
 
-每个应用同时输出 `*-compatibility-result.json`，绑定矩阵摘要、安装器摘要、Runtime Pack 摘要、主机版本/架构和 `gui-interactive-v2` 测试套件。非通过结果必须使用测试策略中的闭集失败分类。`tools/summarize_gui_compatibility.py` 汇总 release gate，并分别统计人工策略阻塞与桌面基础设施阻塞。
+每个应用同时输出 `*-compatibility-result.json`，绑定矩阵摘要、软件包摘要（兼容字段名 `installerDigest`）、Runtime Pack 摘要、主机版本/架构和 `gui-interactive-v2` 测试套件。非通过结果必须使用测试策略中的闭集失败分类。`tools/summarize_gui_compatibility.py` 汇总 release gate，并分别统计人工策略阻塞与桌面基础设施阻塞。

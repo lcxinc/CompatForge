@@ -138,6 +138,16 @@ python tools/summarize_gui_compatibility.py \
 
 默认只运行三个基线应用。显式认证矩阵共十项：Firefox/Gecko、Krita/Qt/OpenGL、7-Zip x86、VLC、WinMerge、Audacity x86 和 Everything x86 均须通过重复 `--app` 选择，不会静默进入默认发布门禁。
 
+扩展矩阵的生命周期 soak 使用逐轮新 Bottle，并把可恢复的 `cycles.jsonl` 和汇总写到仓库外。默认运行五个认证扩展应用和 60 轮；该门禁只证明窗口、截图、退出与零残留，不能替代人工功能验收：
+
+```bash
+python3 -S -B tools/run_gui_soak.py \
+  --compatforge-cli /absolute/path/to/compatforge-cli \
+  --cache-root /absolute/external/cache \
+  --output-root /absolute/external/soak-60 \
+  --cycles 60
+```
+
 ## 设计入口
 
 - [总体架构](docs/architecture/overview.md)

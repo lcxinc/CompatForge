@@ -16,12 +16,14 @@ import os
 import platform
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD = ROOT / "tools" / "download_gui_assets.py"
@@ -29,6 +31,8 @@ MAX_COMMAND_SECONDS = 180
 WINDOW_APPEARANCE_SECONDS = 30
 INTERACTIVE_RUNTIME_MILLISECONDS = 60_000
 MAX_INTERACTION_EVIDENCE_BYTES = 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 4096
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 TEST_SUITE_VERSION = "gui-interactive-v2"
 
 REQUIRED_INTERACTIONS = {
@@ -577,6 +581,81 @@ def installed_executable(asset, bottle_root: Path) -> Path:  # type: ignore[no-u
     return primary
 
 
+def file_sha256(path: Path) -> str:
+    with path.open("rb") as source:
+        return stream_sha256(source)
+
+
+def stream_sha256(source) -> str:  # type: ignore[no-untyped-def]
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: source.read(64 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def materialize_portable_zip(archive: Path, bottle_root: Path, expected_sha256: str) -> dict[str, object]:
+    """Extract a fixed-digest portable ZIP without links, traversal, or overwrites."""
+    descriptor = os.open(archive, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as pinned:
+        metadata = os.fstat(pinned.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AcceptanceError("portable archive is not a regular file")
+        if stream_sha256(pinned) != expected_sha256:
+            raise AcceptanceError("portable archive digest changed before materialization")
+        pinned.seek(0)
+        with zipfile.ZipFile(pinned) as bundle:
+            entries = bundle.infolist()
+            if not entries or len(entries) > MAX_ARCHIVE_ENTRIES:
+                raise AcceptanceError("portable archive entry count is outside the fixed bound")
+            total = sum(entry.file_size for entry in entries)
+            if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                raise AcceptanceError("portable archive exceeds the uncompressed size bound")
+            seen: set[str] = set()
+            for entry in entries:
+                if "\\" in entry.filename:
+                    raise AcceptanceError("portable archive contains a non-canonical path")
+                relative = PurePosixPath(entry.filename)
+                if relative.is_absolute() or not relative.parts or any(
+                    part in ("", ".", "..") for part in relative.parts
+                ):
+                    raise AcceptanceError("portable archive contains path traversal")
+                folded = "/".join(relative.parts).casefold().rstrip("/")
+                if folded in seen and not entry.is_dir():
+                    raise AcceptanceError("portable archive contains a duplicate path")
+                seen.add(folded)
+                mode = entry.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise AcceptanceError("portable archive contains a symbolic link")
+                destination = bottle_root.joinpath(*relative.parts)
+                if entry.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    if destination.is_symlink():
+                        raise AcceptanceError("portable archive directory became a symbolic link")
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists() or destination.is_symlink():
+                    raise AcceptanceError("portable archive would overwrite an existing path")
+                with bundle.open(entry) as source, destination.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=64 * 1024)
+                if destination.stat().st_size != entry.file_size:
+                    raise AcceptanceError("portable archive entry size changed during extraction")
+        final_metadata = os.fstat(pinned.fileno())
+        if (metadata.st_dev, metadata.st_ino, metadata.st_size) != (
+            final_metadata.st_dev,
+            final_metadata.st_ino,
+            final_metadata.st_size,
+        ):
+            raise AcceptanceError("portable archive identity changed during materialization")
+    return {
+        "schemaVersion": "1",
+        "format": "zip",
+        "fileDigest": "sha256:" + expected_sha256,
+        "fileSizeBytes": metadata.st_size,
+        "entryCount": len(entries),
+        "uncompressedBytes": total,
+    }
+
+
 def request_architecture(value: str) -> str:
     # PE inspection uses the human-readable x86 label; the public schema
     # intentionally uses the stable i386 enum.
@@ -618,6 +697,7 @@ def matrix_entry_digest(asset) -> str:  # type: ignore[no-untyped-def]
         "category": asset.category,
         "toolkit": asset.toolkit,
         "guestArchitecture": asset.guest_architecture,
+        "packageKind": asset.package_kind,
         "requiredInteractions": list(REQUIRED_INTERACTIONS[asset.app_id]),
     }
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -803,67 +883,76 @@ def main() -> int:
                 "cleanup": False,
             }
             try:
-                installer = fetch_asset(arguments, asset.app_id)
-                installer_inspection = json_object(
-                    invoke([str(arguments.compatforge_cli), "inspect", str(installer)]),
-                    f"{asset.app_id} installer inspection",
-                )
-                installer_architecture = installer_inspection.get("architecture")
-                if not isinstance(installer_architecture, str):
-                    raise AcceptanceError(f"{asset.app_id} installer inspection omitted architecture")
-                evidence["installerInspection"] = installer_inspection
-                inspection_request = {
-                    "schemaVersion": "1",
-                    "requestId": str(uuid.uuid4()),
-                    "bottleId": bottle_id,
-                    "executable": {
-                        "path": str(installer),
-                        "architecture": request_architecture(installer_architecture),
-                        "mode": "immutableArtifact",
-                    },
-                    "arguments": list(asset.install_args),
-                    "environment": dict(asset.runtime_environment),
-                    "constraints": {
-                        "allowVirtualMachine": False,
-                        "allowRemote": False,
-                        "networkPolicy": "deny",
-                    },
-                }
-                installer_request_path = arguments.work_root / f"{asset.app_id}-installer-request.json"
-                write_json(installer_request_path, inspection_request)
-                plan = json_object(
-                    invoke(
-                        [
-                            str(arguments.compatforge_cli),
-                            "prepared-plan",
-                            str(context_path),
-                            str(installer),
-                            str(installer_request_path),
-                        ]
-                    ),
-                    f"{asset.app_id} installer plan",
-                )
-                evidence["installerPlan"] = plan
-                installer_events = run_events(
-                    invoke(
-                        [
-                            str(arguments.compatforge_cli),
-                            "prepared-launch-terminate",
-                            str(context_path),
-                            str(installer),
-                            str(installer_request_path),
-                            str(asset.install_wait_milliseconds),
-                        ]
-                    ),
-                    f"{asset.app_id} installer",
-                )
-                evidence["installerEvents"] = installer_events
-                evidence["installerExit"] = exit_observation(installer_events)
+                package = fetch_asset(arguments, asset.app_id)
+                if asset.package_kind == "portable-zip":
+                    evidence["installerInspection"] = materialize_portable_zip(
+                        package,
+                        bottle_root,
+                        asset.sha256,
+                    )
+                elif asset.package_kind == "installer":
+                    installer_inspection = json_object(
+                        invoke([str(arguments.compatforge_cli), "inspect", str(package)]),
+                        f"{asset.app_id} installer inspection",
+                    )
+                    installer_architecture = installer_inspection.get("architecture")
+                    if not isinstance(installer_architecture, str):
+                        raise AcceptanceError(f"{asset.app_id} installer inspection omitted architecture")
+                    evidence["installerInspection"] = installer_inspection
+                    inspection_request = {
+                        "schemaVersion": "1",
+                        "requestId": str(uuid.uuid4()),
+                        "bottleId": bottle_id,
+                        "executable": {
+                            "path": str(package),
+                            "architecture": request_architecture(installer_architecture),
+                            "mode": "immutableArtifact",
+                        },
+                        "arguments": list(asset.install_args),
+                        "environment": dict(asset.runtime_environment),
+                        "constraints": {
+                            "allowVirtualMachine": False,
+                            "allowRemote": False,
+                            "networkPolicy": "deny",
+                        },
+                    }
+                    installer_request_path = arguments.work_root / f"{asset.app_id}-installer-request.json"
+                    write_json(installer_request_path, inspection_request)
+                    plan = json_object(
+                        invoke(
+                            [
+                                str(arguments.compatforge_cli),
+                                "prepared-plan",
+                                str(context_path),
+                                str(package),
+                                str(installer_request_path),
+                            ]
+                        ),
+                        f"{asset.app_id} installer plan",
+                    )
+                    evidence["installerPlan"] = plan
+                    installer_events = run_events(
+                        invoke(
+                            [
+                                str(arguments.compatforge_cli),
+                                "prepared-launch-terminate",
+                                str(context_path),
+                                str(package),
+                                str(installer_request_path),
+                                str(asset.install_wait_milliseconds),
+                            ]
+                        ),
+                        f"{asset.app_id} installer",
+                    )
+                    evidence["installerEvents"] = installer_events
+                    evidence["installerExit"] = exit_observation(installer_events)
+                else:
+                    raise AcceptanceError(f"{asset.app_id} package kind is unsupported")
                 installed = installed_executable(asset, bottle_root)
                 if not installed.is_file() or installed.is_symlink():
                     evidence["status"] = "unverified"
-                    evidence["reason"] = "installer exited but expected GUI executable was not found"
-                    evidence["failureClassification"] = "installer-upstream"
+                    evidence["reason"] = "package prepared but expected GUI executable was not found"
+                    evidence["failureClassification"] = "recipe-regression"
                     continue
                 launch_request = {
                     "schemaVersion": "1",
@@ -946,7 +1035,7 @@ def main() -> int:
                 elif not interactions_complete:
                     evidence["reason"] = "required per-application interaction evidence was not supplied"
                     evidence["failureClassification"] = "policy-blocked"
-            except (AcceptanceError, OSError, subprocess.TimeoutExpired) as error:
+            except (AcceptanceError, OSError, subprocess.TimeoutExpired, zipfile.BadZipFile) as error:
                 evidence["status"] = "failed"
                 evidence["reason"] = str(error)
                 evidence["failureClassification"] = (
@@ -985,7 +1074,14 @@ def main() -> int:
         write_json(arguments.work_root / "summary.json", summary)
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         return 0 if all(value["status"] == "accepted" for value in results) else 1
-    except (AcceptanceError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, ImportError) as error:
+    except (
+        AcceptanceError,
+        OSError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        ImportError,
+        zipfile.BadZipFile,
+    ) as error:
         print(f"compatforge-gui-baseline: {error}", file=sys.stderr)
         return 1
 
