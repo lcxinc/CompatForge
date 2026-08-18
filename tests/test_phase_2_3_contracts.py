@@ -257,6 +257,9 @@ class Phase23ContractTests(unittest.TestCase):
         source = WIN32_PROBE_SOURCE.read_text(encoding="utf-8")
         for symbol in (
             "CreateWindowExW",
+            "CreateFontW",
+            'L"Heiti SC"',
+            "SelectObject",
             "DrawTextW",
             "CompatForge Win32 Probe",
             "ShowWindow(window, SW_SHOW)",

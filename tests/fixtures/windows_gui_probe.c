@@ -19,8 +19,34 @@ static LRESULT CALLBACK probe_window_proc(HWND window, UINT message, WPARAM word
             RECT bounds;
             HDC context = BeginPaint(window, &paint);
             GetClientRect(window, &bounds);
+            HFONT font = CreateFontW(
+                -32,
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                FALSE,
+                FALSE,
+                FALSE,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                ANTIALIASED_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE,
+                L"Heiti SC"
+            );
+            HGDIOBJ previous_font = NULL;
+            if (font != NULL) {
+                previous_font = SelectObject(context, font);
+            }
             SetBkMode(context, TRANSPARENT);
             DrawTextW(context, kProbeText, -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (previous_font != NULL) {
+                SelectObject(context, previous_font);
+            }
+            if (font != NULL) {
+                DeleteObject(font);
+            }
             EndPaint(window, &paint);
             return 0;
         }
