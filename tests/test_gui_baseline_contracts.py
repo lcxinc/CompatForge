@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from unittest import mock
 from pathlib import Path
 
@@ -71,6 +72,7 @@ class GuiBaselineContractTests(unittest.TestCase):
             self.assets.asset_for("winmerge").installed_executable,
             "WinMerge/WinMergeU.exe",
         )
+        self.assertEqual(self.assets.asset_for("winmerge").window_appearance_seconds, 45)
         self.assertEqual(self.assets.asset_for("everything-x86").launch_args, ("-nodb",))
         self.assertEqual(
             {asset.category for asset in self.assets.CERTIFICATION_ASSETS},
@@ -337,6 +339,20 @@ class GuiBaselineContractTests(unittest.TestCase):
                 {"available": False},
             )["failureClassification"],
             "runtime-regression",
+        )
+
+    def test_launch_runtime_covers_visual_evidence_budget(self) -> None:
+        self.assertEqual(self.baseline.launch_runtime_milliseconds(30, 0, False), 35_000)
+        self.assertEqual(self.baseline.launch_runtime_milliseconds(45, 0, False), 50_000)
+        self.assertEqual(self.baseline.launch_runtime_milliseconds(30, 55, False), 60_000)
+        self.assertEqual(self.baseline.launch_runtime_milliseconds(30, 0, True), 60_000)
+
+    def test_recipe_digest_binds_visual_evidence_budget(self) -> None:
+        asset = self.assets.asset_for("winmerge")
+        changed = replace(asset, window_appearance_seconds=30)
+        self.assertNotEqual(
+            self.baseline.matrix_entry_digest(asset),
+            self.baseline.matrix_entry_digest(changed),
         )
 
     def test_compatibility_result_binds_matrix_and_failure_classification(self) -> None:

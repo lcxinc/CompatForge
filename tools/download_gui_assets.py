@@ -168,6 +168,7 @@ CERTIFICATION_ASSETS = (
         "WinMerge/WinMergeU.exe",
         ("WinMerge",),
         ("/noprefs",),
+        window_appearance_seconds=45,
         category="developer-tool",
         toolkit="mfc",
         package_kind="portable-zip",

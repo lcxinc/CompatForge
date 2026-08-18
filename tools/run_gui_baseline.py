@@ -413,6 +413,17 @@ def observed_launch(
     return events, windows, shot, root_process_id
 
 
+def launch_runtime_milliseconds(
+    window_appearance_seconds: int,
+    screenshot_delay_seconds: int,
+    accept_interactive: bool,
+) -> int:
+    """Keep the guest alive long enough to consume its visual evidence budget."""
+    minimum = INTERACTIVE_RUNTIME_MILLISECONDS if accept_interactive else 30_000
+    visual_budget = (max(window_appearance_seconds, screenshot_delay_seconds) + 5) * 1_000
+    return max(minimum, visual_budget)
+
+
 def status(events: list[dict[str, object]]) -> str:
     exit_event = next((event for event in reversed(events) if event.get("kind") == "exited"), None)
     if exit_event is None:
@@ -859,6 +870,9 @@ def matrix_entry_digest(asset) -> str:  # type: ignore[no-untyped-def]
         "alternateInstalledExecutables": list(asset.alternate_installed_executables),
         "launchArgs": list(asset.launch_args),
         "runtimeEnvironment": dict(asset.runtime_environment),
+        "installWaitMilliseconds": asset.install_wait_milliseconds,
+        "screenshotDelaySeconds": asset.screenshot_delay_seconds,
+        "windowAppearanceSeconds": asset.window_appearance_seconds,
         "category": asset.category,
         "toolkit": asset.toolkit,
         "guestArchitecture": asset.guest_architecture,
@@ -1172,7 +1186,13 @@ def main() -> int:
                         str(context_path),
                         str(installed),
                         str(launch_request_path),
-                        str(INTERACTIVE_RUNTIME_MILLISECONDS if arguments.accept_interactive else 30_000),
+                        str(
+                            launch_runtime_milliseconds(
+                                asset.window_appearance_seconds,
+                                asset.screenshot_delay_seconds,
+                                arguments.accept_interactive,
+                            )
+                        ),
                     ],
                     arguments.work_root / f"{asset.app_id}.png",
                     asset.window_title_tokens,
