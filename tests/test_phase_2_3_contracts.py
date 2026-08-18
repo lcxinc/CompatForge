@@ -255,7 +255,14 @@ class Phase23ContractTests(unittest.TestCase):
 
     def test_win32_probe_source_and_runner_keep_the_prepared_launch_boundary(self) -> None:
         source = WIN32_PROBE_SOURCE.read_text(encoding="utf-8")
-        for symbol in ("CreateWindowExW", "DrawTextW", "CompatForge Win32 Probe", "WM_PAINT", "WM_DESTROY"):
+        for symbol in (
+            "CreateWindowExW",
+            "DrawTextW",
+            "CompatForge Win32 Probe",
+            "ShowWindow(window, SW_SHOW)",
+            "WM_PAINT",
+            "WM_DESTROY",
+        ):
             self.assertIn(symbol, source)
         for forbidden in ("WinHttp", "URLDownload", "ShellExecute", "system("):
             self.assertNotIn(forbidden, source)

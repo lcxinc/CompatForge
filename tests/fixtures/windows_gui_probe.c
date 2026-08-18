@@ -38,6 +38,7 @@ static LRESULT CALLBACK probe_window_proc(HWND window, UINT message, WPARAM word
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show) {
     (void)previous;
     (void)command_line;
+    (void)show;
     WNDCLASSW window_class = {0};
     window_class.lpfnWndProc = probe_window_proc;
     window_class.hInstance = instance;
@@ -64,7 +65,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     if (window == NULL) {
         return 11;
     }
-    ShowWindow(window, show);
+    ShowWindow(window, SW_SHOW);
     UpdateWindow(window);
     if (SetTimer(window, 1, 30000, NULL) == 0) {
         DestroyWindow(window);
